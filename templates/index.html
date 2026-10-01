@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rotulador UNIDOCK</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%232a62b8%22/%3E%3Cpath d=%22M4 4h8M4 8h5M4 12h7%22 stroke=%22white%22 stroke-width=%221.6%22/%3E%3C/svg%3E">
+<link rel="stylesheet" href="{{ url_for('static', filename='editor.css') }}">
+</head>
+<body>
+<header id="topo">
+  <div class="marca">Rotulador <b>UNIDOCK</b></div>
+  <nav id="abas-split" aria-label="Split"></nav>
+  <div class="navdoc">
+    <button id="doc-ant" title="Documento anterior (PageUp)">◀</button>
+    <span id="doc-nome" title="">nenhum documento</span>
+    <button id="doc-prox" title="Próximo documento (PageDown)">▶</button>
+    <span id="doc-versoes" class="pilula"></span>
+  </div>
+  <div class="saida">
+    <label>Saída
+      <select id="formato" title="Original e editada sempre saem no mesmo formato e qualidade"></select>
+    </label>
+    <label id="rot-qualidade">Qualidade <input id="qualidade" type="number" min="1" max="100" value="95"></label>
+    <label>Operador <input id="operador" type="text" maxlength="80" placeholder="seu nome"></label>
+    <button id="btn-descartar" class="perigo" title="Descarta todas as edições deste documento">Descartar</button>
+    <button id="btn-salvar" class="primario" disabled title="">Salvar (Ctrl+S)</button>
+  </div>
+</header>
+
+<div id="opcoes">
+  <div class="cat-ativa">
+    <label for="categoria">Categoria desta edição</label>
+    <select id="categoria"></select>
+    <input id="descricao" type="text" placeholder="descreva o que é 'outro'" hidden>
+  </div>
+  <div id="opcoes-ferramenta"></div>
+</div>
+
+<main>
+  <aside id="ferramentas" aria-label="Ferramentas"></aside>
+
+  <section id="visor" tabindex="0">
+    <canvas id="tela"></canvas>
+    <div id="vazio">Escolha um documento na lista à direita.</div>
+    <div id="ocupado" hidden><div class="giro"></div><span id="ocupado-msg">processando…</span></div>
+  </section>
+
+  <aside id="painel">
+    <section>
+      <h2>O que foi editado <small>(clique = categoria ativa)</small></h2>
+      <ul id="lista-categorias"></ul>
+      <p id="motivo-salvar" class="dica"></p>
+    </section>
+    <section>
+      <h2>Histórico
+        <span class="acoes">
+          <button id="btn-desfazer" title="Desfazer (Ctrl+Z)">↶</button>
+          <button id="btn-refazer" title="Refazer (Ctrl+Shift+Z / Ctrl+Y)">↷</button>
+        </span>
+      </h2>
+      <ol id="historico"></ol>
+    </section>
+    <section class="cresce">
+      <h2>Documentos
+        <label class="filtro"><input id="so-pendentes" type="checkbox"> só pendentes</label>
+      </h2>
+      <ul id="lista-docs"></ul>
+    </section>
+    <section>
+      <h2>IA local <span id="ia-status" class="pilula">…</span></h2>
+      <p class="dica" id="ia-dica"></p>
+    </section>
+  </aside>
+</main>
+
+<footer id="rodape">
+  <span id="st-zoom">100%</span>
+  <span id="st-pos"></span>
+  <span id="st-sel"></span>
+  <button id="btn-original" title="Segure \ para ver o original">Original (\)</button>
+  <button id="btn-mascara" title="Mostrar pixels alterados (K)">Máscara (K)</button>
+  <span id="st-msg"></span>
+</footer>
+
+<dialog id="modal">
+  <form method="dialog" id="modal-form">
+    <h3 id="modal-titulo"></h3>
+    <div id="modal-corpo"></div>
+    <div class="modal-acoes" id="modal-acoes"></div>
+  </form>
+</dialog>
+
+<div id="avisos" role="status"></div>
+
+<script type="module" src="{{ url_for('static', filename='editor.js') }}"></script>
+</body>
+</html>

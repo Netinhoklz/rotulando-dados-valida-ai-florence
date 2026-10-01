@@ -1,0 +1,21 @@
+{
+  "_leia": "O 'id' é o valor do pixel na máscara multiclasse (mascaras_classes). NUNCA troque o id de uma categoria já usada; para criar uma nova, use um id novo. 0 = não editado.",
+  "categorias": [
+    {"id": 1,  "chave": "nome",                    "rotulo": "Nome",                    "dica": "nome do titular / destinatário"},
+    {"id": 2,  "chave": "cpf/cnpj",                "rotulo": "CPF/CNPJ",                "dica": "documento do titular ou do emissor"},
+    {"id": 3,  "chave": "endereço",                "rotulo": "Endereço",                "dica": "logradouro, número, complemento"},
+    {"id": 4,  "chave": "bairro",                  "rotulo": "Bairro",                  "dica": ""},
+    {"id": 5,  "chave": "cep",                     "rotulo": "CEP",                     "dica": ""},
+    {"id": 6,  "chave": "cidade/uf",               "rotulo": "Cidade/UF",               "dica": ""},
+    {"id": 7,  "chave": "data",                    "rotulo": "Data",                    "dica": "emissão, vencimento, leitura"},
+    {"id": 8,  "chave": "mês de referência",       "rotulo": "Mês de referência",       "dica": "competência da conta (ex.: SET/2026)"},
+    {"id": 9,  "chave": "valor",                   "rotulo": "Valor",                   "dica": "total a pagar, itens da fatura"},
+    {"id": 10, "chave": "consumo/leitura",         "rotulo": "Consumo/leitura",         "dica": "kWh, m³, leitura do medidor, histórico"},
+    {"id": 11, "chave": "codigo barras",           "rotulo": "Código de barras",        "dica": "barras ITF-25"},
+    {"id": 12, "chave": "linha digitável",         "rotulo": "Linha digitável",         "dica": "números do código de barras"},
+    {"id": 13, "chave": "identificador documento", "rotulo": "Identificador documento", "dica": "nº instalação/UC, nº cliente, nº fatura, matrícula"},
+    {"id": 14, "chave": "emissor/logotipo",        "rotulo": "Emissor/logotipo",        "dica": "concessionária, banco, logotipo, CNPJ do emissor"},
+    {"id": 15, "chave": "qr code/pix",             "rotulo": "QR code/PIX",             "dica": ""},
+    {"id": 16, "chave": "outro",                   "rotulo": "Outro (descrever)",       "dica": "exige descrição"}
+  ]
+}

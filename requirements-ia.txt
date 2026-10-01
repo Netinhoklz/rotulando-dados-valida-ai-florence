@@ -1,0 +1,8 @@
+# Venv da IA: criada a partir do python que tem torch com CUDA, herdando os pacotes dele:
+#   <python-com-cuda> -m venv --system-site-packages .venv-ia
+#   .venv-ia\Scripts\python.exe -m pip install -r requirements-ia.txt
+# Precisa já existir no python base: torch (CUDA), transformers>=5, accelerate, flask, pillow.
+diffusers>=0.40
+peft>=0.21
+gguf>=0.19
+bitsandbytes>=0.50
