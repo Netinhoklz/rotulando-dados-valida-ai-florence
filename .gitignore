@@ -1,0 +1,13 @@
+.venv/
+.venv-ia/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.vscode/
+.idea/
+# dados e saídas não vão para o git (documentos reais têm dados pessoais)
+dados/*/*
+!dados/*/.gitkeep
+saida/
+teste_ia_saida.png
