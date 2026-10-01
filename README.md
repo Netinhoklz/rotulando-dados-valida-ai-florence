@@ -36,6 +36,18 @@ python -m venv .venv
    documento volta ao original e você pode criar outra variação (v02, v03…).
 4. Antes de treinar, rode `.venv\Scripts\python.exe auditar_vazamento.py`.
 
+**Rodar em segundo plano, sem janela** (rotulador na porta 5010 e IA na 5051):
+
+```powershell
+wscript //B lancador\lancar_oculto.vbs "C:/Users/netinhoklz/Projetos pessoais/rotulador-dados-UNIDOCK/lancador/iniciar.sh"
+bash lancador/parar.sh        # para os dois
+```
+
+- Logs ficam em `E:\rotulador\logs` (mude com a variável `ROTULADOR_BASE`).
+- Se `dados/` estiver vazio, o rotulador sobe com contas de demonstração.
+- Para não depender do terminal aberto, dispare pelo Agendador de Tarefas com o mesmo comando e
+  apague a tarefa logo depois.
+
 As edições ficam em rascunho no disco (`saida/<split>/_rascunhos`). Se o servidor cair, o
 trabalho volta quando você reabre o documento.
 
