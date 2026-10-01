@@ -34,6 +34,23 @@ function circuloCursor(ctx, visor, p, tamanho) {
   contorno(ctx, () => { ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, Math.PI * 2); });
 }
 
+// prévia "fantasma": o que a ferramenta de clonagem vai copiar para baixo do cursor
+function fantasma(ctx, v, mouse, origem, inicio, o) {
+  if (!mouse || !origem || !v.img) return;
+  const i = inicio || mouse;
+  const esc = (o.escala || 100) / 100, ang = ((o.rotacao || 0) * Math.PI) / 180;
+  const c = Math.cos(-ang) / esc, s = Math.sin(-ang) / esc; // A^-1
+  const tx = i.x - (c * origem.x - s * origem.y), ty = i.y - (s * origem.x + c * origem.y);
+  const e = v.escala, sc = v.imgParaTela(mouse.x, mouse.y);
+  ctx.save();
+  ctx.beginPath(); ctx.arc(sc.x, sc.y, Math.max(2, (o.tamanho * e) / 2), 0, Math.PI * 2); ctx.clip();
+  ctx.globalAlpha = 0.6;
+  ctx.imageSmoothingEnabled = e < 1.5;
+  ctx.transform(e * c, e * s, -e * s, e * c, e * (tx - v.ox), e * (ty - v.oy));
+  ctx.drawImage(o.fonte === "original" && v.orig ? v.orig : v.img, 0, 0);
+  ctx.restore();
+}
+
 // ---------------------------------------------------------------------------
 // quadrilátero com alças (mover / escalar / girar / perspectiva)
 // ---------------------------------------------------------------------------
@@ -162,6 +179,7 @@ export function criarFerramentas(app) {
     { rotulo: "Tudo", titulo: "Selecionar tudo (Ctrl+A)", acao: () => app.selecionarTudo() },
     { rotulo: "Inverter", titulo: "Inverter seleção (Ctrl+Shift+I)", acao: () => app.inverterSelecao() },
     { rotulo: "Desmarcar", titulo: "Desmarcar (Ctrl+D)", acao: () => app.desmarcar() },
+    { rotulo: "Só a tinta", titulo: "Reduz a seleção aos traços de texto/tinta dentro dela", acao: () => app.soTinta() },
     { campoSel: "expandir", rotulo: "Expandir/contrair px" },
     { campoSel: "suavizar", rotulo: "Suavizar px" },
   ];
@@ -259,6 +277,41 @@ export function criarFerramentas(app) {
     },
   };
 
+  F.pincelsel = {
+    nome: "Pincel de seleção (Q): pinte a área a selecionar (Alt = tirar da seleção)", icone: "🖍", atalho: "q",
+    cursor: "none", grupo: "selecao", campos: [{ chave: "tamanho", tipo: "num", rotulo: "Tamanho ([ ])", min: 1, max: 1000, passo: 1, padrao: 20 }],
+    botoes: botoesSelecao,
+    down(p, ev) { this._pts = [p]; this._modo = ev.altKey ? "subtrair" : (app.temSelecao() ? "somar" : "novo"); },
+    move(p) {
+      this._mouse = p;
+      if (this._pts) {
+        const ult = this._pts[this._pts.length - 1];
+        if (dist(app.visor.imgParaTela(p.x, p.y), app.visor.imgParaTela(ult.x, ult.y)) >= 2) this._pts.push(p);
+      }
+      app.visor.redesenhar();
+    },
+    up() {
+      if (!this._pts) return;
+      const pts = this._pts.map((q) => [q.x, q.y]); this._pts = null;
+      app.adicionarForma({ tipo: "traco", pontos: pts, tamanho: op("pincelsel").tamanho }, this._modo);
+    },
+    desenhar(ctx, v) {
+      if (this._pts) {
+        ctx.save(); ctx.globalAlpha = 0.45; ctx.lineCap = "round"; ctx.lineJoin = "round";
+        ctx.strokeStyle = this._modo === "subtrair" ? "#ff4fa0" : "#28a0ff";
+        ctx.lineWidth = Math.max(1, op("pincelsel").tamanho * v.escala);
+        tracarTela(ctx, v, this._pts.length === 1 ? [this._pts[0], this._pts[0]] : this._pts); ctx.stroke(); ctx.restore();
+      }
+      circuloCursor(ctx, v, this._mouse, op("pincelsel").tamanho);
+    },
+    sair() { this._mouse = null; app.visor.redesenhar(); },
+    tecla(ev) {
+      const o = op("pincelsel");
+      if (ev.key === "[" || ev.key === "]") { o.tamanho = Math.max(1, Math.round(o.tamanho * (ev.key === "]" ? 1.25 : 0.8))); app.salvarOpcoes(); app.renderOpcoes(); app.visor.redesenhar(); return true; }
+      return false;
+    },
+  };
+
   // ------------------------------------------------------------- pintura
   function ferramentaTraco(id, nome, icone, atalho, tipo, campos, extra = {}) {
     return {
@@ -319,25 +372,55 @@ export function criarFerramentas(app) {
     cor: true,
     antes: (p, ev) => { if (ev.altKey) { app.contaGotas(p); return false; } },
   });
-  F.borracha = ferramentaTraco("borracha", "Borracha que devolve o ORIGINAL (E) — não precisa de categoria", "⌫", "e", "borracha", [tam(20), dur(1), opa]);
+  F.borracha = ferramentaTraco("borracha", "Borracha (E): apaga da CAMADA ativa, revelando o que está embaixo (o original)", "⌫", "e", "borracha", [tam(20), dur(1), opa]);
   F.corretivo = ferramentaTraco("corretivo", "Pincel corretivo (J): reconstrói o traço a partir do entorno", "✚", "j", "corretivo", [tam(16), dur(0.8), patch, semente]);
-  F.carimbo = ferramentaTraco("carimbo", "Carimbo de clonagem (S): Alt+clique define a origem", "⎘", "s", "carimbo", [tam(16), dur(0.8), opa,
-    { chave: "alinhado", tipo: "bool", rotulo: "Alinhado", padrao: true }], {
-    antes: (p, ev) => {
-      if (ev.altKey) { F.carimbo._origem = p; F.carimbo._d = null; app.status("origem do carimbo definida"); app.visor.redesenhar(); return false; }
-      if (!F.carimbo._origem) { app.aviso("Alt+clique para definir a origem do carimbo", "erro"); return false; }
-      if (!F.carimbo._d || !op("carimbo").alinhado) F.carimbo._d = { x: F.carimbo._origem.x - p.x, y: F.carimbo._origem.y - p.y };
-    },
-    params: () => ({ dx: F.carimbo._d.x, dy: F.carimbo._d.y }),
-    desenhar: (ctx, v, t) => {
-      let alvo = null;
-      if (t._mouse && F.carimbo._d) alvo = { x: t._mouse.x + F.carimbo._d.x, y: t._mouse.y + F.carimbo._d.y };
-      else if (F.carimbo._origem && !F.carimbo._d) alvo = F.carimbo._origem;
-      if (!alvo) return;
-      const s = v.imgParaTela(alvo.x, alvo.y);
-      contorno(ctx, () => { ctx.beginPath(); ctx.moveTo(s.x - 8, s.y); ctx.lineTo(s.x + 8, s.y); ctx.moveTo(s.x, s.y - 8); ctx.lineTo(s.x, s.y + 8); });
-    },
-  });
+  function ferramentaFonte(id, nome, icone, atalho, tipo, campos) {
+    const estado = { origem: null, inicio: null };
+    const t = ferramentaTraco(id, nome, icone, atalho, tipo, campos, {
+      antes: (p, ev) => {
+        if (ev.altKey) {
+          estado.origem = p; estado.inicio = null;
+          app.status("origem definida: agora pinte onde quer copiar"); app.visor.redesenhar(); return false;
+        }
+        if (!estado.origem) { app.aviso("Alt+clique para definir a ORIGEM (de onde copiar)", "erro"); return false; }
+        if (!estado.inicio || !op(id).alinhado) estado.inicio = p;
+        if (op(id).fonte === "original" && !app.visor.orig) app.carregarOriginal();
+      },
+      params: () => ({ origem_x: estado.origem.x, origem_y: estado.origem.y, inicio_x: estado.inicio.x, inicio_y: estado.inicio.y }),
+      desenhar: (ctx, v, tr) => {
+        if (estado.origem) {
+          const esc = (op(id).escala || 100) / 100, ang = ((op(id).rotacao || 0) * Math.PI) / 180;
+          let alvo = estado.origem;
+          if (tr._mouse && estado.inicio) {
+            const dx = tr._mouse.x - estado.inicio.x, dy = tr._mouse.y - estado.inicio.y;
+            alvo = { x: estado.origem.x + esc * (Math.cos(ang) * dx - Math.sin(ang) * dy),
+              y: estado.origem.y + esc * (Math.sin(ang) * dx + Math.cos(ang) * dy) };
+          }
+          const sc = v.imgParaTela(alvo.x, alvo.y);
+          contorno(ctx, () => { ctx.beginPath(); ctx.moveTo(sc.x - 9, sc.y); ctx.lineTo(sc.x + 9, sc.y); ctx.moveTo(sc.x, sc.y - 9); ctx.lineTo(sc.x, sc.y + 9); });
+          if (!tr._pts && op(id).fantasma !== false) fantasma(ctx, v, tr._mouse, estado.origem, estado.inicio, op(id));
+        }
+      },
+    });
+    t.estado = estado;
+    return t;
+  }
+  const camposFonte = [
+    { chave: "fonte", tipo: "select", rotulo: "Amostrar de", opcoes: [["atual", "imagem atual"], ["original", "ORIGINAL"]], padrao: "atual" },
+    { chave: "escala", tipo: "num", rotulo: "Escala %", min: 10, max: 400, passo: 1, padrao: 100 },
+    { chave: "rotacao", tipo: "num", rotulo: "Rot.°", min: -180, max: 180, passo: 0.5, padrao: 0 },
+    { chave: "alinhado", tipo: "bool", rotulo: "Alinhado", padrao: true },
+    { chave: "fantasma", tipo: "bool", rotulo: "Prévia sob o cursor", padrao: true },
+  ];
+  F.carimbo = ferramentaFonte("carimbo", "Carimbo de clonagem (S): Alt+clique na ORIGEM, depois pinte. Prévia sob o cursor.", "⎘", "s",
+    "carimbo", [tam(16), dur(0.8), opa,
+      { chave: "modo_mescla", tipo: "select", rotulo: "Mescla", opcoes: [["normal", "normal"], ["escurecer", "escurecer"], ["clarear", "clarear"], ["multiplicar", "multiplicar"], ["tela", "tela"]], padrao: "normal" },
+      ...camposFonte]);
+  F.recuperacao = ferramentaFonte("recuperacao", "Pincel de recuperação (Shift+J): como o carimbo, mas casa cor e luz com o destino",
+    "🩹", "J", "recuperacao", [tam(16), dur(1), ...camposFonte]);
+  F.retoque = ferramentaTraco("retoque", "Pincel de retoque (O): desfocar, nitidez, borrar, clarear, escurecer, saturar", "💧", "o", "retoque", [
+    { chave: "modo", tipo: "select", rotulo: "Modo", opcoes: [["desfocar", "desfocar"], ["nitidez", "nitidez"], ["borrar", "borrar (dedo)"], ["clarear", "clarear (subexposição)"], ["escurecer", "escurecer (superexposição)"], ["saturar", "saturar"], ["dessaturar", "dessaturar"]], padrao: "desfocar" },
+    { chave: "forca", tipo: "faixa", rotulo: "Força", min: 0.05, max: 1, passo: 0.05, padrao: 0.5 }, tam(24), dur(0.6)]);
 
   F.balde = {
     nome: "Balde de tinta (G)", icone: "🪣", atalho: "g", cursor: "crosshair",
@@ -346,7 +429,7 @@ export function criarFerramentas(app) {
     down(p) { app.aplicar("balde", { ...op("balde"), x: p.x, y: p.y, cor: app.corFrente }); },
   };
   F.contagotas = {
-    nome: "Conta-gotas (I): lê a cor do pixel no servidor", icone: "💧", atalho: "i", cursor: "crosshair",
+    nome: "Conta-gotas (I): lê a cor do pixel no servidor", icone: "🎯", atalho: "i", cursor: "crosshair",
     campos: [{ chave: "raio", tipo: "select", rotulo: "Amostra", opcoes: [[0, "1 px"], [1, "3x3 (mediana)"], [2, "5x5 (mediana)"]], padrao: 1 }],
     down(p) { app.contaGotas(p, op("contagotas").raio); },
   };
@@ -456,6 +539,81 @@ export function criarFerramentas(app) {
     });
   F.substituir.aoMudarSelecao = () => { if (app.temSelecao()) estimar(); };
 
+  // ------------------------------------------------------------- remendo
+  const RM = { a: null, d: { x: 0, y: 0 } };
+  F.remendo = {
+    nome: "Remendo (Y): com uma seleção feita, arraste-a até uma área boa; a seleção recebe aquela textura, mesclada",
+    icone: "🧩", atalho: "y", cursor: "move",
+    campos: [
+      { chave: "modo", tipo: "select", rotulo: "Modo", opcoes: [["origem", "origem: preencher a seleção"], ["destino", "destino: levar a seleção para lá"]], padrao: "origem" },
+      { chave: "mesclar", tipo: "bool", rotulo: "Mesclar cor/luz (Poisson)", padrao: true },
+    ],
+    down(p) { if (!app.temSelecao()) { app.aviso("faça uma seleção da área a corrigir antes", "erro"); return; } RM.a = p; RM.d = { x: 0, y: 0 }; },
+    move(p) {
+      if (!RM.a) return;
+      RM.d = { x: Math.round(p.x - RM.a.x), y: Math.round(p.y - RM.a.y) };
+      if (RM.d.x || RM.d.y) app.previa("remendo", { ...op("remendo"), dx: RM.d.x, dy: RM.d.y });
+      app.visor.redesenhar();
+    },
+    async up() {
+      if (!RM.a) return;
+      const d = RM.d; RM.a = null;
+      if (!d.x && !d.y) { app.visor.redesenhar(); return; }
+      if (await app.aplicar("remendo", { ...op("remendo"), dx: d.x, dy: d.y })) app.desmarcar();
+      app.visor.redesenhar();
+    },
+    desenhar(ctx, v) {
+      const bb = app.selBbox();
+      if (!bb || !RM.a) return;
+      const a = v.imgParaTela(bb[0] + RM.d.x, bb[1] + RM.d.y), b = v.imgParaTela(bb[2] + RM.d.x, bb[3] + RM.d.y);
+      contorno(ctx, () => { ctx.beginPath(); ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y); });
+    },
+    desativar() { RM.a = null; app.limparPrevia(); },
+  };
+
+  // ------------------------------------------------------------- formas
+  F.forma = {
+    nome: "Formas (U): arraste para desenhar; Shift = quadrado/círculo/linha reta", icone: "▭", atalho: "u", cursor: "crosshair",
+    campos: [
+      { chave: "tipo", tipo: "select", rotulo: "Forma", opcoes: [["ret", "retângulo"], ["elipse", "elipse"], ["linha", "linha"]], padrao: "ret" },
+      { chave: "preencher", tipo: "bool", rotulo: "Preencher (cor de frente)", padrao: true },
+      { chave: "_cor", tipo: "corfrente", rotulo: "Preench." },
+      { chave: "espessura", tipo: "num", rotulo: "Contorno px", min: 0, max: 200, passo: 0.5, padrao: 0 },
+      { chave: "cor_contorno", tipo: "cor", rotulo: "Cor contorno", padrao: "#000000" },
+      opa,
+    ],
+    down(p) { this._a = p; this._b = p; },
+    move(p, ev) {
+      if (!this._a) return;
+      let b = p;
+      if (ev.shiftKey) {
+        const dx = p.x - this._a.x, dy = p.y - this._a.y;
+        if (op("forma").tipo === "linha") b = Math.abs(dx) > Math.abs(dy) ? { x: p.x, y: this._a.y } : { x: this._a.x, y: p.y };
+        else { const m = Math.max(Math.abs(dx), Math.abs(dy)); b = { x: this._a.x + Math.sign(dx || 1) * m, y: this._a.y + Math.sign(dy || 1) * m }; }
+      }
+      this._b = b; app.visor.redesenhar();
+    },
+    async up() {
+      if (!this._a) return;
+      const a = this._a, b = this._b; this._a = null;
+      if (Math.hypot(a.x - b.x, a.y - b.y) * app.visor.escala < 3) { app.visor.redesenhar(); return; }
+      const o = op("forma");
+      if (o.tipo === "linha" && !(o.espessura > 0)) { app.aviso("a linha precisa de 'Contorno px' maior que zero", "erro"); return; }
+      await app.aplicar("forma", { ...o, x0: a.x, y0: a.y, x1: b.x, y1: b.y, cor: app.corFrente });
+      app.visor.redesenhar();
+    },
+    desenhar(ctx, v) {
+      if (!this._a) return;
+      const a = v.imgParaTela(this._a.x, this._a.y), b = v.imgParaTela(this._b.x, this._b.y), t = op("forma").tipo;
+      contorno(ctx, () => {
+        ctx.beginPath();
+        if (t === "linha") { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }
+        else if (t === "ret") ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y);
+        else ctx.ellipse((a.x + b.x) / 2, (a.y + b.y) / 2, Math.abs(b.x - a.x) / 2, Math.abs(b.y - a.y) / 2, 0, 0, Math.PI * 2);
+      });
+    },
+  };
+
   // ------------------------------------------------------------- transformar
   const V = { quad: null };
   function iniciarQuad() {
@@ -469,7 +627,7 @@ export function criarFerramentas(app) {
   }
   const quadV = interacaoQuad(app, () => V.quad, previaV);
   F.transformar = {
-    nome: "Mover/transformar seleção (V): arraste = mover, canto = escalar (Shift = proporção, Ctrl = perspectiva), fora = girar",
+    nome: "Mover (V): com seleção = mover/transformar (canto escala, Shift proporção, Ctrl perspectiva, fora gira); sem seleção = move a CAMADA ativa",
     icone: "✥", atalho: "v", cursor: "move",
     campos: [
       { chave: "modo", tipo: "select", rotulo: "Modo", opcoes: [["mover", "mover (copy-move)"], ["duplicar", "duplicar"]], padrao: "duplicar" },
@@ -485,16 +643,44 @@ export function criarFerramentas(app) {
         app.desmarcar(); V.quad = null;
       }
     },
-    down(p, ev) { if (!V.quad) { app.aviso("faça uma seleção antes", "erro"); return; } quadV.down(p, ev); },
-    move(p, ev) { quadV.move(p, ev); },
-    up() { quadV.up(); },
+    down(p, ev) {
+      if (V.quad) { quadV.down(p, ev); return; }
+      const at = app.camadaAtiva();
+      if (!at || at.vazia) { app.aviso("faça uma seleção (ou escolha uma camada com conteúdo) para mover", "erro"); return; }
+      V.cam = { a: p, d: { x: 0, y: 0 }, bbox: at.bbox, id: at.id };
+    },
+    move(p, ev) {
+      if (V.cam) { V.cam.d = { x: Math.round(p.x - V.cam.a.x), y: Math.round(p.y - V.cam.a.y) }; app.visor.redesenhar(); return; }
+      quadV.move(p, ev);
+    },
+    up() {
+      if (V.cam) {
+        const c = V.cam; V.cam = null;
+        if (c.d.x || c.d.y) app.acaoCamada("mover", { camada: c.id, dx: c.d.x, dy: c.d.y });
+        app.visor.redesenhar(); return;
+      }
+      quadV.up();
+    },
     cursorEm: (p) => quadV.cursor(p),
     tecla(ev) {
       if (ev.key === "Enter") { F.transformar.aplicar(); return true; }
       if (ev.key === "Escape") { iniciarQuad(); previaV(); return true; }
+      if (!V.quad) {  // sem seleção: setas empurram a camada ativa
+        const at = app.camadaAtiva(), passo = ev.shiftKey ? 10 : 1;
+        const mov = { ArrowLeft: [-passo, 0], ArrowRight: [passo, 0], ArrowUp: [0, -passo], ArrowDown: [0, passo] }[ev.key];
+        if (mov && at && !at.vazia) { app.acaoCamada("mover", { camada: at.id, dx: mov[0], dy: mov[1] }); return true; }
+        return false;
+      }
       return quadV.tecla(ev);
     },
-    desenhar(ctx, v) { if (V.quad) desenharQuad(ctx, v, V.quad); },
+    desenhar(ctx, v) {
+      if (V.quad) desenharQuad(ctx, v, V.quad);
+      if (V.cam && V.cam.bbox) {
+        const [x0, y0, x1, y1] = V.cam.bbox, d = V.cam.d;
+        const a = v.imgParaTela(x0 + d.x, y0 + d.y), b = v.imgParaTela(x1 + d.x, y1 + d.y);
+        contorno(ctx, () => { ctx.beginPath(); ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y); });
+      }
+    },
     mudouOpcao: previaV,
     ativar() { iniciarQuad(); if (V.quad) previaV(); },
     desativar() { V.quad = null; app.limparPrevia(); },
@@ -551,6 +737,6 @@ export function criarFerramentas(app) {
 }
 
 export const ORDEM = [
-  "mao", "zoom", "|", "ret", "elipse", "laco", "varinha", "|", "pincel", "borracha", "balde", "contagotas", "|",
-  "carimbo", "corretivo", "|", "texto", "substituir", "transformar", "colar",
+  "mao", "zoom", "|", "ret", "elipse", "laco", "varinha", "pincelsel", "|", "pincel", "borracha", "balde", "contagotas", "forma", "|",
+  "carimbo", "recuperacao", "corretivo", "remendo", "retoque", "|", "texto", "substituir", "transformar", "colar",
 ];

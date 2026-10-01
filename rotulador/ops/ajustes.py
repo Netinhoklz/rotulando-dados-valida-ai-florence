@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import cv2
 import numpy as np
 
@@ -9,7 +11,8 @@ from ..selecao import Selecao
 from ..sessao import ErroOperacao, Resultado
 from .base import exigir_selecao, inteiro, num, resultado_selecao
 
-AJUSTES = ("brilho_contraste", "niveis", "matiz_saturacao", "desfoque", "nitidez", "ruido", "jpeg", "cinza")
+AJUSTES = ("brilho_contraste", "niveis", "matiz_saturacao", "desfoque", "nitidez", "ruido", "jpeg", "cinza",
+           "igualar_ruido")
 
 
 def _u8(a: np.ndarray) -> np.ndarray:
@@ -59,6 +62,8 @@ def ajuste(img: np.ndarray, p: dict, sel: Selecao, **_) -> Resultado:
         sigma = num(p, "sigma", 5, 0, 60)
         forma = rec.shape[:2] + ((1,) if p.get("monocromatico", True) else (3,))
         out = _u8(f + rng.normal(0, sigma, forma).astype(np.float32))
+    elif nome == "igualar_ruido":
+        out = _igualar_ruido(img, sel, (py0, py1, px0, px1), p)
     elif nome == "cinza":
         g = f @ np.float32([0.299, 0.587, 0.114])
         out = _u8(np.repeat(g[..., None], 3, 2))
@@ -71,3 +76,29 @@ def ajuste(img: np.ndarray, p: dict, sel: Selecao, **_) -> Resultado:
 
     novo = out[y0 - py0:y1 - py0, x0 - px0:x1 - px0]
     return resultado_selecao(img, sel, novo)
+
+
+def _igualar_ruido(img: np.ndarray, sel: Selecao, caixa, p: dict) -> np.ndarray:
+    """Acrescenta à seleção o ruído que falta para igualar o do papel ao redor.
+
+    Edição digital (texto novo, preenchimento) sai limpa demais perto do grão do
+    scan/foto; esse contraste é um atalho fácil para o detector."""
+    py0, py1, px0, px1 = caixa
+    H, W = img.shape[:2]
+    anel_m = 20
+    ay0, ay1, ax0, ax1 = max(0, py0 - anel_m), min(H, py1 + anel_m), max(0, px0 - anel_m), min(W, px1 + anel_m)
+    reg = img[ay0:ay1, ax0:ax1].astype(np.float32)
+    residuo = reg - cv2.medianBlur(img[ay0:ay1, ax0:ax1], 3).astype(np.float32)
+    dentro = np.zeros(reg.shape[:2], bool)
+    dentro[sel.y0 - ay0:sel.y1 - ay0, sel.x0 - ax0:sel.x1 - ax0] = sel.alpha > 0.5
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * anel_m + 1, 2 * anel_m + 1))
+    anel = cv2.dilate(dentro.astype(np.uint8), k).astype(bool) & ~dentro
+    if anel.sum() < 50 or dentro.sum() < 10:
+        raise ErroOperacao("seleção grande demais ou sem entorno para medir o ruído")
+    s_fora, s_dentro = float(residuo[anel].std()), float(residuo[dentro].std())
+    falta = math.sqrt(max(0.0, s_fora ** 2 - s_dentro ** 2)) * num(p, "forca", 1.0, 0, 2)
+    rng = np.random.default_rng(inteiro(p, "semente", 0, 0, 2**31 - 1))
+    rec = img[py0:py1, px0:px1].astype(np.float32)
+    forma = rec.shape[:2] + ((1,) if p.get("monocromatico", True) else (3,))
+    # medido: o desvio do resíduo da mediana 3x3 é linear no sigma do ruído, então sem fator de correção
+    return _u8(rec + rng.normal(0, max(falta, 0.0), forma).astype(np.float32))

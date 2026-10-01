@@ -22,9 +22,15 @@ def preencher_selecao(img: np.ndarray, p: dict, sel: Selecao, **_) -> Resultado:
     mascara = sel.completa_bool()
     if mascara.all():
         raise ErroOperacao("a seleção cobre a imagem inteira")
-    cheio = preencher(img, mascara, tamanho_patch=_patch(p), semente=inteiro(p, "semente", 0, 0, 2**31 - 1))
+    amostragem = p.get("amostragem", "auto")
+    margem = {"auto": -1, "documento": None}.get(amostragem, None if amostragem not in ("margem",) else
+                                                   inteiro(p, "margem", 150, 10, 5000))
+    if amostragem not in ("auto", "documento", "margem"):
+        raise ErroOperacao(f"amostragem inválida: {amostragem}")
+    cheio = preencher(img, mascara, tamanho_patch=_patch(p), margem=margem,
+                      semente=inteiro(p, "semente", 0, 0, 2**31 - 1))
     y0, y1, x0, x1 = sel.bbox
-    return resultado_selecao(img, sel, cheio[y0:y1, x0:x1], meta={"algoritmo": "patchmatch"})
+    return resultado_selecao(img, sel, cheio[y0:y1, x0:x1], meta={"algoritmo": "patchmatch", "amostragem": amostragem})
 
 
 def corretivo(img: np.ndarray, p: dict, sel: Selecao, **_) -> Resultado:
@@ -39,22 +45,3 @@ def corretivo(img: np.ndarray, p: dict, sel: Selecao, **_) -> Resultado:
     cheio = preencher(img, mascara, tamanho_patch=_patch(p), semente=inteiro(p, "semente", 0, 0, 2**31 - 1))
     novo = compor(img[y0:y1, x0:x1], cheio[y0:y1, x0:x1], alpha)
     return Resultado(y0, y1, x0, x1, novo, alpha > 0, meta={"algoritmo": "patchmatch"})
-
-
-def carimbo(img: np.ndarray, p: dict, sel: Selecao, **_) -> Resultado:
-    """Carimbo de clonagem: pinta com a imagem deslocada de (dx, dy) (origem = destino + d)."""
-    H, W = img.shape[:2]
-    dx, dy = int(round(num(p, "dx", 0, -W, W))), int(round(num(p, "dy", 0, -H, H)))
-    if dx == 0 and dy == 0:
-        raise ErroOperacao("defina a origem do carimbo (Alt+clique)")
-    y0, y1, x0, x1, alpha = traco(pontos(p), num(p, "tamanho", 20, 1, 1000), num(p, "dureza", 0.8, 0, 1), H, W)
-    alpha = recortar_selecao(alpha, (y0, y1, x0, x1), sel) * num(p, "opacidade", 1.0, 0, 1)
-    fonte = np.zeros((y1 - y0, x1 - x0, 3), np.uint8)
-    valido = np.zeros((y1 - y0, x1 - x0), np.float32)
-    sy0, sy1, sx0, sx1 = max(0, y0 + dy), min(H, y1 + dy), max(0, x0 + dx), min(W, x1 + dx)
-    if sy1 > sy0 and sx1 > sx0:
-        fonte[sy0 - y0 - dy:sy1 - y0 - dy, sx0 - x0 - dx:sx1 - x0 - dx] = img[sy0:sy1, sx0:sx1]
-        valido[sy0 - y0 - dy:sy1 - y0 - dy, sx0 - x0 - dx:sx1 - x0 - dx] = 1
-    alpha = alpha * valido
-    novo = compor(img[y0:y1, x0:x1], fonte, alpha)
-    return Resultado(y0, y1, x0, x1, novo, alpha > 0)

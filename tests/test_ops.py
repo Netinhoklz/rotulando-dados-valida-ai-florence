@@ -80,7 +80,7 @@ class TestSessao(Base):
         self.s.desfazer()
         nova = Sessao(self.item, self.img.copy(), self.tmp / "rasc", IDS)
         np.testing.assert_array_equal(nova.atual, self.s.atual)
-        self.assertEqual(len(nova.deltas), 1)
+        self.assertEqual(len(nova.historico_), 1)
         self.assertEqual(len(nova.refazer_pilha), 1)
         nova.refazer()
         self.assertEqual(nova.categorias(), ["nome", "valor"])
@@ -128,8 +128,8 @@ class TestOperacoes(Base):
                                "negrito": 1, "espacamento": 2, "desfoque": 0.5})
         self.aplicar("texto", {"texto": "XYZ", "x": 150, "y": 380, "tamanho": 20, "antialias": False,
                                "cor": "#000000"}, categoria="nome")
-        d = self.s.deltas[-1]
-        mudou = d.depois[(d.antes != d.depois).any(2)]
+        _, _, _, antes, depois = self.s.historico_[-1].passos[-1]
+        mudou = depois[(antes != depois).any(2)][:, :3]
         self.assertTrue((mudou == 0).all(), "sem antialias o texto deve ser só preto puro")
         self.checar_invariantes()
 

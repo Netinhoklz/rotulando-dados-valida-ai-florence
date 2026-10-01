@@ -47,6 +47,23 @@
   </section>
 
   <aside id="painel">
+    <section id="sec-camadas">
+      <h2>Camadas
+        <span class="acoes">
+          <button id="cam-nova" title="Nova camada (Ctrl+Shift+N)">＋</button>
+          <button id="cam-dup" title="Duplicar camada (Ctrl+J)">⧉</button>
+          <button id="cam-mesclar" title="Mesclar com a de baixo (Ctrl+E)">⤓</button>
+          <button id="cam-excluir" title="Excluir camada">🗑</button>
+        </span>
+      </h2>
+      <ul id="lista-camadas"></ul>
+      <div id="cam-opacidade" class="linha-opac" hidden>
+        <label for="cam-opac">Opacidade</label>
+        <input id="cam-opac" type="range" min="0" max="100" step="1">
+        <span id="cam-opac-val"></span>
+      </div>
+      <p id="cam-dica" class="dica"></p>
+    </section>
     <section>
       <h2>O que foi editado <small>(clique = categoria ativa)</small></h2>
       <ul id="lista-categorias"></ul>

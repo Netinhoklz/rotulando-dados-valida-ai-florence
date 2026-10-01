@@ -157,6 +157,9 @@ def salvar(sessao: Sessao, raiz_saida: Path, formato: str = "png", qualidade: in
             "mascaras": {"mascara": "0/255: pixels cujo valor mudou (antes da compressão de saída)",
                          "mascara_regiao": "0/255: área editada (pegada das operações)",
                          "mascara_classes": "uint8: id da categoria por pixel; 0 = não editado"},
+            "camadas": [{k: c[k] for k in ("id", "nome", "categoria", "descricao", "visivel", "opacidade", "bbox", "pixels")}
+                        for c in sessao.lista_camadas()],
+            "nota_camadas": "camadas ocultas (visivel=false) não entram na editada nem nas máscaras",
             "operacoes": sessao.historico(),
             "operador": operador, "data": data,
         }

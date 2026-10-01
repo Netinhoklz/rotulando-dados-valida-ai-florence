@@ -173,6 +173,35 @@ class TestApp(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         r.close()
 
+    def test_api_de_camadas(self):
+        doc = self.doc("treino")
+        self.op(doc)  # cria a camada 'valor'
+        e = self.post("/api/abrir", id=doc).get_json()
+        cam = e["camadas"][0]
+        self.assertEqual((cam["categoria"], cam["ativa"], cam["vazia"]), ("valor", True, False))
+        r = self.c.get(f"/api/camada_mini/{doc}/{cam['id']}.png")
+        self.assertEqual(r.status_code, 200)
+        r.close()
+        r = self.post("/api/camada", id=doc, acao="props", camada=cam["id"], visivel=False).get_json()
+        self.assertIn("png", r)  # devolve o trecho da composição que mudou
+        self.assertFalse(r["estado"]["pode_salvar"])
+        self.assertEqual(r["estado"]["ocultas"], [cam["nome"]])
+        r = self.post("/api/camada", id=doc, acao="props", camada=cam["id"], visivel=True).get_json()
+        r = self.post("/api/camada", id=doc, acao="mover", camada=cam["id"], dx=5, dy=-3).get_json()
+        self.assertEqual(r["estado"]["historico"][-1]["tipo"], "mover_camada")
+        r = self.post("/api/camada", id=doc, acao="criar", categoria="data").get_json()
+        self.assertEqual([c["categoria"] for c in r["estado"]["camadas"]], ["data", "valor"])
+        self.assertEqual(self.post("/api/camada", id=doc, acao="criar", categoria="xyz").status_code, 400)
+        self.assertEqual(self.post("/api/camada", id=doc, acao="voar").status_code, 400)
+        # borracha apaga da camada indicada
+        r = self.op(doc, tipo="borracha", params={**PINCEL, "tamanho": 40}, categoria=None, camada=cam["id"])
+        self.assertEqual(r.status_code, 200, r.get_json())
+        # salvar grava a lista de camadas no JSON
+        self.op(doc, params={**PINCEL, "pontos": [[50, 380]]})
+        s = self.post("/api/salvar", id=doc).get_json()["salvo"]
+        anot = json.loads((self.saida / "treino" / s["arquivos"]["anotacao"]).read_text(encoding="utf-8"))
+        self.assertTrue(any(c["categoria"] == "valor" for c in anot["camadas"]))
+
     def test_id_inexistente(self):
         self.assertEqual(self.post("/api/abrir", id="../../etc").status_code, 400)
         self.assertEqual(self.op("nao-existe").status_code, 400)

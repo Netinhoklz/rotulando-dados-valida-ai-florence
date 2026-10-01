@@ -165,4 +165,43 @@ def _forma(forma: dict, img: np.ndarray) -> np.ndarray:
             return flood[1:-1, 1:-1].astype(bool)
         semente = img[y, x].astype(np.int16)
         return (np.abs(img.astype(np.int16) - semente) <= tol).all(axis=2)
+    if tipo == "traco":  # pincel de seleção (máscara rápida)
+        pts = forma.get("pontos") or []
+        try:
+            a = np.asarray(pts, np.float64).reshape(-1, 2)
+        except ValueError:
+            raise ErroSelecao("pontos do pincel de seleção inválidos")
+        if not len(a) or not np.isfinite(a).all():
+            raise ErroSelecao("pontos do pincel de seleção inválidos")
+        r = max(1, int(round(_num(forma, "tamanho") / 2)))
+        q = np.round(a).astype(np.int64)
+        for i in range(len(q)):
+            cv2.circle(m, (int(q[i, 0]), int(q[i, 1])), r, 1, -1)
+            if i:
+                cv2.line(m, (int(q[i - 1, 0]), int(q[i - 1, 1])), (int(q[i, 0]), int(q[i, 1])), 1, 2 * r)
+        return m.astype(bool)
+    if tipo == "tinta":  # só os traços de texto/tinta dentro do retângulo
+        x0, x1 = sorted((_num(forma, "x0"), _num(forma, "x1")))
+        y0, y1 = sorted((_num(forma, "y0"), _num(forma, "y1")))
+        x0, x1 = int(np.clip(round(x0), 0, W)), int(np.clip(round(x1), 0, W))
+        y0, y1 = int(np.clip(round(y0), 0, H)), int(np.clip(round(y1), 0, H))
+        if x1 - x0 < 3 or y1 - y0 < 3:
+            return m.astype(bool)
+        m[y0:y1, x0:x1] = mascara_tinta(img[y0:y1, x0:x1])
+        ex = int(np.clip(float(forma.get("folga", 1)), 0, 20))
+        if ex:
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * ex + 1, 2 * ex + 1))
+            m = cv2.dilate(m, k)
+        return m.astype(bool)
     raise ErroSelecao(f"tipo de seleção desconhecido: {tipo}")
+
+
+def mascara_tinta(rec: np.ndarray) -> np.ndarray:
+    """Pixels de tinta (texto, linhas) num recorte: longe da cor do papel (Otsu)."""
+    f = rec.astype(np.float32)
+    borda = np.concatenate([f[0], f[-1], f[:, 0], f[:, -1]])
+    fundo = np.median(borda, axis=0)
+    d = np.abs(f - fundo).max(axis=2)
+    u8 = np.clip(d, 0, 255).astype(np.uint8)
+    otsu, _ = cv2.threshold(u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return (d > max(30.0, float(otsu))).astype(np.uint8)
