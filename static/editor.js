@@ -5,7 +5,7 @@ import { Visor } from "./visor.js";
 
 const $ = (id) => document.getElementById(id);
 const SPLITS = [["treino", "Treino"], ["teste", "Teste"], ["validacao", "Validação"]];
-const LENTAS = new Set(["preencher", "corretivo", "substituir_texto", "transformar", "ia"]);
+const LENTAS = new Set(["preencher", "corretivo", "substituir_texto", "transformar", "ia", "recuperacao", "remendo"]);
 const AJUSTES = {
   brilho_contraste: ["Brilho/contraste", [["brilho", -100, 100, 1, 0], ["contraste", -100, 100, 1, 0]]],
   niveis: ["Níveis", [["preto", 0, 254, 1, 0], ["branco", 1, 255, 1, 255], ["gama", 0.1, 5, 0.05, 1]]],
@@ -15,6 +15,7 @@ const AJUSTES = {
   ruido: ["Ruído", [["sigma", 0, 60, 0.5, 5], ["semente", 0, 99999, 1, 0]]],
   jpeg: ["Recompressão JPEG local", [["qualidade", 1, 100, 1, 70]]],
   cinza: ["Tons de cinza", []],
+  igualar_ruido: ["Igualar ruído ao papel ao redor", [["forca", 0, 2, 0.05, 1], ["semente", 0, 99999, 1, 0]]],
 };
 
 function armazenar(chave, valor) { try { localStorage.setItem("rotulador." + chave, JSON.stringify(valor)); } catch { /* sem storage */ } }
@@ -78,6 +79,11 @@ app.definirCorFrente = (c) => {
 function campo(c, o, aoMudar) {
   const id = "op-" + c.chave;
   if (c.tipo === "botao") return el("button", { type: "button", title: c.titulo || "", onclick: c.acao }, c.rotulo);
+  if (c.tipo === "cor") {
+    if (!o[c.chave]) o[c.chave] = c.padrao || "#000000";
+    return el("span", { class: "grupo" }, el("label", {}, c.rotulo),
+      el("input", { type: "color", value: o[c.chave], oninput: (e) => { o[c.chave] = e.target.value; app.salvarOpcoes(); } }));
+  }
   if (c.tipo === "corfrente") {
     return el("span", { class: "grupo" }, el("label", {}, c.rotulo),
       el("input", { type: "color", value: app.corFrente, oninput: (e) => app.definirCorFrente(e.target.value) }));
@@ -172,12 +178,24 @@ function montarCategorias() {
   const sel = $("categoria");
   sel.replaceChildren(el("option", { value: "" }, "— escolha o que vai editar —"),
     ...app.estado.categorias.map((c, i) => el("option", { value: c.chave, title: c.dica }, `${c.rotulo}${i < 10 ? `  (Alt+${(i + 1) % 10})` : ""}`)));
-  sel.addEventListener("change", () => definirCategoria(sel.value));
+  sel.addEventListener("change", () => escolherCategoria(sel.value));
   $("descricao").addEventListener("input", (e) => { app.descricao = e.target.value; });
   const ul = $("lista-categorias");
   ul.replaceChildren(...app.estado.categorias.map((c) =>
-    el("li", { "data-c": c.chave, title: c.dica || c.rotulo, onclick: () => definirCategoria(c.chave) },
+    el("li", { "data-c": c.chave, title: c.dica || c.rotulo, onclick: () => escolherCategoria(c.chave) },
       el("span", { class: "marca-cat" }), c.rotulo)));
+}
+// escolha do USUÁRIO: a camada ativa passa a ser a dessa categoria (ou uma nova é criada na 1ª edição)
+function escolherCategoria(chave) {
+  definirCategoria(chave);
+  const cams = app.sessao?.camadas || [];
+  const at = cams.find((c) => c.ativa);
+  if (!chave || (at && at.categoria === chave)) { app._catPendente = false; return; }
+  if (at && at.vazia) { app.acaoCamada("props", { camada: at.id, categoria: chave }); app._catPendente = false; return; }
+  const existente = cams.find((c) => c.categoria === chave);  // lista vem de cima para baixo
+  if (existente) { app.acaoCamada("ativar", { camada: existente.id }); app._catPendente = false; return; }
+  app._catPendente = true;
+  app.status(`a próxima edição cria a camada '${chave}'`);
 }
 function definirCategoria(chave) {
   app.categoria = chave;
@@ -199,8 +217,8 @@ function exigirCategoria() {
   return true;
 }
 function seletorCategoria(sugestao) {
-  if (!app.categoria && sugestao) definirCategoria(sugestao);
-  const s = el("select", { class: "sel-cat-modal", onchange: (e) => definirCategoria(e.target.value) },
+  if (!app.categoria && sugestao) escolherCategoria(sugestao);
+  const s = el("select", { class: "sel-cat-modal", onchange: (e) => escolherCategoria(e.target.value) },
     el("option", { value: "" }, "— escolha —"), ...app.estado.categorias.map((c) => el("option", { value: c.chave }, c.rotulo)));
   s.value = app.categoria;
   return el("div", { class: "linha" }, el("label", {}, "Categoria desta edição"), s);
@@ -284,12 +302,115 @@ function atualizarSessao(s) {
   $("btn-desfazer").disabled = !s?.historico?.length;
   $("btn-refazer").disabled = !s?.pode_refazer;
   $("historico").replaceChildren(...(s?.historico || []).map((h) =>
-    el("li", { class: h.restaura ? "restaura" : "", title: JSON.stringify(h.params).slice(0, 400) },
-      `${h.tipo} `, el("span", { class: "cat" }, h.restaura ? "(restaura original)" : `· ${h.categoria}`),
-      ` · ${h.pixels_alterados} px`)));
+    el("li", { class: h.restaura ? "restaura" : "", title: JSON.stringify(h.params || {}).slice(0, 400) },
+      `${h.rotulo} `, h.nome_camada ? el("span", { class: "cat" }, `· ${h.nome_camada}`) : null,
+      h.pixels_alterados ? ` · ${h.pixels_alterados} px` : "")));
+  desenharCamadas(s);
+  const at = s?.camadas?.find((c) => c.ativa);
+  if (at && !app._catPendente && at.categoria !== app.categoria) definirCategoria(at.categoria);
   const d = app.docs.find((x) => x.id === s?.id);
   if (d && s) { d.rascunho = s.historico.length > 0; d.versoes = s.versoes; }
   if (app.visor.mostrarMascara) carregarMascara();
+}
+
+// ------------------------------------------------------------------ camadas
+const PALETA = ["#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6",
+  "#bfef45", "#fabed4", "#469990", "#dcbeff", "#9a6324", "#fffac8", "#800000", "#aaffc3"];
+function corCategoria(chave) {
+  const c = app.estado.categorias.find((x) => x.chave === chave);
+  return c ? PALETA[(c.id - 1) % PALETA.length] : "#666";
+}
+app.camadaAtiva = () => app.sessao?.camadas?.find((c) => c.ativa) || null;
+app.acaoCamada = (acao, extra = {}) => (app._acaoPendente = executarAcaoCamada(acao, extra));
+async function executarAcaoCamada(acao, extra) {
+  if (!app.sessao || app.ocupado) return false;
+  try {
+    const r = await post("/api/camada", { id: app.sessao.id, acao, ...extra });
+    if (!r.nada) app.visor.aplicarRecorte(await bitmap(r.png), r.bbox[0], r.bbox[1]);
+    app.limparPrevia();
+    atualizarSessao(r.estado);
+    return true;
+  } catch (e) { app.aviso(e.message, "erro"); return false; }
+}
+function ativarCamada(c) {
+  app._catPendente = false;
+  definirCategoria(c.categoria);
+  if (!c.ativa) app.acaoCamada("ativar", { camada: c.id });
+}
+function renomearCamada(span, c) {
+  const inp = el("input", { type: "text", value: c.nome });
+  let feito = false;
+  const fim = (salvar) => {
+    if (feito) return; feito = true;
+    if (salvar && inp.value.trim() && inp.value.trim() !== c.nome) app.acaoCamada("props", { camada: c.id, nome: inp.value.trim() });
+    else desenharCamadas(app.sessao);
+  };
+  inp.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") fim(true); if (e.key === "Escape") fim(false); });
+  inp.addEventListener("blur", () => fim(true));
+  inp.addEventListener("click", (e) => e.stopPropagation());
+  span.replaceChildren(inp); inp.focus(); inp.select();
+}
+function moverCamadaNaPilha(passo) {
+  const cams = app.sessao?.camadas || [];
+  const i = cams.findIndex((c) => c.ativa);
+  if (i < 0) return;
+  const posicao = cams.length - 1 - i + passo;  // servidor: índice de baixo para cima
+  if (posicao < 0 || posicao >= cams.length) return;
+  app.acaoCamada("ordem", { camada: cams[i].id, posicao });
+}
+function novaCamada() {
+  if (!app.sessao) return;
+  if (!exigirCategoria()) return;
+  app._catPendente = false;
+  app.acaoCamada("criar", { categoria: app.categoria, descricao: app.descricao });
+}
+let arrastoCamada = null;
+function desenharCamadas(s) {
+  const ul = $("lista-camadas");
+  const cams = s?.camadas || [];
+  const linhas = cams.map((c) => {
+    const sel = el("select", { title: "Categoria desta camada (é o que vai para a máscara)", onclick: (e) => e.stopPropagation(),
+      onchange: (e) => app.acaoCamada("props", { camada: c.id, categoria: e.target.value }) },
+      app.estado.categorias.map((k) => el("option", { value: k.chave }, k.rotulo)));
+    sel.value = c.categoria || "";
+    const nome = el("span", { class: "nome-cam", title: "duplo clique para renomear" }, c.nome);
+    const li = el("li", { class: `${c.ativa ? "ativa" : ""} ${c.visivel ? "" : "oculta"}`, draggable: true, "data-cam": c.id,
+      title: c.vazia ? "camada vazia" : `${c.pixels} px nesta camada`, onclick: () => ativarCamada(c) },
+      el("span", { class: "chip", style: `background:${corCategoria(c.categoria)}` }),
+      el("button", { type: "button", class: "olho", title: c.visivel ? "Ocultar (camada oculta não é salva)" : "Mostrar",
+        onclick: (e) => { e.stopPropagation(); app.acaoCamada("props", { camada: c.id, visivel: !c.visivel }); } }, c.visivel ? "👁" : "◌"),
+      el("span", { class: "mini" }, c.vazia ? null : el("img", { src: `/api/camada_mini/${s.id}/${c.id}.png?v=${s.versao}`, alt: "" })),
+      el("span", { class: "info" }, nome, sel));
+    li.addEventListener("dragstart", (e) => { arrastoCamada = c.id; li.classList.add("arrastando"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", c.id); });
+    li.addEventListener("dragend", () => { arrastoCamada = null; li.classList.remove("arrastando"); });
+    const acima = (e) => { const r = li.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; };
+    li.addEventListener("dragover", (e) => {
+      if (!arrastoCamada || arrastoCamada === c.id) return;
+      e.preventDefault(); const a = acima(e);
+      li.classList.toggle("alvo-acima", a); li.classList.toggle("alvo-abaixo", !a);
+    });
+    li.addEventListener("dragleave", () => li.classList.remove("alvo-acima", "alvo-abaixo"));
+    li.addEventListener("drop", (e) => {
+      e.preventDefault(); li.classList.remove("alvo-acima", "alvo-abaixo");
+      if (!arrastoCamada || arrastoCamada === c.id) return;
+      const ids = cams.map((x) => x.id).filter((x) => x !== arrastoCamada);  // de cima para baixo
+      const j = ids.indexOf(c.id) + (acima(e) ? 0 : 1);
+      app.acaoCamada("ordem", { camada: arrastoCamada, posicao: ids.length - j });
+    });
+    return li;
+  });
+  linhas.push(el("li", { class: "fundo", title: "Imagem original: não é editável e não muda" },
+    el("span", { class: "olho" }, "🔒"), el("span", { class: "mini" }, "📄"),
+    el("span", { class: "info" }, el("span", { class: "nome-cam" }, "Fundo (original)"))));
+  ul.replaceChildren(...linhas);
+  const at = cams.find((c) => c.ativa);
+  $("cam-opacidade").hidden = !at;
+  if (at) { $("cam-opac").value = Math.round(at.opacidade * 100); $("cam-opac-val").textContent = `${Math.round(at.opacidade * 100)}%`; }
+  ["cam-dup", "cam-mesclar", "cam-excluir"].forEach((id) => { $(id).disabled = !at; });
+  $("cam-dica").textContent = !s ? "" : !cams.length
+    ? "Escolha a categoria e edite: cada categoria ganha a sua camada automaticamente."
+    : (s.ocultas?.length ? `⚠ Ocultas NÃO entram no salvamento: ${s.ocultas.join(", ")}`
+      : "Arraste para reordenar · duplo clique renomeia · 👁 oculta");
 }
 
 // ------------------------------------------------------------------ seleção
@@ -325,6 +446,15 @@ app.selecionarTudo = () => {
   app.selecao = { formas: [{ tipo: "ret", x0: 0, y0: 0, x1: app.sessao.largura, y1: app.sessao.altura, modo: "novo" }], inverter: false, expandir: 0, suavizar: 0 };
   app.atualizarSelecao();
 };
+app.soTinta = () => {
+  const bb = app.selBbox();
+  if (!bb) { app.aviso("faça antes uma seleção em volta do texto", "erro"); return; }
+  app.adicionarForma({ tipo: "tinta", x0: bb[0], y0: bb[1], x1: bb[2], y1: bb[3], folga: 1 }, "intersectar");
+};
+app.carregarOriginal = async () => {
+  if (app.visor.orig || !app.sessao) return;
+  try { app.visor.orig = await bitmapUrl(`/api/img/${app.sessao.id}/original.png`); } catch { /* só prévia */ }
+};
 app.inverterSelecao = () => { if (app.selecao.formas.length) { app.selecao.inverter = !app.selecao.inverter; app.atualizarSelecao(); } };
 
 // ------------------------------------------------------------------ operações
@@ -345,12 +475,16 @@ app.aplicar = async (tipo, params, { semCategoria = false, msg = null } = {}) =>
   if (!semCategoria && !exigirCategoria()) return false;
   try {
     ocupar(LENTAS.has(tipo) || msg ? (msg || "aplicando…") : null);
+    const at = app.camadaAtiva();
+    const camada = semCategoria ? at?.id : (at && at.categoria === app.categoria ? at.id : null);
+    if (semCategoria && !camada) { app.aviso("não há camada para apagar", "erro"); return false; }
     const r = await post("/api/op", {
-      id: app.sessao.id, tipo, params, selecao: app.specSelecao(),
+      id: app.sessao.id, tipo, params, selecao: app.specSelecao(), camada,
       categoria: semCategoria ? null : app.categoria, descricao: app.descricao,
     });
     app.limparPrevia();
-    app.visor.aplicarRecorte(await bitmap(r.png), r.bbox[0], r.bbox[1]);
+    app._catPendente = false;
+    if (!r.nada) app.visor.aplicarRecorte(await bitmap(r.png), r.bbox[0], r.bbox[1]);
     atualizarSessao(r.estado);
     app.status(`${tipo} aplicado`);
     return true;
@@ -388,10 +522,7 @@ app.gerarTexto = async () => {
   app.renderOpcoes();
   if (app.ferramenta.mudouOpcao) app.ferramenta.mudouOpcao();
 };
-app.preencherSelecao = () => {
-  if (!app.temSelecao()) { app.aviso("selecione a área a preencher", "erro"); return; }
-  app.aplicar("preencher", { patch: 7, semente: Math.floor(Math.random() * 1e6) });
-};
+app.preencherSelecao = () => abrirPreencher();
 
 async function salvar() {
   if (!app.sessao?.pode_salvar || app.ocupado) return;
@@ -423,9 +554,7 @@ async function descartar() {
 // ------------------------------------------------------------------ original / máscara
 async function mostrarOriginal(sim) {
   if (!app.sessao) return;
-  if (sim && !app.visor.orig) {
-    try { app.visor.orig = await bitmapUrl(`/api/img/${app.sessao.id}/original.png`); } catch (e) { app.aviso(e.message, "erro"); return; }
-  }
+  if (sim && !app.visor.orig) await app.carregarOriginal();
   app.visor.mostrarOriginal = sim;
   $("btn-original").classList.toggle("ativo", sim);
   app.visor.redesenhar();
@@ -495,6 +624,36 @@ function abrirAjustes() {
     botoes: [{ rotulo: "Cancelar", acao: () => true },
       { rotulo: "Aplicar", primario: true, acao: async () => { armazenar("ajuste", p); return app.aplicar("ajuste", { ...p }); } }],
   });
+}
+
+function abrirPreencher() {
+  if (!app.temSelecao()) { app.aviso("selecione a área a preencher", "erro"); return; }
+  const p = lembrar("preencher", { amostragem: "auto", margem: 150, patch: 7 });
+  p.semente = Math.floor(Math.random() * 1e6);
+  const info = el("div", { class: "dica" }, "calculando prévia…");
+  const prever = debounce(() => { info.textContent = "calculando prévia…"; app.previa("preencher", { ...p }); setTimeout(() => { info.textContent = "prévia na imagem (fundo do diálogo)"; }, 900); }, 250);
+  const amostra = el("select", { onchange: (e) => { p.amostragem = e.target.value; margem.disabled = p.amostragem !== "margem"; prever(); } },
+    [["auto", "automática (ao redor da seleção)"], ["documento", "documento inteiro"], ["margem", "faixa ao redor (px)"]].map(([v, r]) => el("option", { value: v }, r)));
+  amostra.value = p.amostragem;
+  const margem = el("input", { type: "number", min: 10, max: 5000, value: p.margem, disabled: p.amostragem !== "margem",
+    onchange: (e) => { p.margem = Number(e.target.value); prever(); } });
+  const patch = el("select", { onchange: (e) => { p.patch = Number(e.target.value); prever(); } },
+    [5, 7, 9, 11].map((v) => el("option", { value: v }, `${v}x${v}`)));
+  patch.value = String(p.patch);
+  const sem = el("input", { type: "number", value: p.semente, onchange: (e) => { p.semente = Number(e.target.value); prever(); } });
+  abrirModal({
+    titulo: "Preenchimento por similaridade (sensível ao conteúdo)",
+    corpo: [seletorCategoria(),
+      el("div", { class: "linha" }, el("label", {}, "Amostrar de"), amostra, el("label", {}, "faixa px"), margem),
+      el("div", { class: "linha" }, el("label", {}, "Tamanho do patch"), patch,
+        el("span", { class: "dica" }, "maior = segue mais a estrutura (linhas, tabelas); menor = mais detalhe")),
+      el("div", { class: "linha" }, el("label", {}, "Semente"), sem,
+        el("button", { type: "button", onclick: () => { p.semente = Math.floor(Math.random() * 1e6); sem.value = p.semente; prever(); } }, "🎲 Outra variação")),
+      info],
+    botoes: [{ rotulo: "Cancelar", acao: () => true },
+      { rotulo: "Aplicar", primario: true, acao: async () => { armazenar("preencher", { amostragem: p.amostragem, margem: p.margem, patch: p.patch }); return app.aplicar("preencher", { ...p }); } }],
+  });
+  prever();
 }
 
 function abrirCodigoBarras() {
@@ -687,6 +846,11 @@ function montarTeclado() {
       if (l === "d") { ev.preventDefault(); app.desmarcar(); return; }
       if (l === "a") { ev.preventDefault(); app.selecionarTudo(); return; }
       if (l === "i" && ev.shiftKey) { ev.preventDefault(); app.inverterSelecao(); return; }
+      if (l === "n" && ev.shiftKey) { ev.preventDefault(); novaCamada(); return; }
+      if (l === "j") { ev.preventDefault(); const at = app.camadaAtiva(); if (at) app.acaoCamada("duplicar", { camada: at.id }); return; }
+      if (l === "e") { ev.preventDefault(); const at = app.camadaAtiva(); if (at) app.acaoCamada("mesclar_abaixo", { camada: at.id }); return; }
+      if (k === "]") { ev.preventDefault(); moverCamadaNaPilha(1); return; }
+      if (k === "[") { ev.preventDefault(); moverCamadaNaPilha(-1); return; }
       if (k === "0") { ev.preventDefault(); app.visor.ajustar(); return; }
       if (k === "+" || k === "=") { ev.preventDefault(); app.visor.zoomEm(1.25); return; }
       if (k === "-") { ev.preventDefault(); app.visor.zoomEm(0.8); return; }
@@ -745,6 +909,27 @@ async function iniciar() {
   $("qualidade").addEventListener("change", (e) => armazenar("qualidade", Number(e.target.value)));
   $("operador").addEventListener("change", (e) => armazenar("operador", e.target.value));
   $("modal-form").addEventListener("submit", (e) => e.preventDefault());
+  $("cam-nova").addEventListener("click", novaCamada);
+  // duplo clique renomeia; o 1º clique pode ter ativado a camada e redesenhado a lista, então espera
+  $("lista-camadas").addEventListener("dblclick", async (e) => {
+    const li = e.target.closest("li[data-cam]");
+    if (!li || e.target.closest("select, button")) return;
+    const id = li.dataset.cam;
+    await app._acaoPendente;
+    const c = app.sessao?.camadas?.find((x) => x.id === id);
+    const span = document.querySelector(`#lista-camadas li[data-cam="${id}"] .nome-cam`);
+    if (c && span) renomearCamada(span, c);
+  });
+  $("cam-dup").addEventListener("click", () => { const at = app.camadaAtiva(); if (at) app.acaoCamada("duplicar", { camada: at.id }); });
+  $("cam-mesclar").addEventListener("click", () => { const at = app.camadaAtiva(); if (at) app.acaoCamada("mesclar_abaixo", { camada: at.id }); });
+  $("cam-excluir").addEventListener("click", () => {
+    const at = app.camadaAtiva();
+    if (at && (at.vazia || confirm(`Excluir a camada '${at.nome}'? (Ctrl+Z desfaz)`))) app.acaoCamada("excluir", { camada: at.id });
+  });
+  $("cam-opac").addEventListener("input", (e) => { $("cam-opac-val").textContent = `${e.target.value}%`; });
+  $("cam-opac").addEventListener("change", (e) => {
+    const at = app.camadaAtiva(); if (at) app.acaoCamada("props", { camada: at.id, opacidade: Number(e.target.value) / 100 });
+  });
   $("btn-salvar").addEventListener("click", salvar);
   $("btn-descartar").addEventListener("click", descartar);
   $("btn-desfazer").addEventListener("click", app.desfazer);

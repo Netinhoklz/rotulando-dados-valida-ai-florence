@@ -8,7 +8,7 @@ e não alteram ``img_atual``: devolvem o novo conteúdo de uma caixa e a pegada.
 from __future__ import annotations
 
 from ..sessao import ErroOperacao
-from . import ajustes, clonagem, codigos, ia, pintura, retoque, texto
+from . import ajustes, clonagem, codigos, ia, pintura, pro, retoque, texto
 
 OPERACOES = {
     "pincel": pintura.pincel,
@@ -16,7 +16,11 @@ OPERACOES = {
     "balde": pintura.balde,
     "preencher": retoque.preencher_selecao,
     "corretivo": retoque.corretivo,
-    "carimbo": retoque.carimbo,
+    "carimbo": pro.carimbo,
+    "recuperacao": pro.recuperacao,
+    "remendo": pro.remendo,
+    "retoque": pro.retoque,
+    "forma": pro.forma,
     "texto": texto.texto,
     "substituir_texto": texto.substituir_texto,
     "transformar": clonagem.transformar,
@@ -28,7 +32,8 @@ OPERACOES = {
 }
 
 # rápidas o bastante para prévia ao vivo (substituir_texto e transformar reusam o "apagado" em cache)
-COM_PREVIA = {"texto", "substituir_texto", "ajuste", "codigo_barras", "qrcode", "transformar", "colar", "balde"}
+COM_PREVIA = {"texto", "substituir_texto", "ajuste", "codigo_barras", "qrcode", "transformar", "colar", "balde",
+              "preencher", "remendo", "forma"}
 
 
 def executar(tipo: str, img, params: dict, sel, **contexto):

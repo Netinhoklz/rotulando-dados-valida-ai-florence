@@ -239,25 +239,54 @@ def criar_app(registro: Registro, raiz_saida: Path, categorias: list[dict]) -> F
             registro_params = dict(params)
             if sel_spec and sel_spec.get("formas"):
                 registro_params["selecao"] = sel_spec
-            delta = s.aplicar(tipo, d.get("categoria"), str(d.get("descricao", "")), registro_params, res)
-            return jsonify(bbox=[delta.x0, delta.y0, delta.x1, delta.y1], png=b64png(delta.depois),
-                           estado=estado_sessao(s))
+            s.aplicar(tipo, d.get("categoria"), str(d.get("descricao", "")), registro_params, res,
+                      camada=d.get("camada") or None)
+            return recorte_composicao(s, (res.y0, res.y1, res.x0, res.x1))
 
-    def _volta(s: Sessao, delta, recorte_attr: str):
-        if delta is None:
+    def recorte_composicao(s: Sessao, bb):
+        """Resposta padrão: a caixa da composição que mudou + o estado da sessão."""
+        if not bb or bb[1] <= bb[0] or bb[3] <= bb[2]:
             return jsonify(nada=True, estado=estado_sessao(s))
-        return jsonify(bbox=[delta.x0, delta.y0, delta.x1, delta.y1], png=b64png(getattr(delta, recorte_attr)),
-                       estado=estado_sessao(s))
+        y0, y1, x0, x1 = bb
+        with s.lock:
+            rec = s.atual[y0:y1, x0:x1].copy()
+        return jsonify(bbox=[x0, y0, x1, y1], png=b64png(rec), estado=estado_sessao(s))
 
     @app.post("/api/desfazer")
     def api_desfazer():
         s = sessao(corpo().get("id", ""))
-        return _volta(s, s.desfazer(), "antes")
+        return recorte_composicao(s, s.desfazer())
 
     @app.post("/api/refazer")
     def api_refazer():
         s = sessao(corpo().get("id", ""))
-        return _volta(s, s.refazer(), "depois")
+        return recorte_composicao(s, s.refazer())
+
+    @app.post("/api/camada")
+    def api_camada():
+        d = corpo()
+        s = sessao(d.get("id", ""))
+        acao = str(d.get("acao", ""))
+        kw = {k: d[k] for k in ("nome", "categoria", "descricao", "visivel", "opacidade", "posicao") if k in d}
+        if acao == "mover":  # deslocar o conteúdo da camada (ferramenta Mover sem seleção)
+            return recorte_composicao(s, s.deslocar_camada(d.get("camada"), d.get("dx", 0), d.get("dy", 0)))
+        return recorte_composicao(s, s.acao_camada(acao, d.get("camada") or None, **kw))
+
+    @app.get("/api/camada_mini/<doc>/<cid>.png")
+    def api_camada_mini(doc, cid):
+        s = sessao(doc)
+        cam = s.camadas.get(cid)
+        if cam is None:
+            raise ErroOperacao("camada não encontrada")
+        with s.lock:
+            bb = cam.caixa()
+            rec = np.zeros((1, 1, 4), np.uint8) if bb is None else cam.rgba[bb[0]:bb[1], bb[2]:bb[3]]
+            esc = min(1.0, 96 / max(rec.shape[:2]))
+            mini = cv2.resize(rec, (max(1, int(rec.shape[1] * esc)), max(1, int(rec.shape[0] * esc))),
+                              interpolation=cv2.INTER_AREA)
+        r = send_file(io.BytesIO(png(mini)), mimetype="image/png")
+        r.headers["Cache-Control"] = "no-store"
+        return r
 
     @app.post("/api/descartar")
     def api_descartar():

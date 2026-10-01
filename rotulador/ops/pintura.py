@@ -28,10 +28,9 @@ def pincel(img: np.ndarray, p: dict, sel: Selecao, **_) -> Resultado:
 
 
 def borracha(img: np.ndarray, p: dict, sel: Selecao, base: np.ndarray, **_) -> Resultado:
-    """Pincel de histórico: pinta com o ORIGINAL. Não precisa de categoria."""
+    """Apaga da camada ativa (revela o que está embaixo). Não precisa de categoria."""
     (y0, y1, x0, x1), alpha = _alpha_traco(img, p, sel)
-    novo = compor(img[y0:y1, x0:x1], base[y0:y1, x0:x1], alpha)
-    return Resultado(y0, y1, x0, x1, novo, alpha > 0, restaura=True)
+    return Resultado(y0, y1, x0, x1, img[y0:y1, x0:x1], alpha > 0, restaura=True, alfa_borracha=alpha)
 
 
 def balde(img: np.ndarray, p: dict, sel: Selecao, **_) -> Resultado:

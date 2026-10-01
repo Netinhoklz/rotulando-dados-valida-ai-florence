@@ -28,16 +28,39 @@ python -m venv .venv
 3. Para cada documento:
    1. Escolha a **categoria** do que vai editar (barra amarela, `Alt+1..0`, ou clique na lista
       "O que foi editado").
-   2. Edite.
+   2. Edite. A primeira edição de cada categoria cria **uma camada só dela** (ver "Camadas").
    3. Repita para outras categorias.
    4. Salve com **Salvar** (`Ctrl+S`).
 
-   O botão só libera quando há edição e toda edição tem categoria. Depois de salvar, o documento
-   volta ao original e você pode criar outra variação (v02, v03…).
+   O botão só libera quando há edição e toda camada visível tem categoria. Depois de salvar, o
+   documento volta ao original e você pode criar outra variação (v02, v03…).
 4. Antes de treinar, rode `.venv\Scripts\python.exe auditar_vazamento.py`.
 
 As edições ficam em rascunho no disco (`saida/<split>/_rascunhos`). Se o servidor cair, o
 trabalho volta quando você reabre o documento.
+
+## Camadas
+
+Funciona como no Photoshop. O original é o **Fundo** (travado) e cada edição vai para uma camada.
+
+- **Cada categoria tem a sua camada.** Escolher "valor" e editar cria a camada "valor 1"; escolher
+  "data" cria outra. Escolher de novo uma categoria que já tem camada volta a editar nela. Clicar
+  numa camada a ativa e põe a categoria dela na barra amarela.
+- **Painel:** 👁 oculta/mostra, duplo clique renomeia, a caixa de categoria de cada camada define o
+  que vai para a máscara, arrastar reordena, e há controle de opacidade. Botões: ＋ nova camada,
+  ⧉ duplicar, ⤓ mesclar com a de baixo, 🗑 excluir.
+- **Atalhos:** `Ctrl+Shift+N` nova, `Ctrl+J` duplicar, `Ctrl+E` mesclar, `Ctrl+[` e `Ctrl+]` mudam a
+  posição na pilha.
+- **Como as ferramentas usam as camadas:** elas enxergam a imagem composta (todas as camadas
+  visíveis) e gravam na camada ativa. A **borracha** apaga da camada ativa e revela o que está
+  embaixo. **Mover (V) sem seleção** arrasta a camada inteira; as setas empurram 1 px (com `Shift`,
+  10 px).
+- **Rótulos:**
+  - a categoria por pixel é a da camada visível **mais alta**;
+  - camadas **ocultas não entram** no salvamento, e o painel avisa quando há alguma;
+  - o JSON salvo lista as camadas.
+- Desfazer/refazer cobre pixels e mudanças na pilha. Criar a camada e pintar nela é **um** passo
+  só no `Ctrl+Z`.
 
 ## Ferramentas
 
@@ -48,17 +71,23 @@ trabalho volta quando você reabre o documento.
 | `W` | varinha mágica (tolerância, contígua ou por cor) |
 | | Seleção: `Shift` soma, `Alt` subtrai, `Shift+Alt` intersecta. Também: expandir/contrair, suavizar, `Ctrl+A`, `Ctrl+D`, `Ctrl+Shift+I` (inverter) |
 | `B` | pincel (`Alt+clique` pega a cor; `[` `]` mudam o tamanho) |
-| `E` | borracha que **devolve o original** (não precisa de categoria) |
+| `E` | borracha: apaga da **camada** ativa e revela o que está embaixo (não precisa de categoria) |
 | `G` | balde de tinta |
 | `I` | conta-gotas (lê o pixel no servidor) |
-| `S` | carimbo de clonagem (`Alt+clique` define a origem) |
-| `J` | pincel corretivo: reconstrói o traço a partir do entorno |
+| `S` | carimbo de clonagem: `Alt+clique` na origem, depois pinte. Mostra sob o cursor o que vai ser copiado. Opções: copiar da imagem atual ou do **original**, escala, rotação, alinhado, modo de mescla (normal, escurecer, clarear, multiplicar, tela) |
+| `Shift+J` | pincel de recuperação: como o carimbo, mas a cor e a luz vêm do destino (mescla Poisson) |
+| `J` | pincel corretivo pontual: reconstrói o traço a partir do entorno |
+| `Y` | remendo: com a área ruim selecionada, arraste a seleção até uma área boa; a textura vem de lá, mesclada. Modo "destino" leva a seleção para lá |
+| `O` | pincel de retoque: desfocar, nitidez, borrar (dedo), clarear, escurecer, saturar, dessaturar |
+| `U` | formas: retângulo, elipse, linha (`Shift` deixa quadrado/círculo/reta), com preenchimento e contorno |
+| `Q` | pincel de seleção: pinte a seleção (`Alt` tira) |
+| | "Só a tinta" (nas ferramentas de seleção) reduz a seleção aos traços de texto/tinta dentro dela |
 | `T` | texto: clique na linha de base, digite e dê `Enter`. Ajustes: fonte do sistema ou da pasta `fontes/`, tamanho, espaçamento, largura, negrito, rotação, desfoque, suavização |
 | `R` | **substituir texto**: arraste sobre o texto antigo. O servidor estima posição, tamanho e cor, apaga o antigo com preenchimento inteligente e escreve o novo. 🎲 sorteia um valor plausível da categoria |
-| `V` | mover/duplicar a seleção. Arrastar move; o canto escala (`Shift` mantém a proporção, `Ctrl` faz perspectiva); fora do contorno gira |
+| `V` | com seleção: mover/duplicar. Arrastar move; o canto escala (`Shift` mantém a proporção, `Ctrl` faz perspectiva); fora do contorno gira. Sem seleção: move a **camada** ativa |
 | ⧉ | colar um trecho de **outro documento do mesmo split** (splicing) |
-| `Shift+F5` | preencher a seleção (preenchimento inteligente / PatchMatch) |
-| ◐ | ajustes na seleção: brilho/contraste, níveis, matiz/saturação, desfoque, nitidez, ruído, recompressão JPEG local, cinza |
+| `Shift+F5` | **preenchimento por similaridade** (PatchMatch), com prévia ao vivo. Escolha de onde amostrar (automático, documento inteiro ou faixa em px), tamanho do patch e 🎲 outra variação |
+| ◐ | ajustes na seleção: brilho/contraste, níveis, matiz/saturação, desfoque, nitidez, ruído, recompressão JPEG local, cinza e **igualar ruído ao papel** (deixa a área editada com o mesmo grão do entorno; testado: a razão de ruído dentro/fora fica em 1 ± 0,12) |
 | ▮▯ | código de barras ITF-25. 🎲 gera um código válido de arrecadação (contas, começa com 8) ou de boleto, junto com a linha digitável |
 | ▦ | QR code. 🎲 gera um PIX "copia e cola" válido (CRC conferido) |
 | 🤖 | edição por IA da seleção (ver abaixo) |
@@ -142,12 +171,31 @@ Selecione a área, clique em 🤖 e descreva a troca, por exemplo `Troque o text
 - O "Qwen-Image-2.1" foi descartado: a licença é só de pesquisa (não comercial) e há relatos de
   falta de memória editando com 8 GB. O 2.0 não tem pesos públicos.
 
-**Configuração para GPU de 8 GB:**
+**Configuração para GPU de 8 GB e pouca memória livre.** Medida nesta máquina: RTX 4060 8 GB, com
+2,5 GB de VRAM já ocupados por outros programas e ~6–10 GB de commit livre.
 
-- transformer em GGUF Q4_K_M (13,2 GB), executado bloco a bloco a partir da RAM;
-- LoRA Lightning de 4 passos;
-- encoder Qwen2.5-VL-7B em 4 bits (6,9 GB), que só vai para a GPU para ler o pedido. Os tensores
-  foram conferidos: é o mesmo encoder do Qwen-Image-Edit-2511.
+- **transformer:** GGUF Q4_K_M (13,2 GB) **mapeado do disco**, sem cópia. Cada um dos 60 blocos só
+  vai para a GPU durante o seu forward. Carregar gasta ~2,5 GB de commit, contra os 13,2 GB do
+  caminho padrão do diffusers, e leva 2 s.
+- **encoder:** Qwen2.5-VL-7B em 4 bits. Os tensores foram conferidos: é o mesmo encoder do
+  Qwen-Image-Edit-2511. Ele é lido do disco a cada pedido, com um leitor somente leitura (o
+  `safetensors` padrão reserva 6,9 GB de commit no Windows e falha com "arquivo de paginação muito
+  pequeno"). Embeddings e `lm_head` ficam na CPU, o resto vai para a GPU, e tudo é liberado logo
+  depois de ler o pedido.
+- **LoRA:** Lightning de 4 passos. **VAE:** na GPU, decodificando em blocos.
+
+**Medido numa edição real** (recorte ampliado para 1280×768):
+
+| Etapa | Tempo |
+|---|---|
+| ler o encoder do disco | 9–30 s (mais rápido quando o arquivo já está em cache) |
+| codificar o pedido | 6–11 s |
+| difusão | 83–90 s |
+| **total por edição** | **~1,5–2,5 min** |
+
+- Pico de VRAM: 5,9 GB. Commit livre durante a edição: ~6 GB.
+- O teste trocou "R$ 151,37" por "R$ 987,65" na mesma fonte e cor, sem mudar nenhum pixel fora da
+  seleção.
 
 **Instalação:** a IA roda numa venv própria, criada a partir do python que tem torch com CUDA (aqui
 é o miniconda):
@@ -157,23 +205,18 @@ C:\Users\netinhoklz\miniconda3\python.exe -m venv --system-site-packages .venv-i
 .venv-ia\Scripts\python.exe -m pip install -r requirements-ia.txt
 .venv-ia\Scripts\python.exe ia_servidor.py --baixar     # ~21 GB em HF_HOME (padrão: E:\hf_cache)
 .venv-ia\Scripts\python.exe ia_servidor.py              # deixe rodando; o rotulador detecta sozinho
+.venv-ia\Scripts\python.exe ia_servidor.py --teste      # opcional: troca um texto numa imagem e mede
 ```
 
-**Requisitos de memória:** cerca de **23 GB de memória livre (commit)**, ou seja, RAM mais arquivo de
-paginação. O servidor confere antes de carregar e recusa com uma mensagem clara em vez de travar
-a máquina. Alternativas:
+O servidor confere a memória antes de carregar (precisa de ~5 GB de commit livre) e recusa com uma
+mensagem clara em vez de travar a máquina.
 
-- `--quant Q3_K_M` reduz cerca de 3 GB;
-- `--sem-stream` fixa menos RAM, mas fica mais lento;
-- `--teste` carrega o modelo, troca um texto numa imagem sintética e mostra tempo e pico de memória.
+**Três problemas de bibliotecas foram contornados no código:**
 
-**Ainda não testado com o modelo carregado:** na máquina de desenvolvimento havia só ~6 GB de commit
-livre. Por isso a edição real (tempo e qualidade) ainda não rodou. O que já foi verificado:
-
-- o servidor sobe e o rotulador detecta;
-- a recusa por memória funciona;
-- a composição só dentro da seleção, testada com um modelo falso;
-- as importações e o bitsandbytes 4 bits em CUDA 11.8.
+- o `peft` do miniconda quebra com o transformers 5.5, por isso a venv própria tem `peft` novo;
+- o transformers 5 embrulha a torre visual em camada 4 bits apesar da lista de exclusão; o servidor
+  desfaz isso;
+- o leitor de GGUF do diffusers copia os 13 GB para a RAM; o servidor troca por um que mapeia.
 
 ## Testes
 
@@ -181,7 +224,7 @@ livre. Por isso a edição real (tempo e qualidade) ainda não rodou. O que já 
 .venv\Scripts\python.exe -m unittest discover -s tests -t .
 ```
 
-São 61 testes. Eles cobrem:
+São 81 testes. Eles cobrem:
 
 - **vazamento:** mesmo conteúdo em PNG e TIFF em splits diferentes, documento rotulado que mudou
   de split, doador de outro split, auditoria;
@@ -190,3 +233,21 @@ São 61 testes. Eles cobrem:
 - **códigos:** 20 códigos de barras gerados são decodificados de volta, o QR é lido pelo OpenCV,
   os DVs de CPF, CNPJ, arrecadação e boleto conferem;
 - **salvamento:** formatos de saída e rascunho que sobrevive à queda do servidor.
+- **camadas:** a de cima vence na máscara, ocultar tira dos rótulos, opacidade, excluir/mesclar/duplicar
+  com desfazer, a borracha revela a camada de baixo, mover camada, rascunho com camadas;
+- **ferramentas profissionais:** Poisson (identidade e cor do destino), carimbo com fonte original,
+  escala e rotação, recuperação, remendo, os 7 modos de retoque, formas, amostragens do
+  preenchimento, igualar ruído calibrado, seleção por tinta e por pincel.
+
+Também há testes de interface com Selenium + Edge em `tests_ui/`: 27 checks no fluxo geral
+(`ui_fluxo.py`) e 25 nas camadas e ferramentas novas (`ui_camadas.py`). Eles usam documentos
+sintéticos numa pasta de trabalho separada, nunca os seus `dados/`:
+
+```powershell
+.venv\Scripts\python.exe tests_ui\gerar_amostras.py C:\tmp\rot\dados
+.venv\Scripts\python.exe app.py --dados C:\tmp\rot\dados --saida C:\tmp\rot\saida_teste --porta 5077 --sem-navegador
+python tests_ui\ui_camadas.py C:\tmp\rot        # em outro terminal (precisa de selenium e do Edge)
+```
+
+`tests_ui/ia_ponta_a_ponta.py` faz uma edição real por IA através do rotulador. Precisa do servidor de
+IA rodando.
