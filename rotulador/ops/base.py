@@ -95,7 +95,10 @@ def recortar_selecao(alpha: np.ndarray, bbox, sel: Selecao) -> np.ndarray:
     """Limita ``alpha`` (da caixa ``bbox``) à seleção ativa, se houver."""
     if sel.vazia:
         return alpha
-    return alpha * alpha_selecao(sel, bbox)
+    alpha = alpha * alpha_selecao(sel, bbox)
+    if not (alpha > 0).any():
+        raise ErroOperacao("o traço ficou fora da seleção ativa (Ctrl+D tira a seleção)")
+    return alpha
 
 
 def alpha_selecao(sel: Selecao, bbox) -> np.ndarray:

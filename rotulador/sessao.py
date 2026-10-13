@@ -62,17 +62,28 @@ class Camada:
     visivel: bool = True
     opacidade: float = 1.0
     rgba: np.ndarray | None = None  # (H, W, 4) uint8
+    versao: int = 0  # sobe a cada mudança de pixels (cache das estatísticas e das miniaturas)
+    _cache: tuple | None = field(default=None, repr=False, compare=False)
+
+    def estatistica(self):
+        """(caixa, pixels) do conteúdo; recalculado só quando a camada muda."""
+        if self._cache is None or self._cache[0] != self.versao:
+            a = self.rgba[..., 3] > 0
+            linhas = np.flatnonzero(a.any(1))
+            if not len(linhas):
+                self._cache = (self.versao, None, 0)
+            else:
+                colunas = np.flatnonzero(a.any(0))
+                caixa = (int(linhas[0]), int(linhas[-1]) + 1, int(colunas[0]), int(colunas[-1]) + 1)
+                self._cache = (self.versao, caixa, int(a[caixa[0]:caixa[1], caixa[2]:caixa[3]].sum()))
+        return self._cache[1], self._cache[2]
 
     def props(self) -> dict:
         return {"id": self.id, "nome": self.nome, "categoria": self.categoria, "descricao": self.descricao,
                 "visivel": self.visivel, "opacidade": self.opacidade}
 
     def caixa(self):
-        a = self.rgba[..., 3] > 0
-        if not a.any():
-            return None
-        ys, xs = np.flatnonzero(a.any(1)), np.flatnonzero(a.any(0))
-        return int(ys[0]), int(ys[-1]) + 1, int(xs[0]), int(xs[-1]) + 1
+        return self.estatistica()[0]
 
 
 @dataclass
@@ -87,7 +98,9 @@ class Entrada:
     criado: str
 
     def resumo(self) -> dict:
-        px = sum(int((p[3] != p[4]).any(2).sum()) for p in self.passos if p[0] == "pixels")
+        if not hasattr(self, "_px"):
+            self._px = sum(int((p[3] != p[4]).any(2).sum()) for p in self.passos if p[0] == "pixels")
+        px = self._px
         return {"id": self.id, "rotulo": self.rotulo, "tipo": self.tipo, "pixels_alterados": px,
                 "criado": self.criado, **self.info}
 
@@ -137,6 +150,12 @@ class Sessao:
         self.atual[y0:y1, x0:x1] = np.clip(c + 0.5, 0, 255).astype(np.uint8)
 
     # ------------------------------------------------------------------ camadas
+    def _tocou(self, cid: str) -> None:
+        """Pixels da camada mudaram: vai para o rascunho e invalida o cache."""
+        self._sujas.add(cid)
+        if cid in self.camadas:
+            self.camadas[cid].versao += 1
+
     def _nova_camada(self, categoria: str | None, nome: str = "", descricao: str = "") -> Camada:
         if categoria is not None and categoria not in self.ids_categoria:
             raise ErroOperacao(f"categoria inválida: {categoria}")
@@ -144,7 +163,7 @@ class Sessao:
         cam = Camada(id=uuid.uuid4().hex[:8], nome=nome or f"{categoria or 'camada'} {n}", categoria=categoria,
                      descricao=descricao, rgba=np.zeros((self.H, self.W, 4), np.uint8))
         self.camadas[cam.id] = cam
-        self._sujas.add(cam.id)
+        self._tocou(cam.id)
         return cam
 
     def _estrutura(self) -> dict:
@@ -239,7 +258,7 @@ class Sessao:
                         dep = np.concatenate([np.clip(rgb + .5, 0, 255), np.clip(alfa * 255 + .5, 0, 255)], 2).astype(np.uint8)
                         passos_px.append(("pixels", baixo.id, bb, ab, dep))
                         baixo.rgba[y0:y1, x0:x1] = dep
-                        self._sujas.add(baixo.id)
+                        self._tocou(baixo.id)
                     self.ordem.remove(alvo.id)
                     self.ativa = baixo.id
                     rotulo = f"mesclar '{alvo.nome}' em '{baixo.nome}'"
@@ -324,11 +343,11 @@ class Sessao:
                     self._gravar_estado()
                 raise ErroOperacao("a operação não alterou nenhum pixel")
             cam.rgba[y0:y1, x0:x1] = depois
-            self._sujas.add(cam.id)
+            self._tocou(cam.id)
             passos_criacao = []
             if criou:
                 passos_criacao = self.historico_.pop().passos
-            ent = Entrada(uuid.uuid4().hex[:10], tipo, tipo,
+            ent = Entrada(uuid.uuid4().hex[:10], str(res.meta.get("rotulo") or tipo), tipo,
                           passos_criacao + [("pixels", cam.id, (y0, y1, x0, x1), antes, depois)],
                           {"camada": cam.id, "nome_camada": cam.nome, "categoria": cam.categoria,
                            "descricao": cam.descricao, "params": params, "meta": res.meta, "restaura": res.restaura,
@@ -361,7 +380,7 @@ class Sessao:
             if ny1 > ny0 and nx1 > nx0:
                 cam.rgba[ny0:ny1, nx0:nx1] = conteudo[ny0 - y0 - dy:ny1 - y0 - dy, nx0 - x0 - dx:nx1 - x0 - dx]
             depois = cam.rgba[uy0:uy1, ux0:ux1].copy()
-            self._sujas.add(cid)
+            self._tocou(cid)
             caixa = (uy0, uy1, ux0, ux1)
             ent = Entrada(uuid.uuid4().hex[:10], f"mover '{cam.nome}'", "mover_camada",
                           [("pixels", cid, caixa, antes, depois)],
@@ -388,7 +407,7 @@ class Sessao:
             if p[0] == "pixels":
                 _, cid, (y0, y1, x0, x1), antes, depois = p
                 self.camadas[cid].rgba[y0:y1, x0:x1] = antes if inverso else depois
-                self._sujas.add(cid)
+                self._tocou(cid)
                 bb = _bbox_uniao(bb, (y0, y1, x0, x1))
             else:
                 _, e_antes, e_depois = p
@@ -453,14 +472,53 @@ class Sessao:
             regiao |= alterados
             return alterados, regiao, classes
 
-    def categorias(self) -> list[str]:
-        _, regiao, classes = self.mascaras()
-        presentes = set(np.unique(classes[regiao]).tolist()) - {0}
+    def mapa_edicoes(self) -> tuple[np.ndarray, list[Entrada]]:
+        """(mapa, edições): por pixel, o número (1..n) da edição do histórico que aparece ali
+        (0 = nenhuma). Mesma regra da máscara de classes: vale a camada visível mais alta, e
+        dentro dela a última edição que mexeu no pixel. Conteúdo sem edição própria na camada
+        (veio de mesclar/duplicar) fica com a última edição que mexeu naquele pixel."""
+        with self.lock:
+            ents = [e for e in self.historico_ if e.tipo != "camada" and not e.info.get("restaura")]
+            final = np.zeros((self.H, self.W), np.uint16)
+            if not ents:
+                return final, ents
+
+            def pintar(mapa, n, passo):
+                _, _cid, (y0, y1, x0, x1), antes, depois = passo
+                mudou = (antes != depois).any(2)
+                mapa[y0:y1, x0:x1][mudou] = n
+
+            geral = np.zeros_like(final)
+            for n, e in enumerate(ents, 1):
+                for p in e.passos:
+                    if p[0] == "pixels":
+                        pintar(geral, n, p)
+            for cam in self.camadas_visiveis():  # de baixo para cima: a de cima sobrescreve
+                vis = cam.rgba[..., 3] > 0
+                if not vis.any():
+                    continue
+                mapa = np.zeros_like(final)
+                for n, e in enumerate(ents, 1):
+                    for p in e.passos:
+                        if p[0] == "pixels" and p[1] == cam.id:
+                            pintar(mapa, n, p)
+                final[vis] = np.where(mapa[vis] > 0, mapa[vis], geral[vis])
+            return final, ents
+
+    def categorias(self, exato: bool = False) -> list[str]:
+        """Categorias presentes. ``exato`` olha pixel a pixel (uma camada inteiramente coberta
+        por outra some); o modo rápido usa o cache das camadas visíveis não vazias."""
+        if exato:
+            _, regiao, classes = self.mascaras()
+            presentes = set(np.unique(classes[regiao]).tolist()) - {0}
+        else:
+            presentes = {self.ids_categoria[c.categoria] for c in self.camadas_visiveis()
+                         if c.categoria in self.ids_categoria and c.estatistica()[1] > 0}
         return [c for c, i in self.ids_categoria.items() if i in presentes]
 
     def pode_salvar(self) -> tuple[bool, str]:
         with self.lock:
-            vis = [c for c in self.camadas_visiveis() if (c.rgba[..., 3] > 0).any()]
+            vis = [c for c in self.camadas_visiveis() if c.estatistica()[1] > 0]
             if not vis:
                 return False, "nenhuma edição feita"
             sem = [c.nome for c in vis if c.categoria not in self.ids_categoria]
@@ -479,10 +537,9 @@ class Sessao:
         out = []
         for cid in reversed(self.ordem):  # de cima para baixo, como no painel
             c = self.camadas[cid]
-            bb = c.caixa()
-            out.append({**c.props(), "ativa": cid == self.ativa, "vazia": bb is None,
-                        "bbox": None if bb is None else [bb[2], bb[0], bb[3], bb[1]],
-                        "pixels": 0 if bb is None else int((c.rgba[..., 3] > 0).sum())})
+            bb, px = c.estatistica()
+            out.append({**c.props(), "ativa": cid == self.ativa, "vazia": bb is None, "versao": c.versao,
+                        "bbox": None if bb is None else [bb[2], bb[0], bb[3], bb[1]], "pixels": px})
         return out
 
     def estado(self) -> dict:

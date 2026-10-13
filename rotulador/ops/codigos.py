@@ -208,11 +208,13 @@ def qrcode(img: np.ndarray, p: dict, sel: Selecao, **_) -> Resultado:
     lado = min(y1 - y0, x1 - x0)
     if lado < n:
         raise ErroOperacao(f"seleção pequena demais para o QR ({n} módulos): use ao menos {n}x{n} px")
+    # pixels por módulo INTEIRO: com fator fracionário os módulos saem 4 e 5 px alternados e o leitor falha
+    px = lado // n
+    lado = px * n
     oy, ox = y0 + (y1 - y0 - lado) // 2, x0 + (x1 - x0 - lado) // 2
-    centros = ((np.arange(lado) + 0.5) * n / lado).astype(int)
-    modulo = matriz[np.ix_(centros, centros)].astype(np.float32)
+    modulo = np.kron(matriz, np.ones((px, px), bool)).astype(np.float32)
     alpha_sel = sel.alpha[oy - y0:oy - y0 + lado, ox - x0:ox - x0 + lado]
     antes = img[oy:oy + lado, ox:ox + lado]
     fundo = compor(antes, cor(p, "cor_fundo", (255, 255, 255)), alpha_sel)
     novo = compor(fundo, cor(p), modulo * alpha_sel)
-    return Resultado(oy, oy + lado, ox, ox + lado, novo, alpha_sel > 0, meta={"modulos": int(n)})
+    return Resultado(oy, oy + lado, ox, ox + lado, novo, alpha_sel > 0, meta={"modulos": int(n), "px_por_modulo": int(px)})

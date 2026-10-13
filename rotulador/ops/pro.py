@@ -1,8 +1,8 @@
 """Ferramentas de retoque profissionais.
 
 carimbo        clonagem com fonte (imagem atual ou ORIGINAL), escala, rotação e modo de mescla
-recuperacao    pincel de recuperação: textura da fonte, cor/iluminação do destino (Poisson)
-remendo        ferramenta Remendo: preenche a seleção com outra área, mesclada (Poisson)
+recuperacao    pincel de recuperação: textura da fonte, cor/iluminação do destino (mescla de membrana)
+remendo        ferramenta Remendo: preenche a seleção com outra área, mesclada (mescla de membrana)
 retoque        pincel de desfocar, nitidez, borrar, clarear, escurecer, saturar, dessaturar
 forma          retângulo, elipse ou linha (preenchimento e contorno)
 
@@ -17,7 +17,7 @@ import math
 import cv2
 import numpy as np
 
-from ..selecao import Selecao
+from ..selecao import Selecao, mascara_tinta
 from ..sessao import ErroOperacao, Resultado
 from .base import alpha_selecao, caixa, compor, cor, exigir_selecao, num, pontos, recortar_selecao, traco
 
@@ -29,21 +29,36 @@ MODOS_MESCLA = ("normal", "escurecer", "clarear", "multiplicar", "tela")
 # ---------------------------------------------------------------------------
 
 def poisson(destino: np.ndarray, fonte: np.ndarray, mascara: np.ndarray) -> np.ndarray:
-    """Mescla Poisson (gradientes da fonte, borda do destino) só dentro de ``mascara``."""
+    """Mescla "de membrana" (a solução de Poisson quando o guia é o gradiente da fonte): dentro de ``mascara`` fica a
+    fonte (textura, letras) com o tom corrigido pela diferença destino − fonte medida SÓ NO PAPEL da borda e espalhada
+    suavemente para dentro. O ``seamlessClone`` do OpenCV, que estava aqui, puxava para dentro a cor de tudo o que
+    cruzava a borda — tinta, fio de tabela — e deixava fantasma do texto apagado e manchas (o fio azul do valor virava
+    um borrão branco-alaranjado no pincel de recuperação: costura 4,3x o gradiente do papel na bateria de 12/10/2026)."""
     if not mascara.any():
         return destino.copy()
-    pad = 4
-    d = cv2.copyMakeBorder(cv2.cvtColor(destino, cv2.COLOR_RGB2BGR), pad, pad, pad, pad, cv2.BORDER_REFLECT)
-    f = cv2.copyMakeBorder(cv2.cvtColor(fonte, cv2.COLOR_RGB2BGR), pad, pad, pad, pad, cv2.BORDER_REFLECT)
-    # o seamlessClone mantém do destino a 1ª linha de pixels DENTRO da máscara (borda fixa):
-    # resolve numa máscara 2 px maior e só a área pedida é usada no fim
-    m = cv2.dilate(np.pad(mascara, pad).astype(np.uint8) * 255, np.ones((5, 5), np.uint8))
-    m[:2], m[-2:], m[:, :2], m[:, -2:] = 0, 0, 0, 0
-    x, y, w, h = cv2.boundingRect(m)
-    # o OpenCV centraliza a caixa da máscara em ``centro``: escolhido para cair no mesmo lugar
-    centro = (x + w // 2, y + h // 2)
-    out = cv2.seamlessClone(f, d, m, centro, cv2.NORMAL_CLONE)
-    out = cv2.cvtColor(out[pad:-pad, pad:-pad], cv2.COLOR_BGR2RGB)
+    D, F = destino.astype(np.float32), fonte.astype(np.float32)
+    anel = (cv2.dilate(mascara.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0) & ~mascara
+    tinta = cv2.dilate((mascara_tinta(destino) | mascara_tinta(fonte)).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    ok = anel & ~tinta
+    if ok.sum() < max(8, 0.2 * anel.sum()):  # quase nada de papel na borda: a borda inteira
+        ok = anel
+    if not ok.any():
+        return np.where(mascara[..., None], fonte, destino)
+    dif = D - F
+    v = ok.astype(np.float32)
+    corr = np.zeros_like(D)
+    falta = mascara.copy()
+    s, maximo = 1.5, 2.0 * max(mascara.shape)
+    while falta.any() and s <= maximo:  # a escala mais fina que alcança cada ponto (convolução normalizada)
+        den = cv2.GaussianBlur(v, (0, 0), s)
+        num = cv2.GaussianBlur(dif * v[..., None], (0, 0), s)
+        pega = falta & (den >= 0.05)
+        corr[pega] = num[pega] / den[pega][:, None]
+        falta &= ~pega
+        s *= 1.6
+    if falta.any():
+        corr[falta] = np.median(dif[ok], axis=0)
+    out = np.clip(F + corr + 0.5, 0, 255).astype(np.uint8)
     return np.where(mascara[..., None], out, destino)
 
 

@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gerador de fraudes · Rotulador UNIDOCK</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%232a62b8%22/%3E%3Cpath d=%22M4 4h8M4 8h5M4 12h7%22 stroke=%22white%22 stroke-width=%221.6%22/%3E%3C/svg%3E">
+<link rel="stylesheet" href="{{ url_for('static', filename='editor.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='gerador.css') }}">
+</head>
+<body class="pagina-gerador">
+<header id="topo">
+  <a class="voltar" href="/" title="Voltar ao editor">← Editor</a>
+  <h1 class="marca">Gerador automático <b>UNIDOCK</b></h1>
+  <nav id="abas" class="abas" aria-label="Partes do gerador">
+    <button type="button" data-aba="gerar" class="ativa">⚙ Gerar</button>
+    <button type="button" data-aba="catalogo">📚 Catálogo</button>
+    <button type="button" data-aba="revisar">✔ Revisar</button>
+    <button type="button" data-aba="metas">🎯 Metas</button>
+    <button type="button" data-aba="equipe">👥 Equipe</button>
+  </nav>
+  <button type="button" id="btn-quem" class="pilula" title="Seu nome (vai nas revisões e atribuições). Clique para trocar."></button>
+  <span id="lote-info" class="pilula" hidden></span>
+  <span id="ia-pill" class="pilula" title="Servidor de IA (técnicas generativas)">IA …</span>
+</header>
+
+<main id="aba-gerar" class="aba">
+  <section id="um-clique" class="um-clique" aria-labelledby="uc-titulo">
+    <div class="uc-cab">
+      <h2 id="uc-titulo">Gerar fraudes</h2>
+      <p class="dica">Cada versão é o documento original com o nome e o endereço trocados por outros, como um falsificador
+        caprichoso faria. Nada muda no original.</p>
+      <details class="uc-como">
+        <summary>Como funciona, passo a passo</summary>
+        <ol>
+          <li><b>Lê o documento.</b> O leitor de texto (OCR) acha nome, endereço, CPF, datas, valores… Na primeira vez leva
+            uns 15 s por documento; depois fica guardado.</li>
+          <li><b>Escolhe o que trocar.</b> Nome e endereço sempre; às vezes também o CPF, o CEP com bairro e cidade, as
+            datas ou o valor — e o mesmo dado muda igual em todo lugar onde aparece.</li>
+          <li><b>Inventa valores verossímeis.</b> Nomes e ruas reais (bases do IBGE e do TSE), CEP da cidade, datas que
+            andam juntas (vencimento, emissão e leitura), valor com o consumo proporcional.</li>
+          <li><b>Edita do jeito do estilo escolhido.</b> Sempre na mesma fonte do documento: o campo inteiro, só um pedaço
+            (o número da casa, o sobrenome) ou uma letra. Quem edita — uma pessoa num editor ou um perfeccionista — muda o
+            rastro que fica.</li>
+          <li><b>Confere.</b> Relê o campo editado com o OCR; se não lê o valor novo, desfaz e tenta outra técnica.</li>
+          <li><b>Salva com o gabarito.</b> A imagem, a máscara do que mudou (pixel a pixel), a classe e a técnica de cada
+            edição e uma anotação com tudo: quem editou, como, e se o texto ficou incoerente (CEP de outra cidade, datas
+            fora de ordem). O documento original nunca é alterado.</li>
+        </ol>
+      </details>
+    </div>
+    <div class="uc-escolhas">
+      <fieldset class="uc-campo">
+        <legend>Documentos</legend>
+        <div id="uc-splits" class="uc-chips"></div>
+        <button type="button" id="uc-escolher-docs" class="uc-link">escolher documentos…</button>
+      </fieldset>
+      <fieldset class="uc-campo">
+        <legend id="uc-var-rot">Versões por documento</legend>
+        <span class="stepper">
+          <button type="button" id="uc-menos" aria-label="uma versão a menos">−</button>
+          <input id="uc-variacoes" type="number" min="1" max="50" step="1" aria-labelledby="uc-var-rot">
+          <button type="button" id="uc-mais" aria-label="uma versão a mais">+</button>
+        </span>
+        <p class="dica">cada versão troca por valores diferentes</p>
+      </fieldset>
+      <fieldset class="uc-campo uc-oque">
+        <legend>O que mudar</legend>
+        <label class="uc-opcao"><input type="radio" name="uc-oque" value="extras">
+          <span><b>Nome e endereço</b> — às vezes também CPF, CEP, datas ou valores</span></label>
+        <label class="uc-opcao"><input type="radio" name="uc-oque" value="base"> <span><b>Só nome e endereço</b></span></label>
+        <label class="uc-opcao"><input type="radio" name="uc-oque" value="escolher"> <span><b>Escolher campos…</b></span></label>
+      </fieldset>
+    </div>
+    <div id="uc-campos" class="uc-campos" hidden></div>
+    <fieldset id="uc-estilos-f" class="uc-campo uc-estilos-f" hidden>
+      <legend>Estilo das fraudes <span class="dica">— quem edita e por onde o arquivo passa depois</span></legend>
+      <div id="uc-estilos" class="uc-estilos" role="radiogroup" aria-label="Estilo das fraudes"></div>
+      <div id="uc-estilo-det" class="uc-estilo-det" aria-live="polite"></div>
+    </fieldset>
+    <p class="uc-estilo"><span aria-hidden="true">✒</span> <b>Edições profissionais:</b> a mesma fonte do documento,
+      letras do próprio documento, trocar só um pedaço (número da casa, sobrenome, dia) — nada de retângulo ou rabisco.</p>
+    <details id="uc-detalhes" class="uc-detalhes"><summary>o que o gerador vai usar</summary><div id="uc-detalhes-corpo"></div></details>
+    <div class="uc-acoes">
+      <button type="button" id="uc-gerar" class="primario uc-gerar">▶ Gerar fraudes</button>
+      <button type="button" id="uc-exemplo-btn" class="grande">👁 Ver um exemplo</button>
+      <span id="uc-estimativa" class="dica"></span>
+      <span id="uc-falta" class="alerta" role="status"></span>
+    </div>
+    <section id="uc-exemplo" class="uc-painel" hidden aria-labelledby="uc-exemplo-titulo" aria-busy="false"></section>
+    <section id="uc-progresso" class="uc-painel" hidden aria-labelledby="uc-prog-titulo">
+      <h3 id="uc-prog-titulo"></h3>
+      <div class="barra" role="progressbar" aria-labelledby="uc-prog-titulo" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="barra-cheia" id="uc-barra"></div></div>
+      <p id="uc-prog-texto" aria-live="polite"></p>
+      <div id="uc-prog-acoes" class="linha"></div>
+      <details id="uc-erros" class="uc-erros" hidden><summary id="uc-erros-titulo">por quê?</summary><ul id="uc-erros-lista"></ul></details>
+      <div id="uc-galeria" class="uc-galeria" aria-label="versões prontas"></div>
+    </section>
+  </section>
+
+  <details id="opcoes-avancadas" class="opcoes-avancadas">
+    <summary>Opções avançadas <span class="dica">— a receita completa (🎯 Exato, ✨ Fácil, 🔧 Avançado), a prévia detalhada e o plano do lote</span></summary>
+  <div class="avancado-grade">
+  <section id="receita">
+    <div class="receita-rolagem">
+    <div class="modo-receita" id="modo-receita" role="tablist" aria-label="Jeito de montar a receita">
+      <button type="button" role="tab" data-modo="exato" title="Marque exatamente o que editar: só a original muda, na mesma fonte">🎯 Exato</button>
+      <button type="button" role="tab" data-modo="facil" title="Tipos de edição em linguagem simples">✨ Fácil</button>
+      <button type="button" role="tab" data-modo="avancado" title="Todas as técnicas, classes, pesos e acabamentos">🔧 Avançado</button>
+    </div>
+    <details class="bloco" id="bloco-docs" open>
+      <summary><span class="num">1</span> Documentos <span id="docs-resumo" class="resumo"></span></summary>
+      <div class="linha" id="docs-splits"></div>
+      <div class="linha">
+        <span class="dica">Selecionar:</span>
+        <button type="button" id="docs-todos">todos</button>
+        <button type="button" id="docs-nenhum">nenhum</button>
+        <button type="button" id="docs-pendentes" title="Só os que ainda não têm nenhuma versão salva">pendentes</button>
+        <button type="button" id="docs-inverter">inverter</button>
+        <input id="docs-busca" type="search" placeholder="filtrar por nome…">
+      </div>
+      <ul id="docs-lista" class="lista-docs"></ul>
+      <p class="dica">Cada documento é salvo no PRÓPRIO split; letras e campos colados vêm só de documentos do mesmo split.</p>
+    </details>
+
+    <details class="bloco" id="bloco-exato" open hidden>
+      <summary><span class="num">2</span> O que editar <span id="exato-resumo" class="resumo"></span></summary>
+      <p class="dica">Em cada documento, <b>todos</b> os campos marcados que o leitor achar são trocados por valores falsos,
+        escritos na <b>mesma fonte</b> do documento (identificada entre as 10 mais usadas em documentos). O mesmo nome e o
+        mesmo endereço novos em todo lugar onde eles se repetem. A imagem salva é a <b>original com essas edições, e nada
+        mais</b>: sem foto, scanner, carimbo ou recompressão.</p>
+      <div class="presets" id="exato-presets"></div>
+      <div id="exato-classes" class="exato-grupos"></div>
+      <label class="exato-sub"><input type="checkbox" id="exato-subconjuntos">
+        <span>Variar quais classes entram em cada versão (às vezes só o nome, às vezes só o endereço)
+          <span class="dica">— cada versão sorteia quais das classes marcadas troca, sem repetir a escolha entre as versões
+          do mesmo documento; desmarcado, toda versão troca todas</span></span></label>
+      <div class="q-linha"><label for="exato-variacoes" class="q-rot">Versões por documento</label>
+        <input id="exato-variacoes" type="number" min="1" max="50" step="1">
+        <span class="dica">cada versão troca os campos por outros valores</span></div>
+    </details>
+    <details class="bloco" id="bloco-tipos" open hidden>
+      <summary><span class="num">2</span> Tipos de edição — o <b>quê</b> + o <b>como</b> <span id="tipos-resumo" class="resumo"></span></summary>
+      <p class="dica">Cada tipo diz o que adulterar e de que jeito. O gerador sorteia, em cada imagem, entre os tipos ligados
+        — os marcados com <b>muito</b> aparecem mais.</p>
+      <div id="tipos-ideias" class="ideias"></div>
+      <div id="tipos-lista" class="tipos"></div>
+      <button type="button" id="tipo-novo" class="novo-tipo">＋ Criar tipo de edição</button>
+    </details>
+    <details class="bloco" id="bloco-quanto" open hidden>
+      <summary><span class="num">3</span> Quanto gerar</summary>
+      <div id="quanto" class="quanto"></div>
+    </details>
+    <details class="bloco" id="bloco-canal" open hidden>
+      <summary><span class="num">4</span> Como o documento chega a quem confere <span id="canal-resumo" class="resumo"></span></summary>
+      <div id="canal-cartoes" class="grade-escolha canais"></div>
+      <div id="canal-extra" class="linha"></div>
+    </details>
+    <details class="bloco" id="bloco-quem" open hidden>
+      <summary><span class="num">5</span> Quem falsifica <span id="quem-resumo" class="resumo"></span></summary>
+      <p class="dica">Cada versão é feita como <b>uma pessoa</b> faria: a ferramenta dela (com os hábitos dela: a mesma fonte,
+        o mesmo retângulo, o mesmo retoque), um <b>motivo</b> que escolhe campos que combinam (outro titular = nome e, às vezes,
+        CPF) com valores combinados (conta recente = data dentro de 90 dias), e o caminho do documento depois.
+        Baseado no que se mediu de falsificadores de verdade (docs/falsificadores.md).</p>
+      <div class="q-linha"><span class="q-rot" id="quem-prob-rot">Versões feitas assim</span>
+        <input id="quem-prob" type="range" min="0" max="100" step="10" aria-labelledby="quem-prob-rot"><span id="quem-prob-txt"></span>
+        <span class="dica">o resto sai do sorteio clássico (edições independentes, uniformes)</span></div>
+      <div id="quem-cartoes" class="grade-escolha"></div>
+      <div class="grupo-cab">Motivos</div>
+      <div id="quem-motivos" class="motivos"></div>
+    </details>
+
+    <div id="aviso-tipos" class="aviso-tipos" role="note" hidden>
+      <p><b id="aviso-tipos-txt"></b> As opções ⚙ de cada técnica continuam valendo; o resto desta lista fica só para ver.</p>
+      <button type="button" id="aviso-tipos-desligar">Usar estas técnicas e classes no lugar dos tipos</button>
+    </div>
+    <details class="bloco" id="bloco-tec" open>
+      <summary><span class="num">2</span> Técnicas — o <b>como</b> <span id="tec-resumo" class="resumo"></span></summary>
+      <div class="presets" id="tec-presets"></div>
+      <div id="tec-familias"></div>
+    </details>
+
+    <details class="bloco" id="bloco-cat" open>
+      <summary><span class="num">3</span> Classes — o <b>quê</b> <span id="cat-resumo" class="resumo"></span></summary>
+      <div class="presets" id="cat-presets"></div>
+      <div id="cat-lista" class="grade-cat"></div>
+      <p class="dica">O peso diz quanto cada classe aparece. A classe vai para a máscara de classes; a técnica, para a máscara de técnicas.</p>
+    </details>
+
+    <details class="bloco" id="bloco-qtd" open>
+      <summary><span class="num">4</span> Quantidade e acabamento</summary>
+      <div class="form-qtd" id="qtd"></div>
+    </details>
+    </div>
+
+    <div class="acoes-receita">
+      <div id="estimativa" class="estimativa"></div>
+      <div class="linha">
+        <label>Prévia em <select id="previa-doc"></select></label>
+        <button type="button" id="btn-previa" title="Roda a receita num documento sem salvar nada">👁 Prévia</button>
+      </div>
+      <div class="linha">
+        <button type="button" id="btn-gerar" class="primario grande">▶ Gerar</button>
+        <button type="button" id="btn-parar" class="perigo" disabled>■ Parar</button>
+        <button type="button" id="btn-exportar-receita" title="Baixar a receita (JSON)">⤓ receita</button>
+        <label class="arquivo" title="Carregar uma receita salva (JSON)">⤒ importar <input id="importar-receita" type="file" accept=".json,application/json" hidden></label>
+      </div>
+    </div>
+  </section>
+
+  <section id="resultado" class="coluna larga">
+    <div id="painel-previa" class="cartao">
+      <h2>Prévia <span id="previa-titulo" class="dica">— escolha as técnicas e clique em 👁 Prévia (nada é salvo)</span>
+        <span class="acoes" id="previa-modos" hidden>
+          <button type="button" data-modo="editada" class="ativa">Editada</button>
+          <button type="button" data-modo="original">Original</button>
+          <button type="button" data-modo="mascara_tecnicas">Máscara de técnicas</button>
+          <button type="button" data-modo="canal_editada" class="so-canal" hidden title="o par depois do canal de envio sorteado">Editada pelo canal</button>
+          <button type="button" data-modo="canal_original" class="so-canal" hidden>Original pelo canal</button>
+        </span>
+      </h2>
+      <div id="previa-corpo" class="previa-corpo">
+        <div class="tela-previa" id="tela-previa" hidden><img id="previa-img" alt="prévia"><div id="previa-caixas"></div></div>
+        <div id="previa-lista" class="lista-edicoes"></div>
+      </div>
+    </div>
+    <div id="painel-plano" class="cartao">
+      <h2>Plano do lote <span class="dica">— o que esta receita gera; os exemplos são versões reais já geradas</span></h2>
+      <div id="plano-corpo"></div>
+    </div>
+    <div id="painel-progresso" class="cartao" hidden>
+      <h2>Geração <span id="prog-titulo" class="dica"></span></h2>
+      <div class="barra"><div class="barra-cheia" id="prog-barra"></div></div>
+      <p id="prog-texto" class="dica"></p>
+      <div id="prog-tecnicas" class="barras-tec"></div>
+      <div id="prog-recentes" class="recentes"></div>
+      <details id="prog-erros-box" hidden><summary>Erros</summary><ul id="prog-erros" class="erros"></ul></details>
+    </div>
+
+  </section>
+  </div>
+  </details>
+</main>
+
+<main id="aba-catalogo" class="aba" hidden>
+  <section class="coluna larga catalogo">
+    <div id="cat-cartoes" class="cartoes"></div>
+    <details class="cartao" id="cat-matriz-box" open>
+      <summary><b>Técnica × classe</b> <span class="dica">(clique numa célula para filtrar)</span></summary>
+      <div id="cat-matriz" class="matriz"></div>
+    </details>
+    <div class="filtros" id="cat-filtros"></div>
+    <div id="cat-exportacao" class="dica"></div>
+    <div id="cat-lote" class="barra-lote"></div>
+    <div id="cat-galeria" class="galeria"></div>
+    <div id="cat-paginas" class="paginas"></div>
+  </section>
+</main>
+
+<main id="aba-revisar" class="aba aba-revisar" hidden></main>
+<main id="aba-metas" class="aba" hidden></main>
+<main id="aba-equipe" class="aba" hidden></main>
+
+<dialog id="detalhe">
+  <form method="dialog">
+    <h3 id="det-titulo"></h3>
+    <div class="det-modos" id="det-modos"></div>
+    <div class="det-corpo">
+      <div class="det-imagem"><img id="det-img" alt=""><div id="det-caixas"></div></div>
+      <div id="det-lista" class="lista-edicoes"></div>
+    </div>
+    <div class="modal-acoes">
+      <span id="det-selo"></span>
+      <button type="button" id="det-aprovar">✔ Aprovar</button>
+      <button type="button" id="det-reprovar">✖ Reprovar…</button>
+      <button type="button" id="det-excluir" class="perigo">🗑 Excluir esta versão</button>
+      <button value="fechar">Fechar</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="avisos" role="status"></div>
+<script type="module" src="{{ url_for('static', filename='gerador.js') }}"></script>
+</body>
+</html>

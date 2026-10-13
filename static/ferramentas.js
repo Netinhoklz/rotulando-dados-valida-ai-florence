@@ -331,21 +331,23 @@ export function criarFerramentas(app) {
       },
       async up() {
         if (!this._pts) return;
-        const pts = this._pts.map((q) => [q.x, q.y]);
-        const params = { ...op(id), pontos: pts, ...(extra.params ? extra.params(this._pts) : {}) };
-        if (extra.cor) params.cor = app.corFrente;
-        await app.aplicar(tipo, params, { semCategoria: tipo === "borracha" });
-        this._pts = null;
-        app.visor.redesenhar();
+        const traco = { pts: this._pts, cor: app.corFrente, tamanho: op(id).tamanho };
+        this._pts = null;  // um novo traço pode começar enquanto este espera o servidor
+        const params = { ...op(id), pontos: traco.pts.map((q) => [q.x, q.y]), ...(extra.params ? extra.params(traco.pts) : {}) };
+        if (extra.cor) params.cor = traco.cor;
+        (this._pendentes ||= []).push(traco);
+        try { await app.aplicar(tipo, params, { semCategoria: tipo === "borracha" }); }
+        finally { this._pendentes = this._pendentes.filter((t) => t !== traco); app.visor.redesenhar(); }
       },
       desenhar(ctx, v) {
         const o = op(id);
-        if (this._pts) {
+        const tracos = [...(this._pendentes || []), ...(this._pts ? [{ pts: this._pts, cor: app.corFrente, tamanho: o.tamanho }] : [])];
+        for (const t of tracos) {  // pendentes continuam visíveis até o servidor devolver o resultado
           ctx.save();
           ctx.globalAlpha = 0.55; ctx.lineCap = "round"; ctx.lineJoin = "round";
-          ctx.strokeStyle = extra.cor ? app.corFrente : (tipo === "borracha" ? "#ff4fa0" : "#4fc3ff");
-          ctx.lineWidth = Math.max(1, o.tamanho * v.escala);
-          tracarTela(ctx, v, this._pts.length === 1 ? [this._pts[0], this._pts[0]] : this._pts);
+          ctx.strokeStyle = extra.cor ? t.cor : (tipo === "borracha" ? "#ff4fa0" : "#4fc3ff");
+          ctx.lineWidth = Math.max(1, t.tamanho * v.escala);
+          tracarTela(ctx, v, t.pts.length === 1 ? [t.pts[0], t.pts[0]] : t.pts);
           ctx.stroke(); ctx.restore();
         }
         circuloCursor(ctx, v, this._mouse, o.tamanho);
@@ -452,7 +454,10 @@ export function criarFerramentas(app) {
   function ferramentaTexto(id, tipo, nome, icone, atalho, extraCampos, extra = {}) {
     const t = {
       nome, icone, atalho, cursor: "text", campos: [...camposTexto, ...extraCampos],
-      botoes: [...(extra.botoes || []), { rotulo: "Aplicar (Enter)", primario: true, acao: () => t.aplicar() }, { rotulo: "Cancelar (Esc)", acao: () => t.cancelar() }],
+      botoes: [...(extra.botoes || []),
+        { rotulo: "🔍 Qual é a fonte?", titulo: "Compara o texto selecionado com todas as fontes instaladas e mostra as mais parecidas",
+          acao: () => app.identificarFonte() },
+        { rotulo: "Aplicar (Enter)", primario: true, acao: () => t.aplicar() }, { rotulo: "Cancelar (Esc)", acao: () => t.cancelar() }],
       ancora: null,
       params() {
         const o = op(id);

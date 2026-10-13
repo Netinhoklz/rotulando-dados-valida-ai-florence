@@ -161,7 +161,7 @@ def _forma(forma: dict, img: np.ndarray) -> np.ndarray:
         if contigua:
             flood = np.zeros((H + 2, W + 2), np.uint8)
             flags = 4 | cv2.FLOODFILL_FIXED_RANGE | cv2.FLOODFILL_MASK_ONLY | (1 << 8)
-            cv2.floodFill(np.ascontiguousarray(img), flood, (x, y), 0, (tol,) * 3, (tol,) * 3, flags)
+            cv2.floodFill(img.copy(), flood, (x, y), 0, (tol,) * 3, (tol,) * 3, flags)
             return flood[1:-1, 1:-1].astype(bool)
         semente = img[y, x].astype(np.int16)
         return (np.abs(img.astype(np.int16) - semente) <= tol).all(axis=2)
@@ -197,10 +197,19 @@ def _forma(forma: dict, img: np.ndarray) -> np.ndarray:
 
 
 def mascara_tinta(rec: np.ndarray) -> np.ndarray:
-    """Pixels de tinta (texto, linhas) num recorte: longe da cor do papel (Otsu)."""
+    """Pixels de tinta (texto, linhas) num recorte: longe da cor do papel (Otsu).
+
+    O papel é a cor MAIS FREQUENTE da borda do recorte (não a mediana): numa célula de boleto o fio da
+    tabela ocupa um lado inteiro da borda, a mediana caía no meio do caminho entre o fio e o papel e o
+    recorte todo virava "tinta"."""
     f = rec.astype(np.float32)
     borda = np.concatenate([f[0], f[-1], f[:, 0], f[:, -1]])
-    fundo = np.median(borda, axis=0)
+    lum = borda @ np.float32([0.299, 0.587, 0.114])
+    hist = np.bincount(np.clip(lum // 16, 0, 15).astype(np.int64), minlength=16)
+    # empate (fio da tabela num lado, papel no outro): fica a mais clara das cores frequentes, o papel
+    centro = 16 * int(np.flatnonzero(hist >= 0.5 * hist.max())[-1]) + 8
+    perto = np.abs(lum - centro) <= 24
+    fundo = np.median(borda[perto] if perto.any() else borda, axis=0)
     d = np.abs(f - fundo).max(axis=2)
     u8 = np.clip(d, 0, 255).astype(np.uint8)
     otsu, _ = cv2.threshold(u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
