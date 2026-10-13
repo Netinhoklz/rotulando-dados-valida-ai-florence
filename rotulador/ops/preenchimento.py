@@ -16,6 +16,11 @@ parecidos do entorno:
      (mean-shift), o que mantém a textura nítida em vez de borrada.
 3. A última votação de cada nível já escreve no nível seguinte usando os pixels
    da resolução fina, e as correspondências sobem junto como ponto de partida.
+4. Grão: a votação mistura dezenas de patches por pixel e a média apaga o grão do
+   papel (medido: 0,28 do grão em volta numa seleção do formato das letras, 0,8 num
+   retângulo — uma mancha lisa com a forma do texto apagado). No fim, o tom e a forma
+   ficam os da votação e o detalhe fino (passa-alta) vem do pixel central do patch
+   escolhido para cada pixel, copiado sem média, como o papel de verdade.
 
 Tudo é vetorizado em numpy, sem nenhuma outra dependência.
 """
@@ -104,6 +109,33 @@ def _reduzir(img: np.ndarray, buraco: np.ndarray):
     num = _filtrar_pares(_filtrar_pares(img, 0), 1)
     den = _filtrar_pares(_filtrar_pares(k, 0), 1)
     return num / np.maximum(den, 1e-6)[..., None], den == 0
+
+
+def _suavizar(img: np.ndarray, passes: int = 2) -> np.ndarray:
+    """Passa-baixa binomial [1 2 1]/4 separável, ``passes`` vezes (σ ≈ 0,7·√passes px), borda replicada."""
+    out = img.astype(np.float32)
+    for _ in range(passes):
+        for eixo in (0, 1):
+            a = np.concatenate([np.take(out, [0], eixo), out, np.take(out, [-1], eixo)], eixo)
+            n = out.shape[eixo]
+            out = (np.take(a, range(0, n), eixo) + 2 * np.take(a, range(1, n + 1), eixo)
+                   + np.take(a, range(2, n + 2), eixo)) / 4.0
+    return out
+
+
+def _com_grao(nv: "_Nivel", s: np.ndarray, votado: np.ndarray) -> np.ndarray:
+    """O buraco com o tom/forma da votação e o grão (passa-alta) do pixel central do patch escolhido para cada
+    pixel do buraco (sem média). Pixel sem patch próprio (borda do recorte) fica com a votação."""
+    q = np.flatnonzero(nv.buraco.ravel())
+    qy, qx = np.divmod(q, nv.W)
+    k = nv.idx_alvo[(qy + nv.r) * nv.Wm + qx + nv.r]
+    ok = k >= 0
+    copia = votado.copy()
+    copia.reshape(-1, 3)[q[ok]] = votado.reshape(-1, 3)[s[k[ok]]]  # a origem é conhecida: o pixel do papel
+    detalhe = copia - _suavizar(copia)
+    out = votado.copy()
+    out[nv.buraco] = _suavizar(votado)[nv.buraco] + detalhe[nv.buraco]
+    return out
 
 
 def _preencher_suave(img: np.ndarray, buraco: np.ndarray) -> np.ndarray:
@@ -288,6 +320,7 @@ def preencher(
     margem: int | None = -1,
     expandir: int = 0,
     semente: int = 0,
+    grao: bool = True,
 ) -> np.ndarray:
     """Preenche a região ``mascara`` de ``imagem`` com conteúdo parecido do entorno.
 
@@ -298,6 +331,7 @@ def preencher(
                    -1 = automática (proporcional à seleção); None = imagem inteira.
     expandir       dilata a seleção antes (pega o contorno/halo do objeto).
     semente        muda a sorte da busca aleatória: outra semente, outra variação.
+    grao           devolve o grão do papel no buraco (ver item 4 acima); False = a votação pura, lisa.
     """
     imagem = np.asarray(imagem)
     if imagem.ndim != 3 or imagem.shape[2] != 3:
@@ -368,7 +402,7 @@ def preencher(
                 fino.img[fino.buraco] = subido[fino.buraco]
                 res.votar(s, D, fino=fino)
                 s = _subir_correspondencias(nv, s, fino, rng)
-        final = niveis[0].img
+        final = _com_grao(niveis[0], s, niveis[0].img) if grao else niveis[0].img
 
     saida[y0:y1, x0:x1][buraco] = np.clip(final[buraco] + 0.5, 0, 255).astype(np.uint8)
     return saida

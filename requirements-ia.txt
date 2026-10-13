@@ -2,7 +2,8 @@
 #   <python-com-cuda> -m venv --system-site-packages .venv-ia
 #   .venv-ia\Scripts\python.exe -m pip install -r requirements-ia.txt
 # Precisa já existir no python base: torch (CUDA), transformers>=5, accelerate, flask, pillow.
-diffusers>=0.40
+# QwenImage21Pipeline (Qwen-Image-2.1) só existe no main do diffusers (testado no commit 578c9b2)
+diffusers @ git+https://github.com/huggingface/diffusers.git@578c9b2c6636ab2424a0e56186268b83623656b2
 peft>=0.21
 gguf>=0.19
 bitsandbytes>=0.50

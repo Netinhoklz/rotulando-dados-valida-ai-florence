@@ -118,6 +118,9 @@ def shot(n):
 
 
 d.get(URL)
+# este teste usa o editor completo: entra direto no modo avançado, tutorial já visto
+d.execute_script("localStorage.setItem('rotulador.modoSimples','false');localStorage.setItem('rotulador.tutorialVisto','true');localStorage.setItem('rotulador.operador', JSON.stringify('Teste UI'))")
+d.get(URL)
 espera("window.rotulador && window.rotulador.sessao && document.getElementById('vazio').hidden")
 d.find_element(By.CSS_SELECTOR, '[data-sp="treino"]').click()
 ocioso()
@@ -252,6 +255,9 @@ shot("04_final")
 # 13) salvar: JSON lista camadas
 d.find_element(By.ID, "btn-salvar").click()
 ocioso()
+t0 = time.time()  # o salvamento termina depois do "ocioso" (gravação assíncrona): espera a anotação aparecer
+while time.time() - t0 < 15 and not list((SAIDA / "treino" / "anotacoes").glob("*.json")):
+    time.sleep(0.3)
 anot = sorted((SAIDA / "treino" / "anotacoes").glob("*.json"))
 a = json.loads(anot[-1].read_text(encoding="utf-8")) if anot else {}
 checa(len(a.get("camadas", [])) >= 4, f"JSON salvo lista as camadas ({len(a.get('camadas', []))})")

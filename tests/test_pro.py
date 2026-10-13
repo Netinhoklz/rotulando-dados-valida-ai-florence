@@ -138,6 +138,41 @@ class TestFerramentasPro(Base):
         self.assertAlmostEqual(dentro / fora, 1.0, delta=0.12)
 
 
+class TestMensagens(Base):
+    def test_traco_fora_da_selecao_explica(self):
+        with self.assertRaises(ErroOperacao) as cm:
+            self.aplicar("pincel", {"pontos": [[200, 380]], "tamanho": 10, "cor": "#ff0000"}, ret(10, 10, 50, 50))
+        self.assertIn("fora da seleção", str(cm.exception))
+
+    def test_igualar_ruido_sem_diferenca_explica(self):
+        rng = np.random.default_rng(1)
+        papel = np.clip(200 + rng.normal(0, 6, (200, 200, 1)), 0, 255).repeat(3, 2).astype(np.uint8)
+        self.s = Sessao(self.item, papel, self.tmp / "rasc3", IDS)
+        with self.assertRaises(ErroOperacao) as cm:
+            self.aplicar("ajuste", {"ajuste": "igualar_ruido"}, ret(60, 60, 140, 140))
+        self.assertIn("já é igual", str(cm.exception))
+
+    def test_igualar_ruido_dentro_de_area_editada(self):
+        """Regressão: selecionar DENTRO de um retângulo liso desenhado media a própria edição
+        (anel de referência na imagem editada) e não acrescentava nada."""
+        rng = np.random.default_rng(2)
+        papel = np.clip(180 + rng.normal(0, 5, (300, 300, 1)), 0, 255).repeat(3, 2).astype(np.uint8)
+        self.s = Sessao(self.item, papel, self.tmp / "rasc4", IDS)
+        self.aplicar("forma", {"tipo": "ret", "x0": 60, "y0": 60, "x1": 240, "y1": 240, "cor": "#808080",
+                               "preencher": True, "espessura": 0})
+        self.aplicar("ajuste", {"ajuste": "igualar_ruido", "semente": 4}, ret(80, 80, 220, 220))
+        f = self.s.atual.astype(np.float32)
+        res = f - cv2.medianBlur(self.s.atual, 3).astype(np.float32)
+        papel_res = papel.astype(np.float32) - cv2.medianBlur(papel, 3).astype(np.float32)
+        self.assertAlmostEqual(res[100:200, 100:200].std() / papel_res[10:50, 10:290].std(), 1.0, delta=0.15)
+
+    def test_qr_com_modulos_inteiros(self):
+        res = executar("qrcode", self.s.atual, {"conteudo": "teste " * 20, "borda": 2},
+                       selecao.rasterizar(ret(10, 100, 307, 397), self.s.atual))
+        px, n = res.meta["px_por_modulo"], res.meta["modulos"]
+        self.assertEqual(res.recorte.shape[0], px * n)  # lado exatamente múltiplo do módulo
+
+
 class TestSelecaoNova(unittest.TestCase):
     def test_tinta_pega_so_o_texto(self):
         img = conta(2)

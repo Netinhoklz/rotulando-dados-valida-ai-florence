@@ -118,7 +118,8 @@ class TestCamadas(unittest.TestCase):
         editada = self.s.atual.copy()
         nova = self.nova()
         np.testing.assert_array_equal(nova.atual, editada)
-        self.assertEqual(nova.lista_camadas(), self.s.lista_camadas())
+        sem_versao = lambda cams: [{k: v for k, v in c.items() if k != "versao"} for c in cams]  # contador de cache
+        self.assertEqual(sem_versao(nova.lista_camadas()), sem_versao(self.s.lista_camadas()))
         self.assertEqual(len(nova.historico_), 4)
         while nova.desfazer():
             pass

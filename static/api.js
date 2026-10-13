@@ -1,21 +1,31 @@
 // Chamadas ao servidor. Todo pixel que vira dado é calculado lá; aqui só se exibe.
+import { nomeOperador } from "./operador.js";
 
 export class ErroApi extends Error {}
 
 async function tratar(r) {
   let dados = null;
   try { dados = await r.json(); } catch { /* resposta sem JSON */ }
-  if (!r.ok) throw new ErroApi((dados && dados.erro) || `erro ${r.status}`);
+  if (!r.ok) {
+    const e = new ErroApi((dados && dados.erro) || `erro ${r.status}`);
+    e.status = r.status;
+    e.dados = dados;  // 409: dados.travado_por diz quem está editando o documento
+    if (r.status === 409 && dados?.travado_por) window.dispatchEvent(new CustomEvent("trava", { detail: dados.travado_por }));
+    throw e;
+  }
   return dados;
 }
 
+// quem está usando vai em toda chamada (travas, atribuições, revisões)
+const cabecalho = () => ({ "X-Operador": encodeURIComponent(nomeOperador()) });
+
 export async function get(rota) {
-  return tratar(await fetch(rota, { cache: "no-store" }));
+  return tratar(await fetch(rota, { cache: "no-store", headers: cabecalho() }));
 }
 
 export async function post(rota, corpo) {
   return tratar(await fetch(rota, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo ?? {}),
+    method: "POST", headers: { "Content-Type": "application/json", ...cabecalho() }, body: JSON.stringify(corpo ?? {}),
   }));
 }
 

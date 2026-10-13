@@ -10,4 +10,6 @@ __pycache__/
 dados/*/*
 !dados/*/.gitkeep
 saida/
-teste_ia_saida.png
+teste_ia_saida*.png
+# modelos do OCR, baixados do Hugging Face na primeira leitura (rotulador/ocr.py)
+modelos/

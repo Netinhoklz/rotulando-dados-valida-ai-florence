@@ -1,11 +1,14 @@
 // Editor principal: estado, eventos, painéis e diálogos.
 import { bitmap, bitmapUrl, get, post } from "./api.js";
 import { criarFerramentas, ORDEM } from "./ferramentas.js";
+import { definirOperador, exigirOperador, nomeOperador, notificar } from "./operador.js";
+import { instalarSimples } from "./simples.js";
 import { Visor } from "./visor.js";
 
 const $ = (id) => document.getElementById(id);
 const SPLITS = [["treino", "Treino"], ["teste", "Teste"], ["validacao", "Validação"]];
-const LENTAS = new Set(["preencher", "corretivo", "substituir_texto", "transformar", "ia", "recuperacao", "remendo"]);
+const LENTAS = new Set(["preencher", "corretivo", "substituir_texto", "transformar", "ia", "recuperacao", "remendo",
+  "trocar_campo_ia"]);
 const AJUSTES = {
   brilho_contraste: ["Brilho/contraste", [["brilho", -100, 100, 1, 0], ["contraste", -100, 100, 1, 0]]],
   niveis: ["Níveis", [["preto", 0, 254, 1, 0], ["branco", 1, 255, 1, 255], ["gama", 0.1, 5, 0.05, 1]]],
@@ -27,7 +30,7 @@ function el(tag, props = {}, ...filhos) {
   for (const [k, v] of Object.entries(props)) {
     if (k === "class") e.className = v;
     else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
-    else if (k in e && typeof v !== "string") e[k] = v;
+    else if (k === "innerHTML" || k === "textContent" || (k in e && typeof v !== "string")) e[k] = v;
     else e.setAttribute(k, v);
   }
   for (const f of filhos.flat()) if (f !== null && f !== undefined) e.append(f);
@@ -53,10 +56,45 @@ app.aviso = (msg, tipo = "") => {
   setTimeout(() => a.remove(), tipo === "erro" ? 9000 : 5000);
 };
 app.status = (msg) => { $("st-msg").textContent = msg; };
+let vigiaIA = null;
 function ocupar(msg) {
   app.ocupado = !!msg;
   $("ocupado").hidden = !msg;
   if (msg) $("ocupado-msg").textContent = msg;
+  clearTimeout(vigiaIA);
+  $("ocupado-ia").textContent = "";
+  $("ocupado-cancelar").hidden = true;
+  if (msg) vigiaIA = setTimeout(acompanharIA, 2000);  // operação longa: pode ser a IA
+}
+// enquanto a página espera, pergunta à IA em que pé está (etapa, passo da difusão, tempo que falta)
+async function acompanharIA() {
+  if (!app.ocupado) return;
+  try {
+    const p = await get("/api/ia/progresso");
+    if (app.ocupado && p.ocupado) {
+      const etapa = p.etapa === "difusão" && p.passos ? `difusão, passo ${p.passo} de ${p.passos}` : (p.etapa || "trabalhando");
+      const resta = p.restante_s ? ` · faltam ~${p.restante_s < 90 ? `${Math.round(p.restante_s)} s` : `${Math.ceil(p.restante_s / 60)} min`}` : "";
+      $("ocupado-ia").textContent = `IA: ${etapa}${p.segundos ? ` · ${Math.round(p.segundos)} s` : ""}${resta}${p.cancelando ? " · cancelando…" : ""}`;
+      $("ocupado-cancelar").hidden = Boolean(p.cancelando);
+    }
+  } catch { /* IA desligada: nada a mostrar */ }
+  if (app.ocupado) vigiaIA = setTimeout(acompanharIA, 1500);
+}
+
+// Fila de pedidos que mudam a imagem: cada gesto do usuário vira um pedido, aplicado EM ORDEM.
+// Nenhum traço se perde enquanto o servidor ainda processa o anterior (documentos grandes levam 1–3 s).
+app.fila = Promise.resolve();
+app.pendentes = 0;
+function indicarFila() {
+  $("st-fila").textContent = app.pendentes ? `processando… (${app.pendentes})` : "";
+  $("visor").classList.toggle("processando", app.pendentes > 0);
+}
+function enfileirar(tarefa) {
+  app.pendentes++;
+  indicarFila();
+  const p = app.fila.then(tarefa).finally(() => { app.pendentes--; indicarFila(); });
+  app.fila = p.catch(() => {});
+  return p;
 }
 
 // ------------------------------------------------------------------ opções
@@ -205,9 +243,23 @@ function definirCategoria(chave) {
   document.querySelectorAll("#lista-categorias li").forEach((li) => li.classList.toggle("ativa", li.dataset.c === chave));
   document.querySelectorAll(".sel-cat-modal").forEach((s) => { s.value = chave; });
 }
+// campo do OCR (lido pelo modo simples) sob a seleção ou o último clique
+function sugerirCategoria() {
+  const bb = app.selBbox(), p = app.ultimoPonto;
+  const toca = ([x0, y0, x1, y1]) => (bb ? !(bb[2] < x0 || bb[0] > x1 || bb[3] < y0 || bb[1] > y1)
+    : p && p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1);
+  return (app.campos || []).find((c) => c.categoria && c.caixa && toca(c.caixa))?.categoria || null;
+}
 function exigirCategoria() {
   if (!app.categoria) {
+    const sug = sugerirCategoria();
     $("categoria").classList.add("faltando"); $("categoria").focus();
+    if (sug) {  // preenche, mas não aplica sozinho: a pessoa confere e aplica de novo
+      escolherCategoria(sug);
+      const rot = app.estado.categorias.find((c) => c.chave === sug)?.rotulo || sug;
+      app.aviso(`Sugestão: '${rot}' (o campo onde você mexeu). Confira a categoria e aplique de novo.`, "erro");
+      return false;
+    }
     app.aviso("Escolha a CATEGORIA do que está editando (valor, data, nome…) antes de aplicar.", "erro");
     return false;
   }
@@ -248,13 +300,27 @@ async function carregarDocs() {
   app.docs = await get(`/api/documentos?split=${app.split}`);
   desenharDocs();
 }
+const LOTE_DOCS = 150;  // milhares de documentos: a lista desenha aos poucos
+let docsVisiveis = LOTE_DOCS;
 function desenharDocs() {
-  const so = $("so-pendentes").checked;
-  $("lista-docs").replaceChildren(...app.docs.filter((d) => !so || !d.versoes || d.id === app.sessao?.id).map((d) =>
+  const so = $("so-pendentes").checked, meus = $("so-meus").checked, eu = nomeOperador();
+  const busca = $("busca-docs").value.trim().toLowerCase();
+  const lista = app.docs.filter((d) => d.id === app.sessao?.id || ((!so || !d.versoes) && (!meus || d.responsavel === eu)
+    && (!busca || d.nome.toLowerCase().includes(busca))));
+  const vis = lista.slice(0, docsVisiveis);
+  const atual = lista.find((d) => d.id === app.sessao?.id);
+  if (atual && !vis.includes(atual)) vis.push(atual);
+  $("lista-docs").replaceChildren(...vis.map((d) =>
     el("li", { class: d.id === app.sessao?.id ? "ativo" : "", title: d.nome, onclick: () => abrirDoc(d.id) },
       el("span", { class: "nome" }, d.nome),
+      d.em_edicao_por ? el("span", { class: "st trava", title: `em edição por ${d.em_edicao_por}` }, "🔒") : null,
+      d.responsavel ? el("span", { class: `st resp${d.responsavel === eu ? " meu" : ""}`,
+        title: d.responsavel === eu ? "atribuído a você" : `atribuído a ${d.responsavel}` }, d.responsavel === eu ? "★" : "→") : null,
       d.rascunho ? el("span", { class: "st rasc", title: "tem edições não salvas (rascunho)" }, "✎") : null,
       el("span", { class: "st" + (d.versoes ? " feito" : "") }, d.versoes ? `✓ ${d.versoes}` : "—"))));
+  const resto = lista.length - vis.length;
+  $("docs-mais").hidden = resto <= 0;
+  $("docs-mais").textContent = `mostrar mais (${resto})`;
 }
 function limparDoc() {
   app.sessao = null; app.visor.img = null; app.visor.redesenhar();
@@ -262,12 +328,16 @@ function limparDoc() {
   atualizarSessao(null);
 }
 
-async function abrirDoc(id) {
+async function abrirDoc(id, { forcar = false } = {}) {
   if (app.ocupado) return;
+  await app.fila;  // edições ainda na fila terminam no documento certo
   try {
     ocupar("abrindo…");
     if (app.ferramenta?.desativar) app.ferramenta.desativar();
-    const s = await post("/api/abrir", { id });
+    const anterior = app.sessao?.id;
+    const s = await post("/api/abrir", { id, forcar });
+    if (anterior && anterior !== id && !app.somenteLeitura) post("/api/trava/soltar", { id: anterior }).catch(() => {});
+    mostrarTrava(s.travado_por);
     const bmp = await bitmapUrl(`/api/img/${id}/atual.png?t=${Date.now()}`);
     app.visor.definirImagem(bmp);
     app.selecao = { formas: [], inverter: false, expandir: 0, suavizar: 0 }; app.selInfo = null;
@@ -277,7 +347,57 @@ async function abrirDoc(id) {
     desenharDocs();
     if (app.ferramenta?.ativar) app.ferramenta.ativar("documento");
     app.renderOpcoes();
+    app.aoAbrirDoc?.(s);
+    prelerProximos();
   } catch (e) { app.aviso(e.message, "erro"); } finally { ocupar(null); }
+}
+// o OCR dos próximos documentos roda em segundo plano: quando a pessoa chegar neles, os campos já estão lidos
+function prelerProximos() {
+  const i = app.docs.findIndex((d) => d.id === app.sessao?.id);
+  const ids = app.docs.slice(i + 1, i + 3).map((d) => d.id);
+  if (ids.length) post("/api/campos/preler", { ids }).catch(() => {});
+}
+
+// ------------------------------------------------------------------ trava: um documento, uma pessoa por vez
+app.somenteLeitura = false;
+function mostrarTrava(t) {
+  app.somenteLeitura = Boolean(t);
+  app.trava = t || null;
+  $("banner-trava").hidden = !t;
+  $("visor").classList.toggle("so-olhando", Boolean(t));
+  if (t) {
+    const desde = new Date(t.desde * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    $("banner-trava-txt").textContent = `🔒 ${t.operador} está editando este documento desde ${desde}. Você está só olhando.`;
+  }
+}
+function podeEditar() {
+  if (!app.somenteLeitura) return true;
+  app.aviso(`${app.trava?.operador || "Outra pessoa"} está com este documento: use "Assumir edição" para editar.`, "erro");
+  return false;
+}
+function assumir() {
+  const t = app.trava;
+  if (!app.sessao || !t) return;
+  if (!confirm(`Assumir o documento? ${t.operador} deixa de poder editá-lo (o que já foi feito continua no rascunho).`)) return;
+  abrirDoc(app.sessao.id, { forcar: true });
+}
+// sinal de vida: a trava vence em 10 min sem sinal. Quem só olha fica sabendo quando o documento ficar livre
+async function sinalDeVida() {
+  if (!app.sessao) return;
+  try {
+    const r = await post("/api/trava/ping", { id: app.sessao.id });
+    if (app.somenteLeitura && r.ok) { app.aviso("O documento ficou livre: agora você pode editar.", "ok"); abrirDoc(app.sessao.id); }
+    else if (!app.somenteLeitura && !r.ok) mostrarTrava(r.travado_por);
+    app.docs = await get(`/api/documentos?split=${app.split}`);  // quem está editando o quê
+    desenharDocs();
+  } catch { /* servidor ocupado: tenta no próximo */ }
+}
+function proximoPendente() {
+  if (!app.docs.length) return;
+  const i = app.docs.findIndex((d) => d.id === app.sessao?.id);
+  const ordem = [...app.docs.slice(i + 1), ...app.docs.slice(0, i + 1)];
+  const alvo = ordem.find((d) => !d.versoes) || app.docs[(i + 1) % app.docs.length];
+  if (alvo) abrirDoc(alvo.id);
 }
 function navegar(passo) {
   if (!app.docs.length) return;
@@ -311,6 +431,7 @@ function atualizarSessao(s) {
   const d = app.docs.find((x) => x.id === s?.id);
   if (d && s) { d.rascunho = s.historico.length > 0; d.versoes = s.versoes; }
   if (app.visor.mostrarMascara) carregarMascara();
+  app.aoAtualizarSessao?.(s);
 }
 
 // ------------------------------------------------------------------ camadas
@@ -322,15 +443,19 @@ function corCategoria(chave) {
 }
 app.camadaAtiva = () => app.sessao?.camadas?.find((c) => c.ativa) || null;
 app.acaoCamada = (acao, extra = {}) => (app._acaoPendente = executarAcaoCamada(acao, extra));
-async function executarAcaoCamada(acao, extra) {
-  if (!app.sessao || app.ocupado) return false;
-  try {
-    const r = await post("/api/camada", { id: app.sessao.id, acao, ...extra });
-    if (!r.nada) app.visor.aplicarRecorte(await bitmap(r.png), r.bbox[0], r.bbox[1]);
-    app.limparPrevia();
-    atualizarSessao(r.estado);
-    return true;
-  } catch (e) { app.aviso(e.message, "erro"); return false; }
+function executarAcaoCamada(acao, extra) {
+  if (!app.sessao || app.ocupado || !podeEditar()) return Promise.resolve(false);
+  const doc = app.sessao.id;
+  return enfileirar(async () => {
+    try {
+      const r = await post("/api/camada", { id: doc, acao, ...extra });
+      if (app.sessao?.id !== doc) return true;
+      if (!r.nada) app.visor.aplicarRecorte(await bitmap(r.png), r.bbox[0], r.bbox[1]);
+      app.limparPrevia();
+      atualizarSessao(r.estado);
+      return true;
+    } catch (e) { app.aviso(e.message, "erro"); return false; }
+  });
 }
 function ativarCamada(c) {
   app._catPendente = false;
@@ -379,7 +504,7 @@ function desenharCamadas(s) {
       el("span", { class: "chip", style: `background:${corCategoria(c.categoria)}` }),
       el("button", { type: "button", class: "olho", title: c.visivel ? "Ocultar (camada oculta não é salva)" : "Mostrar",
         onclick: (e) => { e.stopPropagation(); app.acaoCamada("props", { camada: c.id, visivel: !c.visivel }); } }, c.visivel ? "👁" : "◌"),
-      el("span", { class: "mini" }, c.vazia ? null : el("img", { src: `/api/camada_mini/${s.id}/${c.id}.png?v=${s.versao}`, alt: "" })),
+      el("span", { class: "mini" }, c.vazia ? null : el("img", { src: `/api/camada_mini/${s.id}/${c.id}.png?v=${c.versao}`, alt: "" })),
       el("span", { class: "info" }, nome, sel));
     li.addEventListener("dragstart", (e) => { arrastoCamada = c.id; li.classList.add("arrastando"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", c.id); });
     li.addEventListener("dragend", () => { arrastoCamada = null; li.classList.remove("arrastando"); });
@@ -465,40 +590,55 @@ const enviarPrevia = debounce(async (tipo, params, seq) => {
     if (seq !== seqPrevia) return;
     app.visor.definirPrevia(await bitmap(r.png), r.bbox[0], r.bbox[1]);
     app.status("prévia");
-  } catch (e) { if (seq === seqPrevia) { app.visor.definirPrevia(null); app.status(e.message); } }
+    erroNoDialogo("");
+  } catch (e) {
+    if (seq !== seqPrevia) return;
+    app.visor.definirPrevia(null);
+    app.status(e.message);
+    if (dlg.open) erroNoDialogo(`⚠ ${e.message}`);  // erro da prévia visível no diálogo
+  }
 }, 150);
 app.previa = (tipo, params) => { if (!app.sessao) return; seqPrevia++; enviarPrevia(tipo, params, seqPrevia); };
 app.limparPrevia = () => { seqPrevia++; app.visor.definirPrevia(null); };
 
-app.aplicar = async (tipo, params, { semCategoria = false, msg = null } = {}) => {
-  if (!app.sessao || app.ocupado) return false;
-  if (!semCategoria && !exigirCategoria()) return false;
-  try {
-    ocupar(LENTAS.has(tipo) || msg ? (msg || "aplicando…") : null);
-    const at = app.camadaAtiva();
-    const camada = semCategoria ? at?.id : (at && at.categoria === app.categoria ? at.id : null);
-    if (semCategoria && !camada) { app.aviso("não há camada para apagar", "erro"); return false; }
-    const r = await post("/api/op", {
-      id: app.sessao.id, tipo, params, selecao: app.specSelecao(), camada,
-      categoria: semCategoria ? null : app.categoria, descricao: app.descricao,
-    });
-    app.limparPrevia();
-    app._catPendente = false;
-    if (!r.nada) app.visor.aplicarRecorte(await bitmap(r.png), r.bbox[0], r.bbox[1]);
-    atualizarSessao(r.estado);
-    app.status(`${tipo} aplicado`);
-    return true;
-  } catch (e) { app.aviso(e.message, "erro"); return false; } finally { ocupar(null); }
+app.aplicar = (tipo, params, { semCategoria = false, msg = null } = {}) => {
+  if (!app.sessao || app.ocupado || !podeEditar()) return Promise.resolve(false);
+  if (!semCategoria && !exigirCategoria()) return Promise.resolve(false);
+  // tudo é capturado AGORA: o usuário pode mudar seleção/categoria enquanto o pedido espera na fila
+  const at = app.camadaAtiva();
+  const camada = semCategoria ? at?.id : (at && at.categoria === app.categoria ? at.id : null);
+  if (semCategoria && !camada) { app.aviso("não há camada para apagar", "erro"); return Promise.resolve(false); }
+  const doc = app.sessao.id;
+  const corpo = { id: doc, tipo, params, selecao: app.specSelecao(), camada,
+    categoria: semCategoria ? null : app.categoria, descricao: app.descricao };
+  const lenta = LENTAS.has(tipo) || msg;
+  return enfileirar(async () => {
+    try {
+      if (lenta) ocupar(msg || "aplicando…");
+      const r = await post("/api/op", corpo);
+      if (app.sessao?.id !== doc) return true;
+      app.limparPrevia();
+      app._catPendente = false;
+      if (!r.nada) app.visor.aplicarRecorte(await bitmap(r.png), r.bbox[0], r.bbox[1]);
+      atualizarSessao(r.estado);
+      app.status(`${tipo} aplicado`);
+      return true;
+    } catch (e) { app.aviso(e.message, "erro"); return false; } finally { if (lenta) ocupar(null); }
+  });
 };
 
-async function voltar(rota) {
-  if (!app.sessao || app.ocupado) return;
-  try {
-    const r = await post(rota, { id: app.sessao.id });
-    if (!r.nada) app.visor.aplicarRecorte(await bitmap(r.png), r.bbox[0], r.bbox[1]);
-    app.limparPrevia();
-    atualizarSessao(r.estado);
-  } catch (e) { app.aviso(e.message, "erro"); }
+function voltar(rota) {
+  if (!app.sessao || app.ocupado || !podeEditar()) return Promise.resolve();
+  const doc = app.sessao.id;
+  return enfileirar(async () => {
+    try {
+      const r = await post(rota, { id: doc });
+      if (app.sessao?.id !== doc) return;
+      if (!r.nada) app.visor.aplicarRecorte(await bitmap(r.png), r.bbox[0], r.bbox[1]);
+      app.limparPrevia();
+      atualizarSessao(r.estado);
+    } catch (e) { app.aviso(e.message, "erro"); }
+  });
 }
 app.desfazer = () => voltar("/api/desfazer");
 app.refazer = () => voltar("/api/refazer");
@@ -515,7 +655,7 @@ app.estimarTexto = async (fonte) => {
 };
 app.gerarTexto = async () => {
   if (!app.categoria) { exigirCategoria(); return; }
-  const r = await get(`/api/gerar?categoria=${encodeURIComponent(app.categoria)}`);
+  const r = await get(`/api/gerar?categoria=${encodeURIComponent(app.categoria)}&id=${encodeURIComponent(app.sessao?.id || "")}`);
   if (!r.texto) { app.aviso("sem gerador para esta categoria; digite o valor"); return; }
   const o = app.opcoes(app.idFerramenta);
   o.texto = r.texto;
@@ -524,8 +664,57 @@ app.gerarTexto = async () => {
 };
 app.preencherSelecao = () => abrirPreencher();
 
+// ------------------------------------------------------------------ qual é a fonte?
+app.identificarFonte = async (texto = "") => {
+  if (!app.sessao) return;
+  if (!app.temSelecao()) { app.aviso("Selecione (arraste sobre) o texto cuja fonte quer descobrir.", "erro"); return; }
+  let r;
+  try {
+    ocupar("comparando com todas as fontes instaladas…");
+    r = await post("/api/fonte/identificar", { id: app.sessao.id, selecao: app.specSelecao(), texto });
+  } catch (e) { app.aviso(e.message, "erro"); return; } finally { ocupar(null); }
+  mostrarFontes(r);
+};
+function mostrarFontes(r) {
+  const img = (b64, alt) => el("img", { src: `data:image/png;base64,${b64}`, alt });
+  const texto = el("input", { type: "text", value: r.texto, class: "largo", "aria-label": "texto que está escrito na seleção" });
+  const usar = (c) => {
+    const id = app.idFerramenta;
+    const o = app.opcoes(id);
+    Object.assign(o, { fonte: c.fonte, tamanho: c.tamanho, largura: Math.round(c.largura * 1000) / 10, negrito: c.negrito });
+    if (app.ferramenta && "ancora" in app.ferramenta) app.ferramenta.ancora = { x: c.x, y: c.y };  // tinta no mesmo lugar
+    app.salvarOpcoes(); app.renderOpcoes();
+    app.ferramenta?.previa?.();
+    app.aviso(`Fonte ${c.fonte} (tamanho ${c.tamanho}, largura ${o.largura}%${c.negrito ? `, negrito ${c.negrito}` : ""}) nas opções do texto.`, "ok");
+  };
+  const lista = el("div", { class: "fontes-lista" }, ...r.ranking.map((c, i) => el("div", { class: `fonte-cand${i ? "" : " melhor"}` },
+    el("div", { class: "fonte-cab" },
+      el("b", {}, `${i + 1}. ${c.fonte}`),
+      el("span", { class: "pilula", title: "semelhança do desenho das letras, descontado o quanto a fonte precisaria ser esticada" },
+        `${Math.max(0, Math.min(100, Math.round(c.nota * 100)))}% parecida`),
+      c.parentes.length ? el("span", { class: "dica", title: "desenham este texto praticamente igual" }, `= ${c.parentes.slice(0, 3).join(", ")}`) : null,
+      el("button", { type: "button", class: i ? "" : "primario", onclick: () => { usar(c); fecharModal(); } },
+        app.ferramenta && "ancora" in app.ferramenta ? "Usar esta" : "Usar nas opções de texto")),
+    img(c.png, `o texto na fonte ${c.fonte}`),
+    el("div", { class: "dica" }, `tamanho ${c.tamanho} px · largura ${Math.round(c.largura * 100)}%${c.negrito ? ` · negrito ${c.negrito}` : ""}`))));
+  abrirModal({
+    titulo: "Qual é a fonte?", flutuante: false,
+    corpo: [
+      el("div", { class: "fonte-original" }, el("span", { class: "dica" }, "No documento:"), img(r.original, "o texto como está no documento")),
+      el("p", { class: "dica" }, `${r.avaliadas} fontes instaladas comparadas com o desenho das letras. Confiança ${r.confianca}`
+        + (r.documento?.length ? `; o resto do documento usa sobretudo ${r.documento.map(([f]) => f).slice(0, 2).join(" e ")}.` : ".")
+        + " Para usar uma fonte que não está aqui, coloque o .ttf na pasta fontes/ e reinicie."),
+      el("div", { class: "linha" }, el("label", {}, "Texto lido"), texto,
+        el("button", { type: "button", onclick: () => { fecharModal(); app.identificarFonte(texto.value.trim()); } }, "Comparar de novo")),
+      lista],
+    botoes: [{ rotulo: "Fechar", acao: () => {} }],
+  });
+}
+
 async function salvar() {
-  if (!app.sessao?.pode_salvar || app.ocupado) return;
+  if (!app.sessao || app.ocupado || !podeEditar()) return;
+  await app.fila;
+  if (!app.sessao?.pode_salvar) return;
   try {
     ocupar("salvando…");
     const r = await post("/api/salvar", {
@@ -533,16 +722,18 @@ async function salvar() {
     });
     const s = r.salvo;
     app.aviso(`Versão v${String(s.versao).padStart(2, "0")} salva em saida/${s.split}/ (${s.categorias.join(", ")}). ` +
-      `PageDown = próximo documento.`, "ok");
+      (app.modoSimples ? "Indo para o próximo documento…" : "PageDown = próximo documento."), "ok");
     app.visor.definirImagem(await bitmapUrl(`/api/img/${app.sessao.id}/atual.png?t=${Date.now()}`));
     app.selecao.formas = []; app.selInfo = null;
     atualizarSessao(r.estado);
     app.estado.splits = (await get("/api/estado")).splits;
     atualizarAbas(); desenharDocs();
+    if (!lembrar("guiaRecolhido", false)) { armazenar("guiaRecolhido", true); $("guia")?.removeAttribute("open"); }  // já aprendeu
+    if (app.modoSimples) setTimeout(proximoPendente, 50);
   } catch (e) { app.aviso(e.message, "erro"); } finally { ocupar(null); }
 }
 async function descartar() {
-  if (!app.sessao?.historico?.length) return;
+  if (!app.sessao?.historico?.length || !podeEditar()) return;
   if (!confirm("Descartar TODAS as edições deste documento?")) return;
   try {
     const s = await post("/api/descartar", { id: app.sessao.id });
@@ -571,10 +762,15 @@ function alternarMascara() {
 
 // ------------------------------------------------------------------ diálogos
 const dlg = $("modal");
+function erroNoDialogo(texto) {
+  const caixa = $("modal-erro");
+  if (caixa) caixa.textContent = texto;
+}
 let aoFecharModal = null;
 function abrirModal({ titulo, corpo, botoes, flutuante = true, aoFechar = null }) {
   if (dlg.open) dlg.close();
   $("modal-titulo").textContent = titulo;
+  erroNoDialogo("");
   $("modal-corpo").replaceChildren(...[corpo].flat());
   $("modal-acoes").replaceChildren(...botoes.map((b) => el("button", {
     type: "button", class: b.primario ? "primario" : "",
@@ -583,7 +779,9 @@ function abrirModal({ titulo, corpo, botoes, flutuante = true, aoFechar = null }
   aoFecharModal = aoFechar ?? (flutuante ? app.limparPrevia : null);
   dlg.classList.toggle("flutuante", flutuante);
   if (flutuante) {
-    Object.assign(dlg.style, { position: "fixed", top: "96px", right: "316px", left: "auto", margin: "0" });
+    const estreito = innerWidth < 900;  // celular: o painel lateral não está à direita
+    Object.assign(dlg.style, estreito ? { position: "fixed", top: "56px", left: "8px", right: "8px", margin: "0" }
+      : { position: "fixed", top: "96px", right: "316px", left: "auto", margin: "0" });
     dlg.show();
   } else { dlg.removeAttribute("style"); dlg.showModal(); }
 }
@@ -694,7 +892,7 @@ function abrirQR() {
   const p = { conteudo: "", correcao: "M", borda: 1, cor: "#000000", cor_fundo: "#ffffff" };
   const prever = debounce(() => { if (p.conteudo) app.previa("qrcode", p); }, 150);
   const txt = el("textarea", { placeholder: "conteúdo (PIX copia-e-cola, URL…)", oninput: (e) => { p.conteudo = e.target.value; prever(); } });
-  const gerar = async () => { const r = await get("/api/gerar?categoria=qr%20code%2Fpix"); p.conteudo = r.texto; txt.value = r.texto; prever(); };
+  const gerar = async () => { const r = await get(`/api/gerar?categoria=qr%20code%2Fpix&id=${encodeURIComponent(app.sessao?.id || "")}`); p.conteudo = r.texto; txt.value = r.texto; prever(); };
   const corr = el("select", { onchange: (e) => { p.correcao = e.target.value; prever(); } }, ["L", "M", "Q", "H"].map((c) => el("option", { value: c }, c)));
   corr.value = "M";
   abrirModal({
@@ -711,32 +909,47 @@ function abrirQR() {
 
 async function abrirIA() {
   if (!app.temSelecao()) { app.aviso("selecione a área que a IA deve editar", "erro"); return; }
-  const p = lembrar("ia", { passos: 4, contexto: 0.5, megapixels: 1.0 });
+  const p = lembrar("ia", { passos: 4, contexto: 0.5, megapixels: 1.0, modelo: "2511" });
   p.prompt = p.prompt || 'Troque o texto "ANTIGO" por "NOVO", mantendo a mesma fonte, tamanho, cor, alinhamento e fundo do documento.';
   p.semente = Math.floor(Math.random() * 1e6);
   const st = el("div", { class: "dica" }, "verificando servidor de IA…");
   const txt = el("textarea", { value: p.prompt, oninput: (e) => { p.prompt = e.target.value; } });
   txt.value = p.prompt;
+  const licenca = el("div", { class: "dica" });
+  const passos = el("input", { type: "number", min: 1, max: 80, value: p.passos, onchange: (e) => { p.passos = Number(e.target.value); } });
+  const modelo = el("select", { onchange: (e) => {
+    p.modelo = e.target.value;
+    const m = (app.iaModelos || []).find((x) => x.id === p.modelo);
+    if (m) { p.passos = m.passos; passos.value = m.passos; licenca.textContent = `Licença: ${m.licenca}`; }
+  } });
   get("/api/ia/status").then((s) => {
+    app.iaModelos = s.modelos || [];
+    modelo.replaceChildren(...app.iaModelos.map((m) => el("option", { value: m.id }, m.nome)));
+    if (app.iaModelos.some((m) => m.id === p.modelo)) modelo.value = p.modelo;
+    else if (s.modelo_id) { modelo.value = s.modelo_id; p.modelo = s.modelo_id; }
+    const m = app.iaModelos.find((x) => x.id === modelo.value);
+    if (m) licenca.textContent = `Licença: ${m.licenca}`;
     st.textContent = s.online
       ? `Servidor de IA online · ${s.modelo || ""} · ${s.carregado ? "modelo carregado" : "modelo carrega no 1º uso (demora)"}`
       : "Servidor de IA OFFLINE. Rode em outro terminal:  .venv-ia\\Scripts\\python.exe ia_servidor.py  (ver README).";
   });
   abrirModal({
-    titulo: "Editar seleção com IA (Qwen-Image-Edit-2511)",
+    titulo: "Editar seleção com IA (Qwen)",
     corpo: [seletorCategoria(), el("label", {}, "Instrução (o modelo vê a seleção + contexto ao redor):"), txt,
       el("div", { class: "linha" },
         el("label", {}, "Semente"), el("input", { type: "number", value: p.semente, onchange: (e) => { p.semente = Number(e.target.value); } }),
-        el("label", {}, "Passos"), el("input", { type: "number", min: 1, max: 50, value: p.passos, onchange: (e) => { p.passos = Number(e.target.value); } }),
+        el("label", {}, "Modelo"), modelo,
+        el("label", {}, "Passos"), passos,
         el("label", {}, "Contexto ×"), el("input", { type: "number", min: 0, max: 3, step: 0.1, value: p.contexto, onchange: (e) => { p.contexto = Number(e.target.value); } }),
         el("label", {}, "Megapixels"), el("input", { type: "number", min: 0.25, max: 2, step: 0.05, value: p.megapixels, onchange: (e) => { p.megapixels = Number(e.target.value); } })),
+      licenca,
       el("div", { class: "dica" }, "Só os pixels DENTRO da seleção mudam; o resto do resultado da IA é descartado."),
       st],
     botoes: [
       { rotulo: "Descarregar modelo", acao: async () => { try { await post("/api/ia/descarregar", {}); app.aviso("modelo descarregado da GPU"); } catch (e) { app.aviso(e.message, "erro"); } return false; } },
       { rotulo: "Cancelar", acao: () => true },
       { rotulo: "Editar com IA", primario: true, acao: async () => {
-        armazenar("ia", { passos: p.passos, contexto: p.contexto, megapixels: p.megapixels, prompt: p.prompt });
+        armazenar("ia", { passos: p.passos, contexto: p.contexto, megapixels: p.megapixels, prompt: p.prompt, modelo: p.modelo });
         return app.aplicar("ia", { ...p }, { msg: "IA editando… (pode levar minutos na primeira vez)" });
       } }],
   });
@@ -794,7 +1007,8 @@ function montarMouse() {
     tela.setPointerCapture(ev.pointerId);
     if (ev.button === 1 || app.espaco || app.idFerramenta === "mao") { pan = app.visor.telaDoEvento(ev); tela.style.cursor = "grabbing"; return; }
     if (ev.button !== 0) return;
-    app.ferramenta?.down?.(app.visor.doEvento(ev), ev);
+    app.ultimoPonto = app.visor.doEvento(ev);
+    app.ferramenta?.down?.(app.ultimoPonto, ev);
   });
   tela.addEventListener("pointermove", (ev) => {
     if (!app.visor.img) return;
@@ -838,6 +1052,11 @@ function montarTeclado() {
       return;
     }
     const k = ev.key, ctrl = ev.ctrlKey || ev.metaKey;
+    if (k === "?") { ev.preventDefault(); abrirAtalhos(); return; }
+    if (ctrl && k === "Enter" && app.modoSimples) { ev.preventDefault(); salvar(); return; }
+    if (ev.altKey && (k === "ArrowDown" || k === "ArrowUp") && app.modoSimples) {
+      ev.preventDefault(); app.campoSeguinte?.(k === "ArrowDown" ? 1 : -1); return;
+    }
     if (ctrl) {
       const l = k.toLowerCase();
       if (l === "z" && ev.shiftKey || l === "y") { ev.preventDefault(); app.refazer(); return; }
@@ -877,6 +1096,7 @@ function montarTeclado() {
     if (k === "1") { app.visor.zoom100(); return; }
     if (k === "+" || k === "=") { app.visor.zoomEm(1.25); return; }
     if (k === "-") { app.visor.zoomEm(0.8); return; }
+    if (app.modoSimples) return;
     const id = Object.keys(app.F).find((f) => app.F[f].atalho && app.F[f].atalho === k) ||
       Object.keys(app.F).find((f) => app.F[f].atalho && app.F[f].atalho === k.toLowerCase());
     if (id) { ev.preventDefault(); app.usar(id); }
@@ -888,9 +1108,29 @@ function montarTeclado() {
   window.addEventListener("blur", () => { app.espaco = false; if (app.visor.mostrarOriginal) mostrarOriginal(false); });
 }
 
+function abrirAtalhos() {
+  const grupo = (titulo, itens) => el("section", { class: "atalhos-grupo" }, el("h4", {}, titulo),
+    el("table", {}, ...itens.map(([k, o]) => el("tr", {}, el("td", {}, el("kbd", {}, k)), el("td", {}, o)))));
+  const ferr = Object.values(app.F).filter((f) => f.atalho).map((f) => [f.atalho.toUpperCase(), f.nome.split(/[:(]/)[0].trim()]);
+  abrirModal({
+    titulo: "Atalhos de teclado", flutuante: false,
+    corpo: el("div", { class: "atalhos" },
+      grupo("Geral", [["Ctrl+S", "salvar"], ["Ctrl+Z / Ctrl+Y", "desfazer / refazer"], ["PageDown / PageUp", "próximo / anterior documento"],
+        ["\\ (segurar)", "ver o original"], ["K", "mostrar a máscara do que mudou"], ["0 · 1 · + · −", "caber na tela, 100%, zoom"],
+        ["Espaço + arrastar", "mover a imagem"], ["?", "esta lista"]]),
+      grupo("Modo simples", [["Ctrl+Enter", "salvar e ir para o próximo"], ["Alt+↓ / Alt+↑", "próximo / anterior campo"],
+        ["Enter (no valor novo)", "trocar o campo"]]),
+      grupo("Modo avançado", [["Alt+1 … Alt+0", "categoria da edição"], ["Ctrl+D · Ctrl+A · Ctrl+Shift+I", "desmarcar · tudo · inverter seleção"],
+        ["Shift+F5", "preencher a seleção"], ["Ctrl+Shift+N · Ctrl+J · Ctrl+E", "camada nova · duplicar · mesclar abaixo"],
+        ["X · D", "trocar as cores · preto e branco"], ...ferr])),
+    botoes: [{ rotulo: "Fechar", primario: true, acao: () => {} }],
+  });
+}
+
 // ------------------------------------------------------------------ início
 async function iniciar() {
   try { app.estado = await get("/api/estado"); } catch (e) { app.aviso("servidor indisponível: " + e.message, "erro"); return; }
+  await exigirOperador();  // o nome vai nas travas, nas versões salvas e nas revisões
   app.F = criarFerramentas(app);
   montarFerramentas();
   montarCategorias();
@@ -902,12 +1142,43 @@ async function iniciar() {
   fmt.replaceChildren(...app.estado.formatos.map((f) => el("option", { value: f }, f.toUpperCase())));
   fmt.value = lembrar("formato", "png");
   $("qualidade").value = lembrar("qualidade", 95);
-  $("operador").value = lembrar("operador", "");
+  $("operador").value = nomeOperador();
   const atualizaQ = () => { $("rot-qualidade").style.display = ["jpeg", "webp", "pdf"].includes(fmt.value) ? "" : "none"; };
   fmt.addEventListener("change", () => { armazenar("formato", fmt.value); atualizaQ(); });
   atualizaQ();
   $("qualidade").addEventListener("change", (e) => armazenar("qualidade", Number(e.target.value)));
-  $("operador").addEventListener("change", (e) => armazenar("operador", e.target.value));
+  $("operador").addEventListener("change", (e) => {
+    const antigo = nomeOperador();
+    if (!definirOperador(e.target.value)) { e.target.value = antigo; app.aviso("O nome não pode ficar vazio.", "erro"); return; }
+    app.aviso(`Agora você é ${nomeOperador()}.`, "ok");
+    // a trava do documento aberto passa para o nome novo (senão a pessoa esbarra na própria trava). Vai pela
+    // fila: um Salvar logo em seguida espera a troca terminar
+    if (antigo !== nomeOperador() && app.sessao && !app.somenteLeitura) {
+      const doc = app.sessao.id;
+      enfileirar(async () => {
+        await post("/api/trava/soltar", { id: doc, operador: antigo }).catch(() => {});
+        try { const r = await post("/api/abrir", { id: doc }); if (app.sessao?.id === doc) mostrarTrava(r.travado_por); } catch { /* fica para o próximo sinal */ }
+      });
+    }
+  });
+  window.addEventListener("operador", (e) => { $("operador").value = e.detail; desenharDocs(); });
+  window.addEventListener("trava", (e) => mostrarTrava(e.detail));
+  $("btn-assumir").addEventListener("click", assumir);
+  $("ocupado-cancelar").addEventListener("click", async () => {
+    try { await post("/api/ia/cancelar", {}); $("ocupado-cancelar").hidden = true; $("ocupado-ia").textContent += " · cancelando…"; }
+    catch (e) { app.aviso(e.message, "erro"); }
+  });
+  setInterval(sinalDeVida, 60000);
+  window.addEventListener("beforeunload", () => {  // solta a trava ao fechar a aba
+    if (app.sessao && !app.somenteLeitura) {
+      navigator.sendBeacon("/api/trava/soltar", new Blob([JSON.stringify({ id: app.sessao.id, operador: nomeOperador() })], { type: "text/plain" }));
+    }
+  });
+  $("btn-atalhos").addEventListener("click", abrirAtalhos);
+  $("so-meus").addEventListener("change", desenharDocs);
+  $("busca-docs").addEventListener("input", debounce(desenharDocs, 120));
+  $("docs-mais").addEventListener("click", () => { docsVisiveis += LOTE_DOCS; desenharDocs(); });
+  app.descartar = descartar;
   $("modal-form").addEventListener("submit", (e) => e.preventDefault());
   $("cam-nova").addEventListener("click", novaCamada);
   // duplo clique renomeia; o 1º clique pode ter ativado a camada e redesenhado a lista, então espera
@@ -948,6 +1219,22 @@ async function iniciar() {
 
   app.usar(lembrar("ferramenta", "ret"));
   window.addEventListener("beforeunload", () => armazenar("ferramenta", app.idFerramenta));
+  app.enfileirar = enfileirar;
+  app.receber = async (r) => {  // resposta padrão do servidor: trecho da imagem + estado
+    if (!r.nada) app.visor.aplicarRecorte(await bitmap(r.png), r.bbox[0], r.bbox[1]);
+    app.limparPrevia();
+    atualizarSessao(r.estado);
+  };
+  instalarSimples(app, {
+    el, $, debounce, ocupar, definirCategoria, corCategoria, abrirModal, fecharModal, lembrar, armazenar,
+    indicarLote: (st) => {
+      const pill = $("lote-pill");
+      pill.hidden = !st.rodando;
+      if (st.rodando) pill.textContent = `gerador: ${st.feitas}/${st.total}`;
+      if (app._loteRodava && !st.rodando && st.total) notificar("Lote do gerador terminou", `${st.feitas} imagens salvas, ${st.falhas} falharam.`);
+      app._loteRodava = Boolean(st.rodando);
+    },
+  });
   if (!SPLITS.some(([s]) => s === app.split)) app.split = "treino";
   await trocarSplit(app.split);
 }

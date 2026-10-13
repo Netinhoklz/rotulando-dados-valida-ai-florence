@@ -41,7 +41,9 @@ def balde(img: np.ndarray, p: dict, sel: Selecao, **_) -> Resultado:
     if p.get("contigua", True):
         flood = np.zeros((H + 2, W + 2), np.uint8)
         flags = 4 | cv2.FLOODFILL_FIXED_RANGE | cv2.FLOODFILL_MASK_ONLY | (1 << 8)
-        cv2.floodFill(np.ascontiguousarray(img), flood, (x, y), 0, (tol,) * 3, (tol,) * 3, flags)
+        # cópia gravável: o OpenCV 5 recusa imagem somente leitura (a original da sessão é travada) mesmo com
+        # FLOODFILL_MASK_ONLY, que não a altera
+        cv2.floodFill(img.copy(), flood, (x, y), 0, (tol,) * 3, (tol,) * 3, flags)
         m = flood[1:-1, 1:-1].astype(bool)
     else:
         m = (np.abs(img.astype(np.int16) - img[y, x].astype(np.int16)) <= tol).all(2)

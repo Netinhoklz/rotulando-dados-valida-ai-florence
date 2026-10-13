@@ -156,6 +156,18 @@ class TestApp(unittest.TestCase):
                     self.assertEqual(im.size, (self.reg.item(doc).largura, self.reg.item(doc).altura))
                     self.assertNotIn("exif", im.info)
                     self.assertNotIn("icc_profile", im.info)
+            else:  # a original é gravada antes das editadas: uma data no PDF separaria as duas classes
+                self.assertNotIn(b"Date", caminho.read_bytes())
+
+    def test_codificacao_deterministica(self):
+        """O mesmo conteúdo gravado em momentos diferentes dá os mesmos bytes (nada de data/hora)."""
+        import time
+        from rotulador.exportar import codificar
+        img = conta(5)
+        for fmt in ("png", "jpeg", "webp", "tiff", "pdf"):
+            a = codificar(img, fmt, 90)
+            time.sleep(1.1)
+            self.assertEqual(a, codificar(img, fmt, 90), fmt)
 
     def test_selecao_conta_gotas_estimativa_mascara(self):
         doc = self.doc("treino")
@@ -180,6 +192,9 @@ class TestApp(unittest.TestCase):
         cam = e["camadas"][0]
         self.assertEqual((cam["categoria"], cam["ativa"], cam["vazia"]), ("valor", True, False))
         r = self.c.get(f"/api/camada_mini/{doc}/{cam['id']}.png")
+        self.assertEqual(r.status_code, 200)
+        r.close()
+        r = self.c.get(f"/api/camada_mini/{doc}/naoexiste.png")  # pedido atrasado: imagem vazia, sem erro
         self.assertEqual(r.status_code, 200)
         r.close()
         r = self.post("/api/camada", id=doc, acao="props", camada=cam["id"], visivel=False).get_json()

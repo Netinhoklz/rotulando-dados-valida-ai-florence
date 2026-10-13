@@ -9,7 +9,7 @@
 </head>
 <body>
 <header id="topo">
-  <div class="marca">Rotulador <b>UNIDOCK</b></div>
+  <h1 class="marca">Rotulador <b>UNIDOCK</b></h1>
   <nav id="abas-split" aria-label="Split"></nav>
   <div class="navdoc">
     <button id="doc-ant" title="Documento anterior (PageUp)">◀</button>
@@ -17,18 +17,25 @@
     <button id="doc-prox" title="Próximo documento (PageDown)">▶</button>
     <span id="doc-versoes" class="pilula"></span>
   </div>
+  <div class="modos">
+    <button id="btn-modo" title="Alterna entre o modo simples e o editor completo">🛠 Modo avançado</button>
+    <button id="btn-lote" title="Gerador automático: escolha documentos, técnicas e classes e gere em lote (abre em outra aba)">🏭 Gerador automático</button>
+    <span id="lote-pill" class="pilula" hidden></span>
+    <button id="btn-ajuda" title="Como usar">❔</button>
+    <button id="btn-atalhos" title="Atalhos de teclado (?)" aria-label="Atalhos de teclado">⌨</button>
+  </div>
   <div class="saida">
-    <label>Saída
+    <label class="so-avancado">Saída
       <select id="formato" title="Original e editada sempre saem no mesmo formato e qualidade"></select>
     </label>
-    <label id="rot-qualidade">Qualidade <input id="qualidade" type="number" min="1" max="100" value="95"></label>
+    <label id="rot-qualidade" class="so-avancado">Qualidade <input id="qualidade" type="number" min="1" max="100" value="95"></label>
     <label>Operador <input id="operador" type="text" maxlength="80" placeholder="seu nome"></label>
     <button id="btn-descartar" class="perigo" title="Descarta todas as edições deste documento">Descartar</button>
     <button id="btn-salvar" class="primario" disabled title="">Salvar (Ctrl+S)</button>
   </div>
 </header>
 
-<div id="opcoes">
+<div id="opcoes" class="so-avancado">
   <div class="cat-ativa">
     <label for="categoria">Categoria desta edição</label>
     <select id="categoria"></select>
@@ -38,16 +45,49 @@
 </div>
 
 <main>
-  <aside id="ferramentas" aria-label="Ferramentas"></aside>
+  <aside id="ferramentas" aria-label="Ferramentas" class="so-avancado"></aside>
 
   <section id="visor" tabindex="0">
     <canvas id="tela"></canvas>
     <div id="vazio">Escolha um documento na lista à direita.</div>
-    <div id="ocupado" hidden><div class="giro"></div><span id="ocupado-msg">processando…</span></div>
+    <div id="ocupado" hidden><div class="giro"></div><span id="ocupado-msg">processando…</span>
+      <span id="ocupado-ia" class="dica"></span>
+      <button type="button" id="ocupado-cancelar" hidden title="Para a IA no próximo passo">Cancelar</button></div>
+    <div id="banner-trava" class="banner-trava" role="alert" hidden>
+      <span id="banner-trava-txt"></span>
+      <button type="button" id="btn-assumir" class="primario">Assumir edição</button>
+    </div>
   </section>
 
   <aside id="painel">
-    <section id="sec-camadas">
+    <section id="sec-campos">
+      <details id="guia" class="guia so-simples" open>
+      <summary>Como usar (4 passos)</summary>
+      <ol class="passos">
+        <li>Clique num <b>campo destacado</b> no documento</li>
+        <li>Escreva o <b>valor falso</b> (ou 🎲)</li>
+        <li>Clique em <b>✔ Trocar</b></li>
+        <li><b>✔ Salvar e próximo</b> (lá em cima)</li>
+      </ol>
+      </details>
+      <div class="atalhos-auto">
+        <button id="btn-fraude" class="grande" title="Troca EXATAMENTE os campos marcados na lista por valores falsos, na mesma fonte do documento">✨ Editar os marcados</button>
+        <button id="btn-pistas" class="grande so-simples" title="Mostra onde a SUA edição deixou pistas que um perito ou um detector pega (grão, nitidez, tom do papel, grade do JPEG). Use para fazer fraudes que ninguém pegaria: edite até a nota cair">🔍 Pistas</button>
+        <button id="btn-desfazer-grande" class="grande" title="Desfazer a última alteração (Ctrl+Z)">↶ Desfazer</button>
+        <button id="btn-recomecar" class="so-simples" title="Descarta todas as edições deste documento">↺ Recomeçar</button>
+      </div>
+      <div id="ia-controles" class="ia-controles" hidden>
+        <label>🤖 IA <select id="ia-modelo" title="Modelo usado em 'Trocar com IA'"></select></label>
+        <label title="A fraude automática pede à IA para escrever os textos novos (bem mais lento: ~2 min por campo)">
+          <input id="fraude-ia" type="checkbox"> edição automática com IA</label>
+      </div>
+      <h2>Campos do documento <span id="campos-resumo" class="dica"></span>
+        <span class="acoes"><button id="btn-marcar" title="Marcar um texto que não foi encontrado">＋ Marcar outro texto</button></span>
+      </h2>
+      <div id="marcar-rapido" class="marcar-rapido" title="Quais campos o ✨ Editar os marcados troca"></div>
+      <ul id="lista-campos"></ul>
+    </section>
+    <section id="sec-camadas" class="so-avancado">
       <h2>Camadas
         <span class="acoes">
           <button id="cam-nova" title="Nova camada (Ctrl+Shift+N)">＋</button>
@@ -69,7 +109,7 @@
       <ul id="lista-categorias"></ul>
       <p id="motivo-salvar" class="dica"></p>
     </section>
-    <section>
+    <section class="so-avancado">
       <h2>Histórico
         <span class="acoes">
           <button id="btn-desfazer" title="Desfazer (Ctrl+Z)">↶</button>
@@ -81,10 +121,13 @@
     <section class="cresce">
       <h2>Documentos
         <label class="filtro"><input id="so-pendentes" type="checkbox"> só pendentes</label>
+        <label class="filtro" title="Só os documentos atribuídos a você"><input id="so-meus" type="checkbox"> só os meus</label>
       </h2>
+      <input id="busca-docs" type="search" placeholder="buscar documento…" aria-label="buscar documento">
       <ul id="lista-docs"></ul>
+      <button type="button" id="docs-mais" hidden>mostrar mais</button>
     </section>
-    <section>
+    <section class="so-avancado">
       <h2>IA local <span id="ia-status" class="pilula">…</span></h2>
       <p class="dica" id="ia-dica"></p>
     </section>
@@ -95,6 +138,7 @@
   <span id="st-zoom">100%</span>
   <span id="st-pos"></span>
   <span id="st-sel"></span>
+  <span id="st-fila"></span>
   <button id="btn-original" title="Segure \ para ver o original">Original (\)</button>
   <button id="btn-mascara" title="Mostrar pixels alterados (K)">Máscara (K)</button>
   <span id="st-msg"></span>
@@ -104,6 +148,7 @@
   <form method="dialog" id="modal-form">
     <h3 id="modal-titulo"></h3>
     <div id="modal-corpo"></div>
+    <div id="modal-erro" role="alert"></div>
     <div class="modal-acoes" id="modal-acoes"></div>
   </form>
 </dialog>
