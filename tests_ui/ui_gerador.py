@@ -198,6 +198,12 @@ try:
     checa(espera("document.getElementById('detalhe').open && document.getElementById('det-img').complete && "
                  "document.getElementById('det-img').naturalWidth > 100", 60), "detalhe abre com a imagem")
     n_det = js("return document.querySelectorAll('#det-lista .edicao').length")
+    # o detalhe abre ampliado na 1ª edição; "ver inteira" volta à página com as caixas de todas
+    ver_inteira = [b for b in d.find_elements(By.CSS_SELECTOR, "#det-modos button") if "ver inteira" in b.text]
+    checa(bool(ver_inteira), "detalhe abre ampliado na 1ª edição")
+    if ver_inteira:
+        ver_inteira[0].click()
+        espera("document.getElementById('det-img').complete && document.querySelectorAll('#det-caixas .caixa').length > 0", 30)
     checa(n_det >= 2 and js("return document.querySelectorAll('#det-caixas .caixa').length") == n_det,
           f"detalhe lista as edições e marca as caixas ({n_det})")
     d.find_elements(By.CSS_SELECTOR, "#det-lista .edicao")[0].click()

@@ -213,8 +213,10 @@ def descrever(n: int, r: dict, pixels: int, bbox) -> dict:
          "pericia": meta.get("pericia"), "fornecedores": meta.get("fornecedores"), "campo": meta.get("campo"),
          "descricao": descricao, "bbox": [int(v) for v in bbox] if bbox is not None else None, "pixels": int(pixels)}
     d["origem"] = _ORIGEM_OPERACAO.get(r.get("tipo"), "manual")
-    # conferido_ocr: True = o OCR leu o valor novo; None = não deu para julgar; sem a chave = não se aplica
-    for k in ("origem_glifo", "origem_campo", "trecho", "linha_digitavel", "conferido_ocr"):
+    # conferido_ocr: True = o OCR leu o valor novo; None = não deu para julgar; sem a chave = não se aplica.
+    # peso_traco: espessura do traço novo ÷ a do original (1 = igual); semelhanca_fonte: o quanto a fonte usada casou
+    for k in ("origem_glifo", "origem_campo", "trecho", "linha_digitavel", "conferido_ocr", "peso_traco",
+              "semelhanca_fonte"):
         if k in meta:
             d[k] = meta[k]
     return d

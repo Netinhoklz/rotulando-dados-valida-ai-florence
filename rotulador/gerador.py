@@ -70,7 +70,8 @@ import numpy as np
 from PIL import Image
 
 from . import campos as mod_campos
-from . import canal, catalogo, coerencia, datasheet, exportar, falsificador as mod_falsificador, humano, identificar_fonte, marcas
+from . import (canal, catalogo, coerencia, datasheet, exportar, falsificador as mod_falsificador, gesto, humano,
+               identificar_fonte, marcas)
 from .contexto import Contexto
 from .ops import auto, executar, geradores, ia
 from .ops.tecnicas import _inicio_parte_final, _trechos, aplicavel
@@ -411,8 +412,12 @@ def _executar_edicao(sessao: Sessao, ctx, p: dict, rng: random.Random, r: Receit
 
 def aplicar_receita(sessao: Sessao, ctx: Contexto, r: Receita, plano: Plano, rng: random.Random,
                     k: int | None = None, editor=None, ao_falhar=None, pessoa=None, info: dict | None = None,
-                    ja_sorteados: list | None = None, humano_hab: dict | None = None) -> list[dict]:
+                    ja_sorteados: list | None = None, humano_hab: dict | None = None,
+                    ajuste: dict | None = None) -> list[dict]:
     """Aplica de ``r.minimo`` a ``r.maximo`` edições (ou ``k``) na sessão. Devolve o que foi feito.
+
+    ``ajuste`` (modo exato, a nova tentativa de uma versão incoerente): ``{"incluir": [...], "excluir": [...]}``
+    classes extras que entram (o CEP junto com a rua nova) ou saem (o valor que o código de barras não acompanhou).
 
     ``pessoa`` (rotulador.falsificador.Falsificador): as primeiras edições seguem o plano dela (campos
     coerentes com o motivo, valores combinados, as técnicas da ferramenta dela, os hábitos dela); o que
@@ -437,6 +442,10 @@ def aplicar_receita(sessao: Sessao, ctx: Contexto, r: Receita, plano: Plano, rng
         # nada do subconjunto coube: as outras classes, para não perder a versão (a anotação diz quais entraram)
         for classes in ([classes, resto] if resto else [classes]):
             extras = _extras(presentes, classes, rng) if perfil and r.extras else []
+            if ajuste:
+                fora = set(ajuste.get("excluir") or ())
+                extras = [c for c in extras if c not in fora] + [
+                    c for c in ajuste.get("incluir") or () if c in presentes and c not in classes and c not in extras]
             escolha = [f for f in escolhidos if f["categoria"] in classes + extras]
             if perfil:
                 escolha = _cpf_do_cliente(escolha, campos)
@@ -1341,6 +1350,7 @@ class Gerador:
             self.estado = {"rodando": True, "id": uuid.uuid4().hex[:8], "documentos": len(itens),
                            "total": len(itens) * r.variacoes, "feitas": 0, "falhas": 0, "edicoes": 0, "atual": "",
                            "por_tecnica": {}, "por_categoria": {}, "falhas_tecnica": {}, "erros": [], "recentes": [],
+                           "refeitas_incoerentes": 0, "descartadas_incoerentes": 0, "por_tamanho": {},
                            "por_falsificador": {}, "por_motivo": {}, "inicio": time.time(), "receita": r.resumo()}
             self.thread = threading.Thread(target=self._rodar, args=(r, itens), daemon=True)
             self.thread.start()
@@ -1361,9 +1371,13 @@ class Gerador:
         self.parar.set()
         return self.status()
 
-    def _falhou_tecnica(self, tid: str, _campo, _erro) -> None:
+    def _falhou_tecnica(self, tid: str, campo, _erro) -> None:
         ft = self.estado["falhas_tecnica"]
         ft[tid] = ft.get(tid, 0) + 1
+        if isinstance(campo, dict) and campo.get("caixa") and campo.get("tipo", "texto") == "texto":
+            pt = self.estado.setdefault("por_tamanho", {}).setdefault(faixa_tamanho(campo["caixa"]),
+                                                                       {"feitas": 0, "desistidas": 0})
+            pt["desistidas"] += 1
 
     def _tabelas(self, split: str) -> list[dict]:
         """Tabelas de quantização dos JPEG de entrada do split (em cache): o canal usa as tabelas dos
@@ -1383,6 +1397,12 @@ class Gerador:
         planos: dict[str, Plano] = {}
         temp = self._temp()
         est = self.estado
+        # os laços e pinceladas que a equipe fez à mão no editor (anotações manuais desta saída): parte das seleções
+        # do operador humano usa um desses traços reais, encaixado no campo (rotulador.gesto)
+        try:
+            est["gestos_reais"] = gesto.usar_biblioteca(self.raiz_saida)
+        except Exception:  # noqa: BLE001 - sem biblioteca, o modelo de movimento faz tudo
+            est["gestos_reais"] = {"laco": 0, "pincel": 0}
         try:
             for it in itens:
                 if self.parar.is_set():
@@ -1407,24 +1427,47 @@ class Gerador:
                     pasta = temp / f"{it.doc}_{v}"
                     sess = None
                     try:
-                        rng_v = random.Random(rng.randrange(2**31))
-                        pessoa = r.falsificador(rng_v, ia_online)
-                        # canal: a captura "antes" (foto/scan de quem edita no celular ou no Paint) vira a base da
-                        # versão; impressão, tela e transmissão ficam para depois, no salvamento, iguais no par;
-                        # marcas no papel só com captura física (senão seriam colagem digital "benigna")
-                        base_v, ctx_v, theta, tm, extra_v = self._preparar(it, base, ctx, r, rng_v, pessoa)
-                        hab, theta = _humano_da_versao(r, ctx_v, theta, rng_v)
-                        sess = Sessao(it, base_v.copy(), pasta, self.ids)
-                        envio = _data_envio(ctx, rng_v)
-                        info: dict = {}
-                        with geradores.usando(hoje=envio, documento=ctx_v.campos):  # datas e valores coerentes na versão
-                            feitos = aplicar_receita(sess, ctx_v, r, plano, rng_v, ao_falhar=self._falhou_tecnica, pessoa=pessoa,
-                                                     info=info, ja_sorteados=sorteados, humano_hab=hab)
-                        if not feitos:
-                            raise ErroOperacao("nenhuma técnica coube neste documento")
+                        # perfil profissional: a versão que CRIA uma incoerência (vencimento antes da emissão porque a
+                        # data pequena não coube, rua nova com o CEP antigo) é refeita com outro sorteio; quem frauda
+                        # com cuidado não deixa essa pista, e ela ensinaria o modelo a achar a falha do gerador
+                        ajuste: dict = {"incluir": [], "excluir": []}
+                        for tentativa in range(TENTATIVAS_COERENCIA + 1):
+                            foto_plano = (Counter(plano.contagem), Counter(plano.por_tecnica), len(sorteados))
+                            rng_v = random.Random(rng.randrange(2**31))
+                            pessoa = r.falsificador(rng_v, ia_online)
+                            # canal: a captura "antes" (foto/scan de quem edita no celular ou no Paint) vira a base da
+                            # versão; impressão, tela e transmissão ficam para depois, no salvamento, iguais no par;
+                            # marcas no papel só com captura física (senão seriam colagem digital "benigna")
+                            base_v, ctx_v, theta, tm, extra_v = self._preparar(it, base, ctx, r, rng_v, pessoa)
+                            hab, theta = _humano_da_versao(r, ctx_v, theta, rng_v)
+                            sess = Sessao(it, base_v.copy(), pasta, self.ids)
+                            envio = _data_envio(ctx, rng_v)
+                            info: dict = {}
+                            with geradores.usando(hoje=envio, documento=ctx_v.campos):  # datas e valores coerentes
+                                feitos = aplicar_receita(sess, ctx_v, r, plano, rng_v, ao_falhar=self._falhou_tecnica,
+                                                         pessoa=pessoa, info=info, ja_sorteados=sorteados,
+                                                         humano_hab=hab, ajuste=ajuste)
+                            if not feitos:
+                                raise ErroOperacao("nenhuma técnica coube neste documento")
+                            coer = _coerencia(ctx_v, feitos)
+                            novas = (coer or {}).get("novas_violacoes") or []
+                            if r.perfil != "profissional" or not novas:
+                                break
+                            if tentativa == TENTATIVAS_COERENCIA:
+                                est["descartadas_incoerentes"] = est.get("descartadas_incoerentes", 0) + 1
+                                raise ErroOperacao(f"versão descartada: a edição criava incoerência ({', '.join(novas)})"
+                                                   f" em {TENTATIVAS_COERENCIA + 1} tentativas")
+                            # a próxima tentativa corrige a causa (o mesmo sorteio repetiria a mesma pista)
+                            for n in novas:
+                                for k, cs in CORRIGE_INCOERENCIA.get(n, {}).items():
+                                    ajuste[k] += [c for c in cs if c not in ajuste[k]]
+                            plano.contagem, plano.por_tecnica = foto_plano[0], foto_plano[1]
+                            del sorteados[foto_plano[2]:]
+                            est["refeitas_incoerentes"] = est.get("refeitas_incoerentes", 0) + 1
+                            shutil.rmtree(pasta, ignore_errors=True)
                         extra = {"gerador": {"lote": est["id"], "receita": r.resumo(), "variacao": v + 1,
-                                             "data_envio": envio.isoformat()}, **extra_v,
-                                 "coerencia": _coerencia(ctx_v, feitos), "perito_por_edicao": _perito_por_edicao(sess)}
+                                             "data_envio": envio.isoformat(), "tentativas": tentativa + 1}, **extra_v,
+                                 "coerencia": coer, "perito_por_edicao": _perito_por_edicao(sess)}
                         if "classes" in info:  # modo exato: as classes desta versão e o dado antigo que sobrou (caixas
                             # nas coordenadas da sessão, antes do canal de envio)
                             extra["gerador"]["classes"] = info["classes"]
@@ -1450,9 +1493,13 @@ class Gerador:
                                                     self.registro.dpi, extra=extra, por_versao=bool(extra_v))
                         est["feitas"] += 1
                         est["edicoes"] += len(feitos)
+                        caixa_de = {c.get("id"): c.get("caixa") for c in ctx_v.campos}
                         for f in feitos:
                             est["por_tecnica"][f["tecnica"]] = est["por_tecnica"].get(f["tecnica"], 0) + 1
                             est["por_categoria"][f["categoria"]] = est["por_categoria"].get(f["categoria"], 0) + 1
+                            cx = caixa_de.get(f.get("campo")) or f["bbox"]
+                            pt = est["por_tamanho"].setdefault(faixa_tamanho(cx), {"feitas": 0, "desistidas": 0})
+                            pt["feitas"] += 1
                         caixas = [{"tecnica": e["tecnica"], "nome_tecnica": e["nome_tecnica"], "familia": e["familia"],
                                    "nivel": e["nivel"], "categoria": e["categoria"], "antigo": e["texto_antigo"],
                                    "novo": e["texto_novo"], "descricao": e["descricao"], "bbox": e["bbox"]}
@@ -1483,6 +1530,25 @@ class Gerador:
 
 
 CATEGORIAS_FOCO = ("nome", "endereço")  # o que mais se falsifica num comprovante de endereço
+TENTATIVAS_COERENCIA = 2  # perfil profissional: novas tentativas da versão que criou incoerência antes de descartá-la
+# altura do texto do campo (px) por faixa: o texto miúdo (data do boleto, rodapé) falha mais e some do dataset sem
+# avisar; o status conta campos editados e desistidos por faixa
+FAIXAS_TAMANHO = ((18, "miúdo"), (28, "pequeno"), (45, "médio"), (10**9, "grande"))
+# o que a nova tentativa muda para não repetir cada incoerência: a rua nova pede o CEP dela; o valor que o código de
+# barras, a linha digitável ou o consumo não acompanharam sai da versão; a cidade nova leva o CEP e o bairro dela
+CORRIGE_INCOERENCIA = {
+    "endereco_cep": {"incluir": ["cep"]},
+    "cep_cidade": {"incluir": ["cep"]},
+    "bairro_cidade": {"incluir": ["bairro"]},
+    "codigo_total": {"excluir": ["valor", "consumo/leitura"]},
+    "linha_digitavel": {"excluir": ["valor", "consumo/leitura"]},
+    "consumo_valor": {"excluir": ["valor", "consumo/leitura"]},
+}
+
+
+def faixa_tamanho(caixa) -> str:
+    h = int(caixa[3]) - int(caixa[1])
+    return next(nome for limite, nome in FAIXAS_TAMANHO if h < limite)
 # fração das versões do perfil profissional editadas como uma pessoa faria (rotulador.humano); o resto fica com o
 # acabamento meticuloso (só a tinta, cor calibrada, grão espectral), a ponta difícil que um perfeccionista alcança
 HUMANO_PROB = 0.85

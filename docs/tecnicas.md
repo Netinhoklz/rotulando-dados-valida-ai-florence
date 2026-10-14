@@ -624,6 +624,32 @@ Desde 03/10/2026, por padrão 80% das versões do gerador saem com um **falsific
 hábitos fixos na versão) e um **motivo** (campos coerentes, valores combinados), em vez do sorteio
 uniforme. Evidências, tabelas e o que ficou estimado: [falsificadores.md](falsificadores.md).
 
+### O gesto: a mão no mouse, sem tela (13/10/2026)
+
+O movimento do mouse não aparece nos pixels; a geometria que ele produz, sim. `rotulador/gesto.py` gera essa
+geometria como uma pessoa faria, sem abrir editor nem mexer no cursor:
+
+- **Movimento:** curva de mínimo esforço (velocidade em sino), caminho levemente curvo, duração pela lei de Fitts.
+  Em 35% dos movimentos a mão passa do alvo e corrige. Há tremor fisiológico de 8–12 Hz. Tudo é amostrado a 125 Hz,
+  como os eventos do navegador.
+- **Laço:** a volta canto a canto em torno do texto, cortando os cantos. O contorno fecha perto do começo, não no
+  mesmo ponto.
+- **Pincel por toques:** discos espaçados a 25% do diâmetro, com pressão que sobe no começo e cai no fim da passada.
+  São uma ou duas passadas, às vezes de ida e volta.
+- **Carimbo por passadas:** cada passada copia a partir da sua própria origem, o Alt+clique num papel livre perto.
+  No modo "alinhado" (40%) a origem anda junto com a passada anterior. Os toques têm borda macia (dureza 0,7). O que
+  ficou meio coberto leva uma segunda passada, e só o resto vai para as faixas antigas.
+- **Zoom de trabalho:** sorteado por versão (50–300%). Muda o tremor e a precisão em pixels da imagem e aparece na
+  descrição ("com zoom de 200%").
+- **Texto:** um clique que erra alguns pixels de tela, depois as setas (1 px; 10 px com Shift) até parecer alinhado.
+  A anotação guarda quantos toques de seta foram.
+
+**Gestos reais.** O editor manual grava em cada laço, pincelada e passada de carimbo os pontos, os `tempos` (ms) e o
+`zoom` da tela. No começo de cada lote, o gerador junta os traços das edições manuais da saída (as anotações sem
+`gerador`) em `_cache/gestos_reais.json`. Com eles, 70% das seleções com laço ou pincel usam um traço que uma pessoa
+da equipe fez de verdade, esticado para a caixa do campo. A edição diz qual foi usado: `fornecedores.gesto` vale
+`real` ou `modelo`.
+
 ### O que a ferramenta não gera
 
 Coisas da literatura que ficam de fora (o canal de envio e as marcas benignas, que estavam nesta

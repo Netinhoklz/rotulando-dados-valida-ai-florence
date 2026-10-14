@@ -13,12 +13,14 @@
   <a class="voltar" href="/" title="Voltar ao editor">← Editor</a>
   <h1 class="marca">Gerador automático <b>UNIDOCK</b></h1>
   <nav id="abas" class="abas" aria-label="Partes do gerador">
-    <button type="button" data-aba="gerar" class="ativa">⚙ Gerar</button>
-    <button type="button" data-aba="catalogo">📚 Catálogo</button>
-    <button type="button" data-aba="revisar">✔ Revisar</button>
-    <button type="button" data-aba="metas">🎯 Metas</button>
-    <button type="button" data-aba="equipe">👥 Equipe</button>
+    <button type="button" data-aba="gerar" class="ativa" title="Gerar versões com fraude a partir dos documentos de entrada">⚙ Gerar</button>
+    <button type="button" data-aba="catalogo" title="Tudo o que já foi gerado: filtrar, ver em detalhe, revisar e exportar">📚 Catálogo</button>
+    <button type="button" data-aba="revisar" title="Olhar as versões uma a uma e aprovar ou reprovar (com o motivo)">✔ Revisar</button>
+    <button type="button" data-aba="metas" title="Quantas edições de cada classe cada split precisa, quantas já tem e gerar o que falta">🎯 Metas</button>
+    <button type="button" data-aba="equipe" title="O que cada pessoa fez, a quem cada documento foi atribuído e quem está editando agora">👥 Equipe</button>
+    <button type="button" data-aba="qualidade" title="O dataset está bom? O que falta nas entradas, a auditoria e quais técnicas deixam vestígio fácil">📊 Qualidade</button>
   </nav>
+  <button type="button" id="btn-glossario" class="pilula" title="O que é cada coisa (versão, split, máscara, técnica, canal…)">📖 Glossário</button>
   <button type="button" id="btn-quem" class="pilula" title="Seu nome (vai nas revisões e atribuições). Clique para trocar."></button>
   <span id="lote-info" class="pilula" hidden></span>
   <span id="ia-pill" class="pilula" title="Servidor de IA (técnicas generativas)">IA …</span>
@@ -51,12 +53,12 @@
     </div>
     <div class="uc-escolhas">
       <fieldset class="uc-campo">
-        <legend>Documentos</legend>
+        <legend data-termo="split">Documentos</legend>
         <div id="uc-splits" class="uc-chips"></div>
         <button type="button" id="uc-escolher-docs" class="uc-link">escolher documentos…</button>
       </fieldset>
       <fieldset class="uc-campo">
-        <legend id="uc-var-rot">Versões por documento</legend>
+        <legend id="uc-var-rot" data-termo="versao">Versões por documento</legend>
         <span class="stepper">
           <button type="button" id="uc-menos" aria-label="uma versão a menos">−</button>
           <input id="uc-variacoes" type="number" min="1" max="50" step="1" aria-labelledby="uc-var-rot">
@@ -65,7 +67,7 @@
         <p class="dica">cada versão troca por valores diferentes</p>
       </fieldset>
       <fieldset class="uc-campo uc-oque">
-        <legend>O que mudar</legend>
+        <legend data-termo="classe">O que mudar</legend>
         <label class="uc-opcao"><input type="radio" name="uc-oque" value="extras">
           <span><b>Nome e endereço</b> — às vezes também CPF, CEP, datas ou valores</span></label>
         <label class="uc-opcao"><input type="radio" name="uc-oque" value="base"> <span><b>Só nome e endereço</b></span></label>
@@ -74,7 +76,7 @@
     </div>
     <div id="uc-campos" class="uc-campos" hidden></div>
     <fieldset id="uc-estilos-f" class="uc-campo uc-estilos-f" hidden>
-      <legend>Estilo das fraudes <span class="dica">— quem edita e por onde o arquivo passa depois</span></legend>
+      <legend data-termo="operador">Estilo das fraudes <span class="dica">— quem edita e por onde o arquivo passa depois</span></legend>
       <div id="uc-estilos" class="uc-estilos" role="radiogroup" aria-label="Estilo das fraudes"></div>
       <div id="uc-estilo-det" class="uc-estilo-det" aria-live="polite"></div>
     </fieldset>
@@ -261,6 +263,7 @@
 <main id="aba-revisar" class="aba aba-revisar" hidden></main>
 <main id="aba-metas" class="aba" hidden></main>
 <main id="aba-equipe" class="aba" hidden></main>
+<main id="aba-qualidade" class="aba aba-qualidade" hidden></main>
 
 <dialog id="detalhe">
   <form method="dialog">

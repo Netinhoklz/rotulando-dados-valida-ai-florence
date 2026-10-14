@@ -11,6 +11,8 @@ import { instalarAssistente } from "./assistente.js";
 import { definirOperador, exigirOperador, nomeOperador, notificar, pedirPermissaoNotificacao } from "./operador.js";
 import { instalarPainel } from "./painel.js";
 import { instalarUmClique } from "./umclique.js";
+import { instalarGlossario, ligarTermos } from "./glossario.js";
+import { instalarQualidade } from "./qualidade.js";
 
 const $ = (id) => document.getElementById(id);
 function el(tag, props = {}, ...filhos) {
@@ -54,7 +56,8 @@ const G = { cat: null, docs: {}, rec: null, sel: new Set(), iaOnline: false, iaM
 let A = null;  // modo fácil (tipos de edição): assistente.js
 let P = null;  // abas Revisar, Metas e Equipe: painel.js
 let U = null;  // tela "Gerar fraudes" de um clique: umclique.js
-const ABAS = ["gerar", "catalogo", "revisar", "metas", "equipe"];
+let Q = null;  // aba Qualidade: qualidade.js
+const ABAS = ["gerar", "catalogo", "revisar", "metas", "equipe", "qualidade"];
 
 const tec = (id) => G.cat.tecnicas.find((t) => t.id === id);
 const automaticas = () => G.cat.tecnicas.filter((t) => t.automatica);
@@ -643,28 +646,36 @@ function montarFiltros() {
     onchange: (e) => { if (e.target.value.trim()) f.q = e.target.value.trim(); else delete f.q; G.pagina = 0; carregarGaleria(); } });
   const operador = el("input", { type: "search", placeholder: "operador…", value: f.operador || "", "aria-label": "filtrar por operador",
     onchange: (e) => { if (e.target.value.trim()) f.operador = e.target.value.trim(); else delete f.operador; G.pagina = 0; carregarGaleria(); } });
+  // os filtros do dia a dia sempre à mostra; os de pesquisa (nível, família, perícia, canal...) em "mais filtros", que abre
+  // sozinho quando algum deles está em uso (antes eram 13 listas na tela, de cara)
+  const MAIS = ["exceto_tecnica", "nivel", "familia", "origem", "pericia", "canal", "falsificador", "motivo", "operador"];
+  const emUso = MAIS.filter((k) => f[k]).length;
+  const mais = el("details", { class: "mais-filtros", open: emUso > 0 || lembrar("catMaisFiltros", false) === true },
+    el("summary", {}, `Mais filtros${emUso ? ` (${emUso} em uso)` : ""}`),
+    el("div", { class: "filtros" },
+      sel("exceto_tecnica", "sem a técnica", G.cat.tecnicas.filter((t) => t.automatica).map((t) => [t.id, t.nome])),
+      sel("nivel", "nível", Object.entries(G.cat.niveis)),
+      sel("familia", "família", Object.entries(G.cat.familias).map(([k, v]) => [k, v.rotulo])),
+      sel("origem", "origem", [["gerador", "gerador"], ["automatico", "automático (editor)"], ["assistido", "assistido"],
+        ["manual", "manual"]]),
+      sel("pericia", "perícia", [["auto", "sem perícia"], ["padrao", "padrão"], ["profissional", "profissional"], ["forense", "forense"]]),
+      sel("canal", "canal", [["com", "com canal"], ["sem", "sem canal"], ...G.cat.canais.filter(([k]) => k !== "nenhum")]),
+      sel("falsificador", "falsificador", [["nenhum", "sorteio clássico / manual"], ...G.cat.falsificadores.map((f) => [f.id, f.rotulo])]),
+      sel("motivo", "motivo", [["nenhum", "sem motivo"], ...G.cat.motivos.filter((m) => m.id !== "misto").map((m) => [m.id, m.rotulo])]),
+      operador));
+  mais.addEventListener("toggle", () => guardar("catMaisFiltros", mais.open));
   $("cat-filtros").replaceChildren(
     sel("split", "split", SPLITS),
-    sel("tecnica", "técnica", G.cat.tecnicas.map((t) => [t.id, t.nome])),
-    sel("exceto_tecnica", "sem a técnica", G.cat.tecnicas.filter((t) => t.automatica).map((t) => [t.id, t.nome])),
     sel("categoria", "classe", G.cat.categorias.map((c) => [c.chave, c.rotulo])),
-    sel("nivel", "nível", Object.entries(G.cat.niveis)),
-    sel("familia", "família", Object.entries(G.cat.familias).map(([k, v]) => [k, v.rotulo])),
-    sel("origem", "origem", [["gerador", "gerador"], ["automatico", "automático (editor)"], ["assistido", "assistido"],
-      ["manual", "manual"]]),
+    sel("tecnica", "técnica", G.cat.tecnicas.map((t) => [t.id, t.nome])),
     sel("revisao", "revisão", [["pendente", "pendente"], ["aprovada", "aprovada"], ["reprovada", "reprovada"]]),
-    sel("pericia", "perícia", [["auto", "sem perícia"], ["padrao", "padrão"], ["profissional", "profissional"], ["forense", "forense"]]),
-    sel("canal", "canal", [["com", "com canal"], ["sem", "sem canal"], ...G.cat.canais.filter(([k]) => k !== "nenhum")]),
-    sel("falsificador", "falsificador", [["nenhum", "sorteio clássico / manual"], ...G.cat.falsificadores.map((f) => [f.id, f.rotulo])]),
-    sel("motivo", "motivo", [["nenhum", "sem motivo"], ...G.cat.motivos.filter((m) => m.id !== "misto").map((m) => [m.id, m.rotulo])]),
-    operador,
     busca,
     el("button", { type: "button", onclick: () => { G.filtro = {}; G.pagina = 0; montarFiltros(); carregarGaleria(); } }, "limpar filtros"),
     el("button", { type: "button", title: "Grava um manifesto (CSV e JSON) só com as versões destes filtros, para treinar com elas",
       onclick: exportarFiltrados }, "⤓ exportar filtrados"),
     el("button", { type: "button", title: "Refaz manifesto.csv e catalogo.csv a partir dos JSON", onclick: async () => {
       try { await post("/api/catalogo/reindexar", {}); aviso("Índices refeitos.", "ok"); abrirCatalogo(); } catch (e) { aviso(e.message, "erro"); }
-    } }, "🔄 reindexar"));
+    } }, "🔄 reindexar"), mais);
 }
 
 async function carregarGaleria() {
@@ -748,7 +759,8 @@ async function exportarFiltrados() {
 
 // ------------------------------------------------------------------ detalhe de uma versão
 function abrirDetalhe(v) {
-  G.detalhe = { v, modo: "sobreposicao", zoom: null };
+  // abre já ampliado na 1ª edição: a página inteira cabia em ~280 px e a sobreposição cobria o texto editado
+  G.detalhe = { v, modo: "sobreposicao", zoom: v.edicoes?.length ? caixaDe(v.edicoes[0].bbox) : null };
   desenharSeloDetalhe();
   $("det-titulo").textContent = `${rotuloSplit(v.split)} · ${v.nome}${v.documento ? ` · ${v.documento}` : ""}`;
   desenharDetalhe();
@@ -761,7 +773,9 @@ function desenharDetalhe() {
   const modos = [["sobreposicao", "Sobreposição"], ["editada", "Editada"], ["original", "Original"], ["tecnicas", "Máscara de técnicas"], ["mascara", "Pixels alterados"]];
   por($("det-modos"), ...modos.map(([m, r]) => el("button", { type: "button", class: m === modo ? "ativa" : "",
     onclick: () => { G.detalhe.modo = m; desenharDetalhe(); } }, r)),
-    zoom ? el("button", { type: "button", onclick: () => { G.detalhe.zoom = null; desenharDetalhe(); } }, "🔍 ver inteira") : null);
+    zoom ? el("button", { type: "button", onclick: () => { G.detalhe.zoom = null; desenharDetalhe(); } }, "🔍 ver inteira") : null,
+    el("span", { class: "dica" }, zoom ? " Editada/Original alternam o depois e o antes · clique noutra edição à direita para ampliá-la"
+      : " Clique numa edição (na imagem ou à direita) para ver de perto"));
   let q = "max=1400";
   if (zoom) {
     const [x0, y0, x1, y1] = zoom;
@@ -865,6 +879,7 @@ function trocarAba(aba) {
   if (aba === "revisar") P.abrirRevisar();
   if (aba === "metas") P.abrirMetas();
   if (aba === "equipe") P.abrirEquipe();
+  if (aba === "qualidade") Q.abrir();
 }
 function mostrarQuem() { $("btn-quem").textContent = `👤 ${nomeOperador()}`; }
 
@@ -891,6 +906,9 @@ async function iniciar() {
   U = instalarUmClique({ G, $, el, por, aviso, guardar, lembrar, get, post, rotuloCat, rotuloSplit, SPLITS, caixaDe, corCategoria,
     tec, trocarAba, abrirDetalhe, nomeOperador, pedirPermissaoNotificacao,
     recomecarStatus: () => { G.ultimoStatus = null; acompanhar(); } });
+  Q = instalarQualidade({ $, el, por, aviso, get, post, ligarTermos });
+  instalarGlossario($("btn-glossario"));
+  ligarTermos(document);
   const avancadas = $("opcoes-avancadas");  // a receita completa: recolhida, a não ser que a pessoa a deixe aberta
   avancadas.open = lembrar("geradorAvancado", false) === true;
   avancadas.addEventListener("toggle", () => guardar("geradorAvancado", avancadas.open));

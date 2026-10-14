@@ -8,6 +8,12 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='editor.css') }}">
 </head>
 <body>
+<script>
+  // o modo (simples é o padrão) já no primeiro quadro: antes, os painéis do modo avançado apareciam por baixo da janela
+  // do nome e sumiam depois
+  try { if (JSON.parse(localStorage.getItem("rotulador.modoSimples") ?? "true") !== false) document.body.classList.add("simples"); }
+  catch { document.body.classList.add("simples"); }
+</script>
 <header id="topo">
   <h1 class="marca">Rotulador <b>UNIDOCK</b></h1>
   <nav id="abas-split" aria-label="Split"></nav>
@@ -19,9 +25,10 @@
   </div>
   <div class="modos">
     <button id="btn-modo" title="Alterna entre o modo simples e o editor completo">🛠 Modo avançado</button>
-    <button id="btn-lote" title="Gerador automático: escolha documentos, técnicas e classes e gere em lote (abre em outra aba)">🏭 Gerador automático</button>
+    <button id="btn-lote" title="Gerador automático: escolha documentos, técnicas e classes e gere em lote (abre em outra aba)">🏭 Gerador</button>
     <span id="lote-pill" class="pilula" hidden></span>
     <button id="btn-ajuda" title="Como usar">❔</button>
+    <button id="btn-glossario" title="O que é cada coisa (classe, camada, máscara, técnica…)" aria-label="Glossário">📖</button>
     <button id="btn-atalhos" title="Atalhos de teclado (?)" aria-label="Atalhos de teclado">⌨</button>
   </div>
   <div class="saida">
@@ -29,7 +36,8 @@
       <select id="formato" title="Original e editada sempre saem no mesmo formato e qualidade"></select>
     </label>
     <label id="rot-qualidade" class="so-avancado">Qualidade <input id="qualidade" type="number" min="1" max="100" value="95"></label>
-    <label>Operador <input id="operador" type="text" maxlength="80" placeholder="seu nome"></label>
+    <label title="Seu nome (vai nas versões que você salvar e nas revisões)"><span aria-hidden="true">👤</span><span class="visualmente-oculto">Operador</span>
+      <input id="operador" type="text" maxlength="80" placeholder="seu nome"></label>
     <button id="btn-descartar" class="perigo" title="Descarta todas as edições deste documento">Descartar</button>
     <button id="btn-salvar" class="primario" disabled title="">Salvar (Ctrl+S)</button>
   </div>
@@ -37,7 +45,7 @@
 
 <div id="opcoes" class="so-avancado">
   <div class="cat-ativa">
-    <label for="categoria">Categoria desta edição</label>
+    <label for="categoria" data-termo="classe">Categoria desta edição</label>
     <select id="categoria"></select>
     <input id="descricao" type="text" placeholder="descreva o que é 'outro'" hidden>
   </div>
@@ -81,14 +89,14 @@
         <label title="A fraude automática pede à IA para escrever os textos novos (bem mais lento: ~2 min por campo)">
           <input id="fraude-ia" type="checkbox"> edição automática com IA</label>
       </div>
-      <h2>Campos do documento <span id="campos-resumo" class="dica"></span>
+      <h2><span data-termo="campo">Campos do documento</span> <span id="campos-resumo" class="dica"></span>
         <span class="acoes"><button id="btn-marcar" title="Marcar um texto que não foi encontrado">＋ Marcar outro texto</button></span>
       </h2>
       <div id="marcar-rapido" class="marcar-rapido" title="Quais campos o ✨ Editar os marcados troca"></div>
       <ul id="lista-campos"></ul>
     </section>
     <section id="sec-camadas" class="so-avancado">
-      <h2>Camadas
+      <h2><span data-termo="camada">Camadas</span>
         <span class="acoes">
           <button id="cam-nova" title="Nova camada (Ctrl+Shift+N)">＋</button>
           <button id="cam-dup" title="Duplicar camada (Ctrl+J)">⧉</button>
@@ -105,7 +113,7 @@
       <p id="cam-dica" class="dica"></p>
     </section>
     <section>
-      <h2>O que foi editado <small>(clique = categoria ativa)</small></h2>
+      <h2><span data-termo="mascara">O que foi editado</span> <small>(clique = categoria ativa)</small></h2>
       <ul id="lista-categorias"></ul>
       <p id="motivo-salvar" class="dica"></p>
     </section>

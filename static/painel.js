@@ -59,6 +59,7 @@ export function instalarPainel(g) {
           el("option", { value: "manual" }, "só manual")),
         el("span", { id: "rev-pos", class: "pilula" }), el("span", { id: "rev-contagem", class: "dica" })),
       el("div", { class: "det-modos", id: "rev-modos" }),
+      el("div", { class: "rev-vazio", id: "rev-vazio", hidden: true, role: "status" }),
       el("div", { class: "det-imagem rev-img", id: "rev-quadro" }, el("img", { id: "rev-img", alt: "" }), el("div", { id: "rev-caixas" }))),
     el("section", { class: "coluna rev-lado" },
       el("h2", { id: "rev-titulo" }),
@@ -91,13 +92,32 @@ export function instalarPainel(g) {
     const v = R.fila[R.i];
     $("rev-pos").textContent = v ? `${R.i + 1} de ${R.total}` : "0";
     for (const id of ["rev-aprovar", "rev-reprovar", "rev-pular", "rev-voltar"]) $(id).disabled = !v;
+    // sem versão para mostrar: a área da imagem diz por quê e o que fazer; os botões de decisão saem de cena
+    $("rev-vazio").hidden = Boolean(v);
+    $("rev-quadro").hidden = !v;
+    aba.querySelector(".rev-decisao").hidden = !v;
     if (!v) {
       $("rev-img").removeAttribute("src");
       $("rev-caixas").replaceChildren();
       por($("rev-modos"));
-      $("rev-titulo").textContent = R.estado === "pendente" ? "Nada pendente de revisão 🎉" : "Nada aqui com esses filtros";
-      por($("rev-selo"), el("button", { type: "button", onclick: () => g.trocarAba("gerar") }, "⚙ Gerar mais versões"));
-      por($("rev-edicoes")); por($("rev-motivos"));
+      const total = (c.pendente || 0) + (c.aprovada || 0) + (c.reprovada || 0);
+      const [titulo, texto] = !total
+        ? ["Ainda não há versões para revisar", "As versões aparecem aqui depois que o gerador cria fraudes (aba ⚙ Gerar) ou "
+          + "quando alguém salva uma edição no editor."]
+        : R.estado === "pendente" && !R.split && !R.origem
+          ? ["Tudo revisado 🎉", `${c.aprovada || 0} aprovada(s) e ${c.reprovada || 0} reprovada(s). Gere mais versões ou `
+            + "escolha \"aprovadas\"/\"reprovadas\" em Mostrar para rever uma decisão."]
+          : ["Nada com esses filtros", "Troque o que está em Mostrar, o split ou a origem, lá em cima."];
+      $("rev-titulo").textContent = titulo;
+      const irPendentes = R.estado !== "pendente" && c.pendente
+        ? el("button", { type: "button", class: "primario", onclick: () => { R.estado = "pendente"; R.split = ""; R.origem = "";
+          for (const [id, v] of [["rev-estado", "pendente"], ["rev-split", ""], ["rev-origem", ""]]) $(id).value = v;
+          carregarFila(); } }, `Mostrar as ${c.pendente} pendente(s)`) : null;
+      por($("rev-vazio"), el("h3", {}, titulo), el("p", {}, texto),
+        el("div", { class: "linha" }, irPendentes,
+          el("button", { type: "button", class: irPendentes ? "" : "primario", onclick: () => g.trocarAba("gerar") }, "⚙ Gerar versões"),
+          el("a", { href: "/", class: "botao" }, "✏ Abrir o editor")));
+      por($("rev-selo")); por($("rev-edicoes")); por($("rev-motivos"));
       return;
     }
     $("rev-titulo").textContent = `${rotuloSplit(v.split)} · ${v.documento || v.doc} · ${v.nome.split("__")[1]}`;
@@ -221,7 +241,10 @@ export function instalarPainel(g) {
         el("tfoot", {}, el("tr", {}, el("th", {}, "falta"), ...SPLITS.map(([sp]) => el("td", {},
           el("b", {}, String(totalFalta(sp))), " edições ",
           totalFalta(sp) ? el("button", { type: "button", title: "Prepara a receita (modo avançado) com o que falta neste split",
-            onclick: () => g.gerarOQueFalta(sp, r.falta[sp]) }, `⚙ gerar o que falta`) : el("span", { class: "pilula ok" }, "✔ cumprida"))))))),
+            onclick: () => g.gerarOQueFalta(sp, r.falta[sp]) }, `⚙ gerar o que falta`)
+            // "cumprida" só com meta: sem nenhuma, o split não tem o que cumprir (antes aparecia ✔ com 0 edições)
+            : Object.values(metas.classes[sp] || {}).some((n) => n > 0) ? el("span", { class: "pilula ok" }, "✔ cumprida")
+              : el("span", { class: "dica" }, "sem meta — preencha a coluna"))))))),
       el("p", { class: "dica" }, "\"Gerar o que falta\" monta a receita no modo avançado: só aquele split, as classes que faltam com peso pelo quanto falta, "
         + "e o número de versões estimado. Confira antes de gerar.")));
   }

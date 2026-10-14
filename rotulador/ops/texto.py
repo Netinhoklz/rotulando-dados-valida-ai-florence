@@ -114,7 +114,7 @@ def renderizar(p: dict, H: int, W: int):
     x, y = num(p, "x", 0, -W, 2 * W), num(p, "y", 0, -H, 2 * H)
     espacamento = num(p, "espacamento", 0, -50, 200)
     largura = num(p, "largura", 100, 30, 300) / 100.0
-    negrito = num(p, "negrito", 0, 0, 10)
+    negrito = num(p, "negrito", 0, -3, 10)  # negativo afina o traço (a fonte parecida é mais pesada que a do papel)
     rotacao = num(p, "rotacao", 0, -180, 180)
     desfoque = num(p, "desfoque", 0, 0, 10)
     antialias = bool(p.get("antialias", True))
@@ -156,6 +156,19 @@ def renderizar(p: dict, H: int, W: int):
 
 SUPER = 4  # superamostragem do rasterizador padrão
 
+
+def _afinar(a: np.ndarray, r: float) -> np.ndarray:
+    """O traço do alfa (0..1) afinado ``r`` px de cada lado: erosão em tons de cinza com disco, e o r fracionário pela
+    mistura das erosões inteiras vizinhas. O avesso do negrito isotrópico (o contorno de negrito/2 px)."""
+    if r <= 0:
+        return a
+
+    def erodir(k: int) -> np.ndarray:
+        return a if k <= 0 else cv2.erode(a, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1, 2 * k + 1)))
+    k0 = int(math.floor(r))
+    f = r - k0
+    return erodir(k0) if f < 1e-3 else (1 - f) * erodir(k0) + f * erodir(k0 + 1)
+
 # Suavização da camada de texto do Photoshop (Nítida, Precisa, Forte, Suave; "Nenhuma" é o "aliasado"): a mesma
 # cobertura superamostrada com outra curva de borda. Nítida e Precisa endurecem a transição papel→tinta, Forte
 # engorda o traço, Suave espalha a borda. Cada pessoa escolhe uma, e ela fica no texto que digitou
@@ -173,10 +186,11 @@ def _desenhar_super(nome: str, texto: str, tamanho: float, x: float, y: float, e
     prendia as bordas horizontais na grade (o texto novo saía 1,4-1,7x mais nítido na horizontal que o do scan, que é
     igual nas duas direções) e o Pillow arredonda a âncora para o pixel inteiro; aqui a posição vale em 1/SUPER de pixel.
     Negrito isotrópico: um contorno de negrito/2 px em volta de cada traço (deslocar só na horizontal engrossava as
-    hastes e deixava as barras finas). Largura e rotação também na resolução grande. Devolve (alpha, x0, y0)."""
+    hastes e deixava as barras finas). Negrito negativo afina: erosão de -negrito/2 px na resolução grande. Largura e
+    rotação também na resolução grande. Devolve (alpha, x0, y0)."""
     S = SUPER
     fonte = _fonte(nome, round(tamanho * S * 4) / 4)
-    traco = negrito * S / 2
+    traco = max(0.0, negrito) * S / 2
     if espacamento:
         # cada letra no avanço do texto até ela (o kerning continua) mais o espaçamento extra
         pos = [fonte.getlength(texto[:k]) + k * espacamento * S for k in range(len(texto))]
@@ -213,6 +227,8 @@ def _desenhar_super(nome: str, texto: str, tamanho: float, x: float, y: float, e
         M = np.hstack([L, (Q - 0.5 - L @ (np.array([-l, -t], float) - 0.5))[:, None]])
         grande = cv2.warpAffine(reta, M, (S * (lx1 - lx0), S * (ly1 - ly0)), flags=cv2.INTER_LINEAR,
                                 borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    if negrito < 0:
+        grande = _afinar(grande, -negrito * S / 2)
     alpha = cv2.resize(grande, (lx1 - lx0, ly1 - ly0), interpolation=cv2.INTER_AREA)
     return np.pad(alpha, margem), lx0 - margem, ly0 - margem
 
@@ -235,7 +251,7 @@ def _desenhar_nativo(nome: str, texto: str, tamanho: float, x: float, y: float, 
     # o texto é desenhado SEM a escala horizontal e só depois comprimido/esticado: a camada precisa
     # caber o desenho original (com largura < 100% o fim do texto era cortado)
     alcance = max(abs(l), abs(r), abs(r * largura))
-    R = int(math.ceil(math.hypot(alcance, max(abs(t), abs(b))))) + int(negrito) + int(3 * desfoque) + 4
+    R = int(math.ceil(math.hypot(alcance, max(abs(t), abs(b))))) + int(max(0.0, negrito)) + int(3 * desfoque) + 4
     lx0, ly0 = math.floor(x) - R, math.floor(y) - R
     ax, ay = x - lx0, y - ly0  # âncora dentro da camada
     camada = Image.new("L", (2 * R + 2, 2 * R + 2), 0)
@@ -252,6 +268,8 @@ def _desenhar_nativo(nome: str, texto: str, tamanho: float, x: float, y: float, 
                 d.text((px, ay), c, fill=255, font=fonte, anchor="ls")
                 px += av
     alpha = np.asarray(camada, np.float32) / 255.0
+    if negrito < 0:
+        alpha = _afinar(alpha, -negrito / 2)
     if largura != 1.0 or rotacao:
         # escala horizontal e rotação em torno da âncora (contínuo -> centro de pixel do cv2)
         cx, cy = ax - 0.5, ay - 0.5

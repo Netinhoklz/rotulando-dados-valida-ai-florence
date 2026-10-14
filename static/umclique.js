@@ -456,6 +456,8 @@ export function instalarUmClique(g) {
       painel.setAttribute("aria-busy", "false");
       $("uc-exemplo-btn").textContent = "👁 Ver um exemplo";
       atualizar();
+      // o exemplo pronto cresce para baixo da dobra: leva a pessoa até ele (antes parecia que nada tinha acontecido)
+      painel.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   }
   function desenharExemplo(r) {

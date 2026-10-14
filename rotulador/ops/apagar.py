@@ -61,7 +61,7 @@ def reconstruir(rec: np.ndarray, buraco: np.ndarray, modo: str, semente: int, al
         out[buraco] = np.clip(suave[buraco] + 0.5, 0, 255).astype(np.uint8)
         return out
     if modo in ("carimbo", "recuperar"):
-        fonte = _carimbo(rec, buraco, semente, buraco if alvo is None else alvo & buraco)
+        fonte = _carimbo_por_passadas(rec, buraco, semente, buraco if alvo is None else alvo & buraco, altura)
         return fonte if modo == "carimbo" else _recuperar(rec, buraco, fonte, altura)
     return preencher(rec, buraco, tamanho_patch=7, margem=None, semente=semente)
 
@@ -130,6 +130,54 @@ def _carimbo(rec: np.ndarray, buraco: np.ndarray, semente: int, alvo: np.ndarray
     if falta.any():
         out = np.where(falta[..., None], preencher(rec, buraco, tamanho_patch=7, margem=None, semente=semente), out)
     return out
+
+
+def _carimbo_por_passadas(rec: np.ndarray, buraco: np.ndarray, semente: int, alvo: np.ndarray,
+                          altura: float) -> np.ndarray:
+    """O carimbo como a mão usa: passadas ao longo da linha (``gesto.pinceladas``), cada uma com a SUA origem — o
+    Alt+clique num papel livre perto; no modo "alinhado" (40%) a origem anda junto com a passada anterior —, copiando
+    disco a disco com a borda macia do pincel (dureza 0,7: as emendas em anel do carimbo de verdade). Onde as
+    passadas não cobriram por inteiro, as faixas de ``_carimbo`` (e o PatchMatch, no fim) completam."""
+    from .. import gesto
+
+    ys, xs = np.nonzero(alvo)
+    out = rec.astype(np.float32)
+    if not ys.size:
+        return rec.copy()
+    rng = random.Random(semente ^ 0xC10E)
+    H, W = alvo.shape
+    raio = max(3.0, rng.uniform(0.55, 0.8) * max(4.0, float(altura)))
+    by0, by1, bx0, bx1 = int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
+    bf = buraco.astype(np.float32)
+    cobre = np.zeros((H, W), np.float32)
+    pref = None
+    for _rodada in range(2):  # a segunda volta só onde a primeira não cobriu (a pessoa repassa)
+        falta = alvo & (cobre < 0.97)
+        if not falta.any():
+            break
+        ys2, xs2 = np.nonzero(falta)
+        for traco in gesto.pinceladas(int(xs2.min()), int(ys2.min()), int(xs2.max()) + 1, int(ys2.max()) + 1, raio,
+                                      rng):
+            tq = gesto.toques(traco, raio, rng, espacamento=0.25)
+            a = gesto.alfa_toques((H, W), tq, dureza=0.7)
+            pe = a > 0.02
+            if not pe.any():
+                continue
+            py, px = np.nonzero(pe)
+            y0, y1, x0, x1 = int(py.min()), int(py.max()) + 1, int(px.min()), int(px.max()) + 1
+            o = _origem(bf, pe[y0:y1, x0:x1], y0, x0, pref if rng.random() < 0.4 else None, rng)
+            if o is None:
+                continue
+            pref = o
+            dy, dx = o
+            sub = a[y0:y1, x0:x1, None]
+            out[y0:y1, x0:x1] = out[y0:y1, x0:x1] * (1 - sub) + rec[y0 + dy:y1 + dy, x0 + dx:x1 + dx] * sub
+            cobre[y0:y1, x0:x1] = 1 - (1 - cobre[y0:y1, x0:x1]) * (1 - a[y0:y1, x0:x1])
+    final = np.clip(out + 0.5, 0, 255).astype(np.uint8)
+    resto = alvo & (cobre < 0.97)  # o que a borda macia deixou meio coberto: ainda tem tinta antiga embaixo
+    if resto.any():
+        final[resto] = _carimbo(rec, buraco, semente, resto)[resto]
+    return final
 
 
 def _recuperar(rec: np.ndarray, buraco: np.ndarray, fonte: np.ndarray, altura: float) -> np.ndarray:
