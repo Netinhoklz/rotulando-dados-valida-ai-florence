@@ -4,6 +4,10 @@
 const RAIO_ALCA = 7; // px de tela
 
 function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+// o ponto com o instante em que o mouse passou por ele: os traços salvos levam ``tempos`` (ms desde o 1º ponto), e
+// a geração automática aprende com eles a velocidade e o ritmo de uma pessoa de verdade (rotulador/gesto.py)
+function comTempo(p) { return { ...p, t: performance.now() }; }
+function tempos(pts) { return pts.map((q) => Math.round((q.t ?? pts[0].t ?? 0) - (pts[0].t ?? 0))); }
 
 function modoSelecao(ev, padrao) {
   if (ev.shiftKey && ev.altKey) return "intersectar";
@@ -230,16 +234,16 @@ export function criarFerramentas(app) {
     botoes: botoesSelecao,
     down(p, ev) {
       if (op("laco").poligonal) {
-        if (!this._pts) { this._pts = [p]; this._modo = modoSelecao(ev, op("laco").modo); }
+        if (!this._pts) { this._pts = [comTempo(p)]; this._modo = modoSelecao(ev, op("laco").modo); }
         else if (this._pts.length > 2 && dist(app.visor.imgParaTela(p.x, p.y), app.visor.imgParaTela(this._pts[0].x, this._pts[0].y)) < 8) this.fechar();
-        else this._pts.push(p);
-      } else { this._pts = [p]; this._modo = modoSelecao(ev, op("laco").modo); this._arrastando = true; }
+        else this._pts.push(comTempo(p));
+      } else { this._pts = [comTempo(p)]; this._modo = modoSelecao(ev, op("laco").modo); this._arrastando = true; }
     },
     move(p) {
       this._mouse = p;
       if (this._arrastando && this._pts) {
         const ult = this._pts[this._pts.length - 1];
-        if (dist(app.visor.imgParaTela(p.x, p.y), app.visor.imgParaTela(ult.x, ult.y)) >= 2) this._pts.push(p);
+        if (dist(app.visor.imgParaTela(p.x, p.y), app.visor.imgParaTela(ult.x, ult.y)) >= 2) this._pts.push(comTempo(p));
       }
       if (this._pts) app.visor.redesenhar();
     },
@@ -247,7 +251,10 @@ export function criarFerramentas(app) {
     dbl() { if (op("laco").poligonal) this.fechar(); },
     fechar() {
       const pts = this._pts; this._pts = null;
-      if (pts && pts.length >= 3) app.adicionarForma({ tipo: "poligono", pontos: pts.map((q) => [q.x, q.y]) }, this._modo);
+      if (pts && pts.length >= 3) {
+        app.adicionarForma({ tipo: "poligono", pontos: pts.map((q) => [q.x, q.y]), tempos: tempos(pts),
+          zoom: Math.round(app.visor.escala * 1000) / 1000 }, this._modo);
+      }
       app.visor.redesenhar();
     },
     tecla(ev) {
@@ -281,19 +288,21 @@ export function criarFerramentas(app) {
     nome: "Pincel de seleção (Q): pinte a área a selecionar (Alt = tirar da seleção)", icone: "🖍", atalho: "q",
     cursor: "none", grupo: "selecao", campos: [{ chave: "tamanho", tipo: "num", rotulo: "Tamanho ([ ])", min: 1, max: 1000, passo: 1, padrao: 20 }],
     botoes: botoesSelecao,
-    down(p, ev) { this._pts = [p]; this._modo = ev.altKey ? "subtrair" : (app.temSelecao() ? "somar" : "novo"); },
+    down(p, ev) { this._pts = [comTempo(p)]; this._modo = ev.altKey ? "subtrair" : (app.temSelecao() ? "somar" : "novo"); },
     move(p) {
       this._mouse = p;
       if (this._pts) {
         const ult = this._pts[this._pts.length - 1];
-        if (dist(app.visor.imgParaTela(p.x, p.y), app.visor.imgParaTela(ult.x, ult.y)) >= 2) this._pts.push(p);
+        if (dist(app.visor.imgParaTela(p.x, p.y), app.visor.imgParaTela(ult.x, ult.y)) >= 2) this._pts.push(comTempo(p));
       }
       app.visor.redesenhar();
     },
     up() {
       if (!this._pts) return;
+      const t = tempos(this._pts);
       const pts = this._pts.map((q) => [q.x, q.y]); this._pts = null;
-      app.adicionarForma({ tipo: "traco", pontos: pts, tamanho: op("pincelsel").tamanho }, this._modo);
+      app.adicionarForma({ tipo: "traco", pontos: pts, tamanho: op("pincelsel").tamanho, tempos: t,
+        zoom: Math.round(app.visor.escala * 1000) / 1000 }, this._modo);
     },
     desenhar(ctx, v) {
       if (this._pts) {
@@ -318,14 +327,14 @@ export function criarFerramentas(app) {
       nome, icone, atalho, cursor: "none", campos, botoes: extra.botoes,
       down(p, ev) {
         if (extra.antes && extra.antes(p, ev) === false) return;
-        this._pts = [p];
+        this._pts = [comTempo(p)];
         app.visor.redesenhar();
       },
       move(p) {
         this._mouse = p;
         if (this._pts) {
           const ult = this._pts[this._pts.length - 1];
-          if (dist(app.visor.imgParaTela(p.x, p.y), app.visor.imgParaTela(ult.x, ult.y)) >= 1.5) this._pts.push(p);
+          if (dist(app.visor.imgParaTela(p.x, p.y), app.visor.imgParaTela(ult.x, ult.y)) >= 1.5) this._pts.push(comTempo(p));
         }
         app.visor.redesenhar();
       },
@@ -333,7 +342,8 @@ export function criarFerramentas(app) {
         if (!this._pts) return;
         const traco = { pts: this._pts, cor: app.corFrente, tamanho: op(id).tamanho };
         this._pts = null;  // um novo traço pode começar enquanto este espera o servidor
-        const params = { ...op(id), pontos: traco.pts.map((q) => [q.x, q.y]), ...(extra.params ? extra.params(traco.pts) : {}) };
+        const params = { ...op(id), pontos: traco.pts.map((q) => [q.x, q.y]), tempos: tempos(traco.pts),
+          zoom: Math.round(app.visor.escala * 1000) / 1000, ...(extra.params ? extra.params(traco.pts) : {}) };
         if (extra.cor) params.cor = traco.cor;
         (this._pendentes ||= []).push(traco);
         try { await app.aplicar(tipo, params, { semCategoria: tipo === "borracha" }); }

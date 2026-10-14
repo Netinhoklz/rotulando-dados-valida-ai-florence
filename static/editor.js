@@ -3,6 +3,7 @@ import { bitmap, bitmapUrl, get, post } from "./api.js";
 import { criarFerramentas, ORDEM } from "./ferramentas.js";
 import { definirOperador, exigirOperador, nomeOperador, notificar } from "./operador.js";
 import { instalarSimples } from "./simples.js";
+import { instalarGlossario, ligarTermos } from "./glossario.js";
 import { Visor } from "./visor.js";
 
 const $ = (id) => document.getElementById(id);
@@ -151,11 +152,37 @@ function campo(c, o, aoMudar) {
   return el("span", { class: "grupo" }, el("label", { for: id }, c.rotulo), entrada);
 }
 
+// para que serve cada ferramenta, em uma frase (vai na dica do botão e no começo da barra de opções)
+const PARA_QUE = {
+  mao: "Arrasta a imagem para ver outra parte (ou segure Espaço com qualquer ferramenta).",
+  zoom: "Aproxima onde você clica; com Alt, afasta. 0 ajusta à tela, 1 mostra em 100%.",
+  ret: "Seleciona um retângulo. A seleção limita onde as outras ferramentas mexem.",
+  elipse: "Seleciona uma elipse (um carimbo redondo, um logotipo).",
+  laco: "Seleciona desenhando o contorno à mão livre, ponto a ponto.",
+  varinha: "Seleciona os pixels de cor parecida com a do clique (o fundo de um campo, uma faixa colorida).",
+  pincelsel: "Pinta a seleção com um pincel: bom para pegar só as letras de uma palavra.",
+  pincel: "Pinta com a cor de frente, com borda suave. Para retocar traços de tinta.",
+  borracha: "Apaga a edição da camada ativa e devolve o documento original naquele ponto.",
+  balde: "Preenche a área de cor parecida com a cor de frente (como o balde do Paint: deixa mancha lisa).",
+  contagotas: "Pega a cor de um ponto do documento para usar como cor de frente (a cor da tinta, do papel).",
+  forma: "Desenha retângulo, elipse ou linha (tarja, sublinhado, moldura).",
+  carimbo: "Copia uma parte do documento para outra (Alt+clique escolhe a origem): apaga texto com o papel de verdade.",
+  recuperacao: "Como o carimbo, mas casa a cor e a luz do lugar de destino: some com manchas e letras sem emenda.",
+  corretivo: "Pincel corretivo: o que você pinta some, reconstruído a partir do papel em volta (o pincel de correção de manchas do Photoshop).",
+  remendo: "Selecione o que quer cobrir e arraste até um pedaço de papel limpo: ele vira o remendo, com a luz casada.",
+  retoque: "Pincel de retoque: desfoca, aguça, clareia ou escurece só onde passa (acabamento da edição).",
+  texto: "Escreve um texto novo onde você clicar, na fonte, tamanho e cor escolhidos (🔍 descobre a fonte do documento).",
+  substituir: "Arraste sobre o texto antigo, digite o novo e Enter: o antigo é apagado e o novo sai na fonte, cor e posição estimadas.",
+  transformar: "Move, escala, gira ou distorce a seleção (alças nos cantos; Enter aplica).",
+  colar: "Cola um trecho de outro documento do MESMO split (uma letra, um carimbo, uma assinatura).",
+};
+
 app.renderOpcoes = () => {
   const box = $("opcoes-ferramenta");
   box.replaceChildren();
   const f = app.ferramenta;
   if (!f) return;
+  if (PARA_QUE[app.idFerramenta]) box.append(el("span", { class: "para-que", title: PARA_QUE[app.idFerramenta] }, "ℹ " + PARA_QUE[app.idFerramenta]));
   const o = app.opcoes(app.idFerramenta);
   const aoMudar = debounce(() => { if (f.mudouOpcao) f.mudouOpcao(); app.visor.redesenhar(); }, 120);
   for (const c of f.campos || []) box.append(campo(c, o, aoMudar));
@@ -179,7 +206,8 @@ function montarFerramentas() {
     if (id === "|") { box.append(el("hr")); continue; }
     const f = app.F[id];
     const atalho = f.atalho ? (f.atalho === f.atalho.toUpperCase() && f.atalho !== f.atalho.toLowerCase() ? "⇧" + f.atalho : f.atalho.toUpperCase()) : "";
-    box.append(el("button", { type: "button", "data-f": id, title: f.nome, onclick: () => app.usar(id) },
+    box.append(el("button", { type: "button", "data-f": id, title: PARA_QUE[id] ? `${f.nome} — ${PARA_QUE[id]}` : f.nome,
+      "aria-label": f.nome, onclick: () => app.usar(id) },
       f.icone, atalho ? el("small", {}, atalho) : null));
   }
   box.append(el("hr"));
@@ -1133,6 +1161,8 @@ async function iniciar() {
   await exigirOperador();  // o nome vai nas travas, nas versões salvas e nas revisões
   app.F = criarFerramentas(app);
   montarFerramentas();
+  instalarGlossario($("btn-glossario"));
+  ligarTermos(document);
   montarCategorias();
   montarAbas();
   montarMouse();

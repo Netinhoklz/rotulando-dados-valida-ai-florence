@@ -286,19 +286,121 @@ def _quadrado(p: np.ndarray) -> bool:
     return min(lados) > 0 and max(lados) / min(lados) <= 1.35 and 0.75 <= w / max(1.0, h) <= 1.33
 
 
+def _cantos_de_qr(bw: np.ndarray) -> list[tuple[float, float]]:
+    """Centros dos padrões de canto num binário (tinta = 255): contorno com filho com neto, quase quadrado, com o
+    centro 3x3 de um 7x7 (área do neto / a do contorno perto de 0,18)."""
+    cont, hier = cv2.findContours(bw, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    if hier is None:
+        return []
+    hier = hier[0]
+    h, w = bw.shape
+    achados = []
+    for i, ct in enumerate(cont):
+        filho = hier[i][2]
+        if filho < 0 or hier[filho][2] < 0:
+            continue
+        bx, by, bw_, bh = cv2.boundingRect(ct)
+        if bw_ < 0.05 * w or bw_ > 0.35 * w or not 0.75 <= bw_ / max(1, bh) <= 1.33:
+            continue
+        a0, a2 = cv2.contourArea(ct), cv2.contourArea(cont[hier[filho][2]])
+        if a0 > 0 and 0.06 <= a2 / a0 <= 0.40:
+            achados.append((bx + bw_ / 2, by + bh / 2))
+    return achados
+
+
+def _tres_cantos(img: np.ndarray, caixa) -> bool:
+    """A região tem os 3 padrões de canto do QR (sup-esq, sup-dir, inf-esq) em alguma escala. Limiar LOCAL: no QR
+    miúdo do PIX (1,5 px por módulo) o anel claro do canto sai cinza, e o limiar global o fechava."""
+    x0, y0, x1, y1 = caixa
+    c = cv2.cvtColor(img[y0:y1, x0:x1], cv2.COLOR_RGB2GRAY)
+    for modulo in (1.0, 1.4, 2.0, 2.8, 4.0, 5.6):  # px por módulo no documento
+        f = 5.0 / modulo
+        g = cv2.resize(c, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC if f > 1 else cv2.INTER_AREA)
+        bw = cv2.adaptiveThreshold(g, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 15, 4)
+        h, w = bw.shape
+        pts = _cantos_de_qr(bw)
+        if all(any(abs(px - cx) < 0.3 * w and abs(py - cy) < 0.3 * h for px, py in pts)
+               for cx, cy in ((0, 0), (w, 0), (0, h))):
+            return True
+    return False
+
+
+def _qr_por_textura(img: np.ndarray) -> list[list[int]]:
+    """QR que o detector do OpenCV não acha (o do PIX no boleto, 1,5 px por módulo, dentro de uma célula): região quase
+    quadrada, metade escura, com transições em toda linha e toda coluna (texto tem linhas em branco entre as linhas;
+    código de barras não tem transição na vertical), e com os 3 padrões de canto. O DataMatrix do Correios (borda em
+    L, sem os cantos) fica de fora: a técnica do QR regera um PIX. Os fios da tabela saem antes de juntar os módulos."""
+    H, W = img.shape[:2]
+    cinza = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    _, bw = cv2.threshold(cinza, 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    cru = bw.copy()
+
+    def corrida(perfil: np.ndarray) -> tuple[int, int]:
+        """A maior sequência de posições com tinta (o QR não tem linha nem coluna em branco: o padrão de sincronia)."""
+        corridas, ini = [], None
+        for i, v in enumerate(list(perfil) + [False]):
+            if v and ini is None:
+                ini = i
+            elif not v and ini is not None:
+                corridas.append((ini, i))
+                ini = None
+        return max(corridas, key=lambda r: r[1] - r[0]) if corridas else (0, len(perfil))
+    L = max(25, int(min(H, W) / 25))
+    fios = (cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (L, 1)))
+            | cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, L))))
+    bw = bw & (1 - cv2.dilate(fios, np.ones((3, 3), np.uint8)))
+    k = max(3, int(round(min(H, W) / 250)))
+    fech = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))
+    _n, _lab, st, _c = cv2.connectedComponentsWithStats(fech)
+    lado_min, lado_max = max(40, 0.02 * min(H, W)), 0.35 * min(H, W)
+    out = []
+    for x, y, w, h, area in st[1:]:
+        if not (lado_min <= w <= lado_max and lado_min <= h <= lado_max and 0.8 <= w / h <= 1.25):
+            continue
+        b = bw[y:y + h, x:x + w]
+        if not 0.3 <= b.mean() <= 0.75 or area < 0.7 * w * h:
+            continue
+        tr_l = (np.diff(b.astype(np.int8), axis=1) != 0).sum(1)
+        tr_c = (np.diff(b.astype(np.int8), axis=0) != 0).sum(0)
+        if (tr_l >= 4).mean() < 0.85 or (tr_c >= 4).mean() < 0.85:
+            continue
+        # caixa justa: a maior corrida de linhas e de colunas com tinta no binário CRU (o rótulo "PIX" em cima fica
+        # fora pelo vão; tirar os fios cortava uma faixa do QR com corrida longa de módulos escuros)
+        c = cv2.dilate(cru[y:y + h, x:x + w], np.ones((2, 2), np.uint8))
+        a0, a1 = corrida(c.any(1))
+        b0, b1 = corrida(c[a0:a1].any(0))
+        x, y, w, h = x + b0, y + a0, b1 - b0, a1 - a0
+        m = 3  # com folga: rente à tinta, o anel de fora do padrão de canto encosta na borda do recorte e some
+        caixa = [max(0, int(x) - m), max(0, int(y) - m), min(W, int(x + w) + m), min(H, int(y + h) + m)]
+        if _tres_cantos(img, caixa):
+            out.append(caixa)
+    return out
+
+
 def detectar_qr(img: np.ndarray) -> list[list[int]]:
+    """Caixas dos QR codes: o detector do OpenCV (validado: quadrado, ``_quadrado``) mais o por textura e padrões de
+    canto (``_qr_por_textura``), sem repetir o mesmo QR."""
+    caixas = []
     bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
     ok, pontos = cv2.QRCodeDetector().detect(bgr)
     if ok and pontos is not None and not _quadrado(pontos.reshape(-1, 2)):
         ok = False
     if (not ok or pontos is None) and hasattr(cv2, "QRCodeDetectorAruco"):
         ok, pontos = cv2.QRCodeDetectorAruco().detect(bgr)  # acha QR em papel colorido/JPEG forte
-    if not ok or pontos is None or not len(pontos) or not _quadrado(pontos.reshape(-1, 2)):
-        return []
-    p = pontos.reshape(-1, 2)
-    m = 4
-    return [[int(max(0, p[:, 0].min() - m)), int(max(0, p[:, 1].min() - m)),
-             int(min(img.shape[1], p[:, 0].max() + m)), int(min(img.shape[0], p[:, 1].max() + m))]]
+    if ok and pontos is not None and len(pontos) and _quadrado(pontos.reshape(-1, 2)):
+        p = pontos.reshape(-1, 2)
+        m = 4
+        caixas.append([int(max(0, p[:, 0].min() - m)), int(max(0, p[:, 1].min() - m)),
+                       int(min(img.shape[1], p[:, 0].max() + m)), int(min(img.shape[0], p[:, 1].max() + m))])
+
+    def sobrepoe(a, b):
+        ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+        iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+        return ix * iy > 0.3 * min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    for c in _qr_por_textura(img):
+        if not any(sobrepoe(c, d) for d in caixas):
+            caixas.append(c)
+    return caixas
 
 
 def _sobrescrito(img: np.ndarray, caixa, texto: str) -> str:

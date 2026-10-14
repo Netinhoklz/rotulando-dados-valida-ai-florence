@@ -500,10 +500,14 @@ class _Tela:
         if h is not None and h.get("selecao") != "tinta" and self.c.tec.id not in _BORRACHA_PEQUENA:
             x0, y0, x1, y1 = self.caixa
             tinta = mascara_tinta(self.c.img[y0:y1, x0:x1]).astype(bool)
+            info: dict = {}
             furo = humano.selecionar(furo, tinta, h["selecao"], h.get("margem") or (0.15,) * 4,
                                      float(self.c.caixa[3] - self.c.caixa[1]),
-                                     random.Random(self.c.semente ^ 0x5E1), estrito=True)
+                                     random.Random(self.c.semente ^ 0x5E1), estrito=True,
+                                     zoom=float(h.get("zoom") or 1.0), info=info)
             self.c.fornecedores["selecao"] = h["selecao"]
+            if info.get("gesto"):
+                self.c.fornecedores["gesto"] = info["gesto"]
         fundo = self.c.papel(self.caixa, furo).astype(np.float32)
         v = self.c.vestigio()
         if v > 0:  # apagado malfeito: sobra um fantasma fraco da tinta antiga
@@ -761,6 +765,37 @@ def _fonte_substituta(c: _C) -> str | None:
     return disponiveis[0]
 
 
+PESO_CORRIGIR, PESO_MAXIMO = 0.12, 0.25  # diferença de espessura do traço que se corrige / que descarta a edição
+# abaixo desta semelhança a fonte do campo NÃO foi identificada: escrever na "mais parecida" do top 10 dá outra letra
+# (o "DEZ/2025" em Verdana num JAN/2026 de fonte geométrica, semelhança 0,47; o 0 oval da Tahoma num 0 redondo, 0,57).
+# A mesma fonte recusa e o gerador vai para as letras do próprio documento
+SEMELHANCA_MINIMA = 0.60
+
+
+def _peso_na_imagem(rec: np.ndarray, mascara: np.ndarray | None = None) -> float:
+    """Espessura média do traço (px) da tinta de ``rec``: o alfa pela luminância (papel = p90, tinta = p3) e
+    glifos.peso_traco; ``mascara`` limita a tinta contada (a pegada da edição, sem a vizinha intacta)."""
+    lum = rec.astype(np.float32) @ np.float32([0.299, 0.587, 0.114])
+    papel, tinta = float(np.percentile(lum, 90)), float(np.percentile(lum, 3))
+    if papel - tinta < 25:
+        return 0.0
+    a = np.clip((papel - lum) / (papel - tinta), 0, 1)
+    a[a < 0.1] = 0
+    if mascara is not None:
+        a = a * mascara
+    return glifos.peso_traco(a)
+
+
+def _razao_peso(c: _C, res: Resultado) -> tuple[float, float] | None:
+    """(espessura do traço do texto antigo, do texto novo) em px, medidas igual; None se não dá para medir."""
+    x0, y0, x1, y1 = c.caixa
+    antigo = _peso_na_imagem(c.img[max(0, y0 - 2):y1 + 2, max(0, x0 - 2):x1 + 2])  # folga: letra cortada na borda
+    rec = c.img[res.y0:res.y1, res.x0:res.x1].copy()
+    rec[res.pegada] = res.recorte[res.pegada]
+    novo = _peso_na_imagem(rec, _dilatar(res.pegada, 1).astype(np.float32))
+    return (antigo, novo) if antigo > 0 and novo > 0 else None
+
+
 def _t_campo_reescrever(c: _C, extra_p: dict | None = None) -> Resultado:
     """``extra_p``: parâmetros a mais para ``auto.trocar_campo`` que não são opções do catálogo (a mesma fonte
     passa o apagador só-tinta, o fundo local e o alinhamento lido no documento)."""
@@ -820,7 +855,22 @@ def _t_campo_reescrever(c: _C, extra_p: dict | None = None) -> Resultado:
          "alinhar": alin, "igualar_ruido": False, "desfoque": desf, "espacamento": espacamento,
          "apagar": apagar, "fonte_params": fonte_params, **extra_p}
     res = auto.trocar_campo(c.img, p, selecao.vazia(c.H, c.W), base=c.base, chave_cache=c.chave)
+    # o peso do traço: a fonte parecida pode ser mais leve ou mais pesada que a do papel ("DEZ/2025" em Verdana Bold
+    # mais grosso que o "JAN/2026" do original). Corrige o negrito uma vez; o que continua fora descarta a edição
+    pesos = _razao_peso(c, res)
+    if pesos and abs(pesos[1] / pesos[0] - 1) > PESO_CORRIGIR:
+        neg = float(fonte_params.get("negrito") or 0.0) + (pesos[0] - pesos[1])
+        p2 = {**p, "fonte_params": {**fonte_params, "negrito": round(max(-0.5 * pesos[1], neg), 2)}}
+        res2 = auto.trocar_campo(c.img, p2, selecao.vazia(c.H, c.W), base=c.base, chave_cache=c.chave)
+        pesos2 = _razao_peso(c, res2)
+        if pesos2 and abs(pesos2[1] / pesos2[0] - 1) < abs(pesos[1] / pesos[0] - 1):
+            res, pesos, fonte_params = res2, pesos2, p2["fonte_params"]
+    if pesos and abs(pesos[1] / pesos[0] - 1) > PESO_MAXIMO:
+        raise ErroOperacao(f"o traço do texto novo não casa com o do documento ({pesos[1] / pesos[0]:.2f}x a "
+                           "espessura do original)")
     c.fornecedores["apagar"] = res.meta.get("apagar") or apagar  # o que o apagador de fato usou
+    if res.meta.get("gesto"):  # o laço/pincel da seleção humana: um traço real ou o modelo de movimento
+        c.fornecedores["gesto"] = res.meta["gesto"]
     v = c.vestigio()
     if v > 0:  # apagado malfeito: a tinta antiga fica como um fantasma fraco debaixo do texto novo
         sub = c.img[res.y0:res.y1, res.x0:res.x1]
@@ -837,6 +887,8 @@ def _t_campo_reescrever(c: _C, extra_p: dict | None = None) -> Resultado:
                                      f"{f'; fonte substituída pelo editor de PDF (a original era {c.aj[chr(102) + chr(111) + chr(110) + chr(116) + chr(101)]})' if fonte_editor == 'substituta' else ''}"
                                      f"{desleixo}{condensado}; apagado com {c.fornecedores['apagar']}.",
                                      fonte=fonte_usada, **({"condensado_px": espacamento} if condensado else {}))}
+    if pesos:
+        res.meta["peso_traco"] = round(pesos[1] / pesos[0], 3)  # espessura do traço novo / do original
     return res
 
 
@@ -874,18 +926,25 @@ def _t_campo_mesma_fonte(c: _C) -> Resultado:
     o papel em volta, intacto) e reconstrói o fundo local, que segue o gradiente de luz. O alinhamento é o que o
     campo tem na página (esquerda, direita ou centro, pelas linhas vizinhas); sem como saber, nome e endereço saem
     pela esquerda e valor e consumo pela direita. O rótulo diz se a fonte foi mesmo identificada (semelhança no
-    limiar), só aproximada, ou estimada sem identificação; o campo é editado do mesmo jeito."""
+    limiar), só aproximada, ou estimada sem identificação. Abaixo de ``SEMELHANCA_MINIMA`` (a fonte não foi identificada)
+    recusa: o texto novo sairia em outra letra; quem escolheu a fonte à mão (``fonte_params``) edita mesmo assim."""
     opcoes = c.p.get("opcoes") or {}
     alin = opcoes.get("alinhamento")
     if alin not in ("esquerda", "direita"):
         alin = (_alinhamento_no_documento(c)
                 or ("direita" if c.categoria in ("valor", "consumo/leitura") else "esquerda"))
+    sem0 = c.aj.get("semelhanca")
+    if c.aj.get("metodo") != "estimativa" and sem0 is not None and float(sem0) < SEMELHANCA_MINIMA \
+            and not c.p.get("fonte_params"):
+        raise ErroOperacao(f"a fonte do campo não foi identificada (semelhança {float(sem0):.2f} < "
+                           f"{SEMELHANCA_MINIMA:.2f}): na mais parecida o texto novo sairia em outra letra")
     extra_p = {"alinhar": alin, "so_tinta": True}
     if opcoes.get("apagar") not in ("patchmatch", "chapado", "telea", "ns", "borrao", "carimbo", "recuperar"):
         extra_p["apagar"] = "local"
     h = c.humano
     if h is not None:  # a pessoa seleciona o texto antigo (letreiro, laço, pincel ou intervalo de cores) e apaga
-        extra_p = {"alinhar": alin, "selecao_humana": {"forma": h["selecao"], "margem": h.get("margem")},
+        extra_p = {"alinhar": alin, "selecao_humana": {"forma": h["selecao"], "margem": h.get("margem"),
+                                                       "zoom": h.get("zoom")},
                    "apagar": humano.APAGADOR.get(h.get("apagar"), "patchmatch")}
         c.fornecedores["selecao"] = h["selecao"]
     res = _t_campo_reescrever(c, extra_p)
@@ -1438,7 +1497,9 @@ class _Letras:
     def _negrito(self) -> float:
         """Negrito (px no tamanho do gabarito) com que as letras desenhadas saem com a espessura de traço das do campo:
         a fonte parecida na forma pode ser mais leve (a Swis721 regular num Helvetica Bold de PDF) e o V desenhado saía
-        fino no meio das letras grossas. Medido como nas letras do campo (glifos.peso_traco) e corrigido uma vez."""
+        fino no meio das letras grossas; e o contrário, a fonte do gabarito mais PESADA que o campo (o "FEV" desenhado
+        em Verdana Bold saía mais grosso que o "/2026" do campo): o negrito negativo afina. Medido como nas letras do
+        campo (glifos.peso_traco) e corrigido em até duas passadas (a espessura não anda 1:1 com o negrito)."""
         if self._neg is None:
             base = float(self.aj.get("negrito") or 0.0)
             letras = [g for g in self.gs if g.ch.isalnum() and self._plana(g) and self._h_fonte(g.ch)]
@@ -1455,8 +1516,12 @@ class _Letras:
                 return float(np.median(ps))
             self._neg = base
             p0 = peso(base)
-            if p0 > 0 and abs(self.est["peso"] / p0 - 1) > 0.06:
-                self._neg = float(np.clip(base + (self.est["peso"] - p0), 0.0, 10.0))
+            for _ in range(2):
+                if p0 <= 0 or abs(self.est["peso"] / p0 - 1) <= 0.06:
+                    break
+                # afinar no máximo até metade do traço (mais que isso a letra se desfaz)
+                self._neg = float(np.clip(self._neg + (self.est["peso"] - p0), -0.5 * p0, 10.0))
+                p0 = peso(self._neg)
         return self._neg
 
     def _render(self, s: str, tam: float, negrito: float | None = None):
@@ -1890,6 +1955,12 @@ def _t_campo_letras_do_documento(c: _C) -> Resultado:
                       sinais_colados=compostas, doadores=doadores, reamostrado=reamostrado, gabarito=L.fonte,
                       gabarito_entre=L.entre, semelhanca_gabarito=L.aj.get("semelhanca"),
                       apertado_px=round(L.aperto, 2))
+    pesos = _razao_peso(c, res)
+    if pesos:
+        if abs(pesos[1] / pesos[0] - 1) > PESO_MAXIMO:
+            raise ErroOperacao(f"o traço do texto novo não casa com o do documento ({pesos[1] / pesos[0]:.2f}x a "
+                               "espessura do original)")
+        res.meta["peso_traco"] = round(pesos[1] / pesos[0], 3)
     return res
 
 

@@ -128,6 +128,43 @@ def tabelas_de(caminhos) -> list[dict]:
     return saida
 
 
+def qualidade_da_tabela(luma) -> int:
+    """A qualidade do libjpeg (1–100) cuja tabela de luma mais se parece com ``luma`` (a de um arquivo real)."""
+    alvo = np.float32(luma)
+    return min(range(10, 101), key=lambda q: float(np.abs(np.float32(tabela_padrao(q)["luma"]) - alvo).mean()))
+
+
+CALIBRACAO = None  # caminho do canal_calibrado.json (ferramentas/calibrar_canal.py); None = config/ do projeto
+_calib: dict = {}
+
+
+def calibracao() -> dict:
+    """Faixas medidas em arquivos REAIS por caminho (``{"whatsapp": {"jpeg": [p10, p90], "lado": [p10, p90]}, ...}``),
+    de config/canal_calibrado.json; vazio sem o arquivo (o canal usa as faixas da literatura)."""
+    from pathlib import Path
+    import json
+    p = Path(CALIBRACAO) if CALIBRACAO else Path(__file__).resolve().parents[1] / "config" / "canal_calibrado.json"
+    chave = str(p)
+    if chave not in _calib:
+        try:
+            _calib[chave] = json.loads(p.read_text(encoding="utf-8")).get("faixas") or {}
+        except (OSError, ValueError):
+            _calib[chave] = {}
+    return _calib[chave]
+
+
+def _faixa(tipo: str, medida: str, a, b):
+    """(mínimo, máximo) de ``medida`` no caminho ``tipo``: o medido nos arquivos reais quando há calibração, senão
+    (``a``, ``b``)."""
+    f = (calibracao().get(tipo) or {}).get(medida)
+    return (type(a)(f[0]), type(b)(f[1])) if f and len(f) == 2 and f[0] <= f[1] else (a, b)
+
+
+def _inteiro(rng: random.Random, a: int, b: int) -> int:
+    """Inteiro em [a, b]; com a faixa de um valor só, sem gastar sorteio (a sequência do rng fica a de antes)."""
+    return a if a == b else rng.randint(a, b)
+
+
 def _tabela(rng: random.Random, q: int, tabelas) -> dict | None:
     """Tabela de um aparelho (das entradas), a padrão perturbada, ou None (a padrão do libjpeg)."""
     x = rng.random()
@@ -245,14 +282,15 @@ def sortear(rng: random.Random, cfg, tabelas: list[dict] | None = None, captura:
                        # a impressão do verso aparecendo de leve (papel fino) e poeira/fio no vidro
                        "verso": _u(rng, 0.06, 0.2) if rng.random() < 0.3 else None,
                        "sujeira": _sortear_sujeira(rng) if rng.random() < 0.4 else None,
-                       "jpeg": rng.randint(75, 95) if rng.random() < 0.7 else None, "fase": fase})
+                       "jpeg": _inteiro(rng, *_faixa("scanner", "jpeg", 75, 95)) if rng.random() < 0.7 else None,
+                       "fase": fase})
         if passos[-1]["jpeg"]:
             passos[-1]["tabela"] = _tabela(rng, passos[-1]["jpeg"], tabelas)
     elif tipo == "celular":
         passos.append({"tipo": "celular", **_sortear_foto(rng),
                        "curvatura": _sortear_curvatura(rng) if rng.random() < 0.6 else None,
-                       "lente": _sortear_lente(rng) if rng.random() < 0.5 else None, "jpeg": rng.randint(85, 95),
-                       "fase": fase})
+                       "lente": _sortear_lente(rng) if rng.random() < 0.5 else None,
+                       "jpeg": _inteiro(rng, *_faixa("celular", "jpeg", 85, 95)), "fase": fase})
         passos[-1]["tabela"] = _tabela(rng, passos[-1]["jpeg"], tabelas)
     elif tipo == "app_scanner":  # CamScanner, Adobe Scan, Notas do iPhone: foto, recorte/retificação, realce
         modo = rng.choice(("cor", "cinza", "pb"))
@@ -263,7 +301,8 @@ def sortear(rng: random.Random, cfg, tabelas: list[dict] | None = None, captura:
                        "curvatura": _sortear_curvatura(rng) if rng.random() < 0.5 else None,
                        "lente": _sortear_lente(rng) if rng.random() < 0.5 else None,
                        "dewarp": [round(rng.choice((-1, 1)) * rng.uniform(0.003, 0.015), 4) for _ in range(8)],
-                       "modo": modo, **realce, "jpeg": rng.randint(60, 85), "fase": fase})
+                       "modo": modo, **realce, "jpeg": _inteiro(rng, *_faixa("app_scanner", "jpeg", 60, 85)),
+                       "fase": fase})
         passos[-1]["tabela"] = _tabela(rng, passos[-1]["jpeg"], tabelas)
     elif tipo == "tela":
         passos.append({"tipo": "tela", "escala_tela": _u(rng, 0.5, 0.8), "periodo": _u(rng, 2.6, 4.0),
@@ -290,11 +329,14 @@ def sortear(rng: random.Random, cfg, tabelas: list[dict] | None = None, captura:
         for _ in range(rng.choices((1, 2, 3), weights=(0.6, 0.3, 0.1))[0]):
             t = "whatsapp" if so_whatsapp else _escolher(rng, TRANSMISSOES)
             if t == "whatsapp":
-                passo = {"tipo": t, "lado": 1600, "jpeg": rng.randint(70, 80)}
+                passo = {"tipo": t, "lado": _inteiro(rng, *_faixa("whatsapp", "lado", 1600, 1600)),
+                         "jpeg": _inteiro(rng, *_faixa("whatsapp", "jpeg", 70, 80))}
             elif t == "whatsapp_web":
-                passo = {"tipo": t, "lado": 1600, "jpeg": rng.randint(88, 94)}
+                passo = {"tipo": t, "lado": _inteiro(rng, *_faixa("whatsapp_web", "lado", 1600, 1600)),
+                         "jpeg": _inteiro(rng, *_faixa("whatsapp_web", "jpeg", 88, 94))}
             elif t == "rede_social":
-                passo = {"tipo": t, "lado": 2048, "jpeg": rng.randint(71, 95)}
+                passo = {"tipo": t, "lado": _inteiro(rng, *_faixa("rede_social", "lado", 2048, 2048)),
+                         "jpeg": _inteiro(rng, *_faixa("rede_social", "jpeg", 71, 95))}
             elif t == "app_edicao":  # app que reamostra (0,7–1,3) e regrava em JPEG ou WEBP
                 passo = {"tipo": t, "escala": _u(rng, 0.7, 1.3)}
                 passo["jpeg" if rng.random() < 0.6 else "webp"] = rng.randint(70, 95)

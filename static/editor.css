@@ -46,19 +46,26 @@ label { color: var(--texto-2); white-space: nowrap; }
 
 /* topo ------------------------------------------------------------------ */
 #topo {
-  display: flex; align-items: center; gap: 14px; padding: 6px 10px;
+  display: flex; align-items: center; gap: 10px; padding: 6px 10px;
   background: var(--fundo-2); border-bottom: 1px solid var(--borda); flex-wrap: wrap;
 }
 .marca { font-size: 14px; color: var(--texto-2); }
+/* notebook (1280–1400 px): sem o nome do programa, o topo cabe numa linha só (o salvar não cai para baixo) */
+@media (max-width: 1400px) { body:not(.pagina-gerador) #topo > h1.marca { display: none; } }
 .marca b { color: var(--texto); }
 #abas-split { display: flex; gap: 2px; }
 #abas-split button { border-radius: 4px 4px 0 0; }
 #abas-split button.ativa { background: var(--destaque-2); border-color: var(--destaque); }
-.navdoc { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
+/* a navegação não encolhe abaixo do próprio conteúdo: sem espaço, o topo quebra a linha (antes o ▶ e o contador de
+   versões salvas ficavam escondidos debaixo do "Modo avançado" numa tela de 1366 px) */
+.navdoc { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: max-content; }
 #doc-nome { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 380px; font-weight: 600;
-  flex: 0 1 auto; min-width: 140px; }
+  flex: 0 1 auto; min-width: 120px; }
+#doc-versoes { white-space: nowrap; }
+.visualmente-oculto { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .saida { display: flex; align-items: center; gap: 8px; }
-.saida input[type="text"] { width: 110px; }
+.saida input[type="text"] { width: 100px; }
+.saida label { display: inline-flex; align-items: center; gap: 4px; }
 
 /* barra de opções -------------------------------------------------------- */
 #opcoes {
@@ -251,7 +258,7 @@ body:not(.simples) #lista-campos { max-height: 22vh; }
   #painel input, #painel select { max-width: 100%; }
   body.simples main { grid-template-columns: minmax(0, 1fr); grid-template-rows: 55vh auto; }
   #painel { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--borda); overflow: visible; }
-  .navdoc { flex: 1 1 100%; order: 5; }
+  .navdoc { flex: 1 1 100%; order: 5; min-width: 0; }
   #doc-nome { min-width: 0; flex: 1 1 auto; max-width: none; }
   #topo { gap: 8px; }
   .saida { flex-wrap: wrap; }
@@ -330,3 +337,22 @@ kbd { display: inline-block; font: 12px Consolas, monospace; padding: 1px 5px; b
 .marcar-rapido { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 2px 0 6px; }
 .marcar-rapido button { font-size: 0.85em; padding: 2px 8px; }
 .campo-cab input.marcar-auto { width: 16px; height: 16px; margin: 0 4px 0 0; flex: none; cursor: pointer; }
+
+/* glossário (glossario.js): o ⓘ ao lado de cada termo e o diálogo com busca */
+.termo-i { background: none; border: none; padding: 0 2px; color: var(--destaque); font-size: 12px; line-height: 1;
+  cursor: help; vertical-align: baseline; }
+.termo-i:hover { color: var(--texto); }
+dialog.glossario { width: min(720px, 94vw); }
+.glossario-cab { display: flex; align-items: center; gap: 8px; }
+.glossario-cab h3 { flex: 0 0 auto; }
+.glossario-cab input { flex: 1; min-width: 0; background: var(--fundo); border: 1px solid var(--borda); border-radius: 4px;
+  padding: 4px 8px; }
+.glossario-lista { overflow-y: auto; max-height: 70vh; padding-right: 4px; }
+.glossario-lista h4 { margin: 12px 0 4px; color: var(--texto-2); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.glossario-termo { margin: 0 0 8px; padding: 6px 8px; border-radius: 4px; border: 1px solid transparent; }
+.glossario-termo dt { font-weight: 600; }
+.glossario-termo dd { margin: 2px 0 0; color: var(--texto); }
+.glossario-termo.destaque { border-color: var(--destaque); background: var(--fundo-3); }
+/* editor: para que serve a ferramenta ativa, no começo da barra de opções */
+.para-que { color: var(--texto-2); font-size: 12px; margin-right: 10px; max-width: 46ch; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }

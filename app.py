@@ -34,8 +34,8 @@ try:
 except ModuleNotFoundError as erro:
     sys.exit(f"Falta a dependência '{erro.name}'. Instale com:  pip install -r requirements.txt")
 
-from rotulador import (automatico, canal, campos as mod_campos, catalogo, documentos, exportar, falsificador,
-                       identificar_fonte, ocr, perito, selecao)
+from rotulador import (automatico, canal, campos as mod_campos, catalogo, documentos, entradas, exportar, falsificador,
+                       identificar_fonte, ocr, perito, qualidade, selecao)
 from rotulador.contexto import Contexto, cache_ocr
 from rotulador.equipe import ANONIMO, Equipe, Travas, operador_da_requisicao, progresso
 from rotulador.gerador import (CATEGORIAS_FOCO, PESOS_CATEGORIA, Gerador, Plano, _perito_por_edicao, aplicar_receita,
@@ -650,6 +650,59 @@ def criar_app(registro: Registro, raiz_saida: Path, categorias: list[dict]) -> F
     @app.post("/api/gerador/parar")
     def api_gerador_parar():
         return jsonify(gerador.interromper())
+
+    # ------------------------------------------------------------------ qualidade do dataset (aba 📊 Qualidade)
+    tarefas_q: dict[str, dict] = {}  # "auditoria" / "detectabilidade" -> {"rodando", "inicio", "erro"}
+    cache_entradas: dict = {}
+
+    def _ler_json(nome: str) -> dict | None:
+        try:
+            arq = raiz_saida / nome
+            return {**json.loads(arq.read_text(encoding="utf-8")), "_quando": arq.stat().st_mtime}
+        except (OSError, ValueError):
+            return None
+
+    @app.get("/api/qualidade/resumo")
+    def api_qualidade_resumo():
+        """O que a aba Qualidade mostra: as entradas (variedade e o que falta), a última geração (refeitas,
+        descartadas, por tamanho do texto), a última auditoria e a última medida de detectabilidade."""
+        chave = tuple(sorted(registro.itens))
+        if request.args.get("atualizar") or cache_entradas.get("chave") != chave:
+            cache_entradas.update(chave=chave, dados=entradas.variedade(registro))
+        st = gerador.status()
+        geracao = {k: st.get(k) for k in ("rodando", "total", "feitas", "falhas", "edicoes", "refeitas_incoerentes",
+                                          "descartadas_incoerentes", "por_tamanho", "falhas_tecnica", "inicio", "fim")}
+        return jsonify(entradas=cache_entradas["dados"], geracao=geracao,
+                       auditoria=_ler_json("relatorio_qualidade.json"),
+                       detectabilidade=_ler_json("relatorio_detectabilidade.json"),
+                       tarefas={k: {kk: vv for kk, vv in v.items() if kk != "thread"} for k, v in tarefas_q.items()})
+
+    @app.post("/api/qualidade/rodar")
+    def api_qualidade_rodar():
+        """Roda a auditoria de qualidade ou a medida de detectabilidade em segundo plano (podem levar minutos)."""
+        o_que = str(corpo().get("o_que") or "")
+        if o_que not in ("auditoria", "detectabilidade"):
+            raise ErroOperacao("o_que deve ser 'auditoria' ou 'detectabilidade'")
+        if (tarefas_q.get(o_que) or {}).get("rodando"):
+            raise ErroOperacao(f"{o_que} já está rodando")
+
+        def rodar():
+            try:
+                if o_que == "auditoria":
+                    qualidade.auditar(raiz_saida, log=lambda *_: None)
+                else:
+                    from rotulador.treino import detectabilidade
+                    d = detectabilidade.avaliar(raiz_saida)
+                    (raiz_saida / "relatorio_detectabilidade.json").write_text(
+                        json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+                    (raiz_saida / "relatorio_detectabilidade.md").write_text(detectabilidade.markdown(d),
+                                                                            encoding="utf-8")
+                tarefas_q[o_que].update(rodando=False, fim=time.time())
+            except Exception as e:  # noqa: BLE001 - o erro vai para a tela
+                tarefas_q[o_que].update(rodando=False, fim=time.time(), erro=str(e))
+        tarefas_q[o_que] = {"rodando": True, "inicio": time.time(), "erro": None}
+        threading.Thread(target=rodar, daemon=True).start()
+        return jsonify(ok=True)
 
     # ------------------------------------------------------------------ catálogo do que foi gerado
     def _versoes(linhas: list[dict]) -> list[dict]:

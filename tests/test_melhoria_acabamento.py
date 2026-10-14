@@ -388,7 +388,9 @@ class TestMesmaFonte(tt.Base):
     def test_rotulo_da_fonte_pela_semelhanca(self):
         c = self.campo("nome")
         real = auto.ajustar_fonte_cache
-        for sem, metodo, esperado in ((0.93, "comparacao", "top10"), (0.5, "comparacao", "aproximada"),
+        # abaixo de tecnicas.SEMELHANCA_MINIMA (0,60) a mesma fonte recusa (test_qualidade_saida); entre ela e o
+        # limiar de identificação, edita e rotula "aproximada"
+        for sem, metodo, esperado in ((0.93, "comparacao", "top10"), (0.7, "comparacao", "aproximada"),
                                       (None, "estimativa", "estimada")):
             def falso(*a, **k):
                 return {**real(*a, **k), "semelhanca": sem, "metodo": metodo}

@@ -261,8 +261,10 @@ def _sel_humana(img, velho: np.ndarray, caixa, hsel: dict, semente: int) -> Sele
     M = int(max(12, 1.2 * h))
     ay0, ay1, ax0, ax1 = max(0, y0 - M), min(H, y1 + M), max(0, x0 - M), min(W, x1 + M)
     tinta = mascara_tinta(img[ay0:ay1, ax0:ax1]).astype(bool)
+    info = hsel.setdefault("_info", {})
     sel = humano.selecionar(velho[ay0:ay1, ax0:ax1], tinta, str(hsel.get("forma") or "retangulo"),
-                            hsel.get("margem") or (0.15,) * 4, float(h), random.Random(semente ^ 0x5E1))
+                            hsel.get("margem") or (0.15,) * 4, float(h), random.Random(semente ^ 0x5E1),
+                            zoom=float(hsel.get("zoom") or 1.0), info=info)
     out = np.zeros((H, W), bool)
     out[ay0:ay1, ax0:ax1] = sel
     return selecao.de_mascara(out & ~texto._fios_da_tabela(img, y0, y1, x0, x1))
@@ -418,7 +420,8 @@ def trocar_campo(img: np.ndarray, p: dict, sel: Selecao, base: np.ndarray = None
                 "largura": ajuste.get("largura"), "iou_fonte": ajuste.get("iou"), "texto_antigo": antigo,
                 "fonte_confianca": ajuste.get("confianca"), "semelhanca": ajuste.get("semelhanca"),
                 "arquivo_fonte": texto.arquivo_fonte(ajuste["fonte"]),  # o arquivo que desenhou (mesmo trocada à mão)
-                "so_tinta": so_tinta, "selecao_humana": hsel.get("forma") if hsel else None, "alinhar": alinhar, "cor": cor_usada, "cor_calibrada": alvo is not None,
+                "so_tinta": so_tinta, "selecao_humana": hsel.get("forma") if hsel else None,
+                "gesto": (hsel.get("_info") or {}).get("gesto") if hsel else None, "alinhar": alinhar, "cor": cor_usada, "cor_calibrada": alvo is not None,
                 "ajuste": {**{k: ajuste.get(k) for k in ("fonte", "tamanho", "largura", "negrito")}, "cor": cor_usada,
                            "cor_medida": ajuste.get("cor"), "rotacao": params["rotacao"],
                            "espacamento": params["espacamento"], "x": params["x"], "y": params["y"]}}

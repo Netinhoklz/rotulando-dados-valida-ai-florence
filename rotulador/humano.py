@@ -35,6 +35,8 @@ import random
 import cv2
 import numpy as np
 
+from . import gesto
+
 # por versão: (valor, peso). Comentário = de onde veio o peso
 SELECAO = (("retangulo", 0.55), ("laco", 0.15), ("pincel", 0.15), ("tinta", 0.15))  # estimado: letreiro é o padrão
 # FSTS, tabela 12 (Replacement): content-aware 61,7, cor sólida 9,6, fundo clonado 9,5, carimbo 10,4, recuperação 8,8
@@ -119,6 +121,7 @@ def sortear(rng: random.Random, cfg: dict | None, origem_jpeg: bool) -> dict | N
         hab["excesso"] = round(rng.uniform(0.9, 1.4), 2)
     if salvar == "jpeg_editor":
         hab["gravacao"] = _gravacao(rng)
+    hab["zoom"] = gesto.sortear_zoom(rng)  # o zoom em que trabalha: muda o tremor e a precisão em pixels da imagem
     return hab
 
 
@@ -150,6 +153,8 @@ def descrever(h: dict | None) -> str:
     partes.append({"png": "salvou em PNG", "mesmas": "salvou com a mesma compressão do arquivo original"}.get(
         h["salvar"], f"salvou em JPEG pelo {_DIZ_PROGRAMA.get(g.get('programa'), g.get('programa'))} "
                      f"({'preset ' + str(g['preset']) if g.get('preset') else 'qualidade ' + str(g.get('qualidade'))})"))
+    if h.get("zoom"):  # o zoom em que fez a seleção (muda a precisão do contorno e o tremor)
+        partes[0] += f" (com zoom de {int(round(100 * float(h['zoom'])))}%)"
     s = ", ".join(partes)
     return s[0].upper() + s[1:] + "."
 
@@ -175,12 +180,16 @@ def _protegida(tinta: np.ndarray, velho: np.ndarray, estrito: bool = False) -> n
 
 
 def selecionar(velho: np.ndarray, tinta: np.ndarray, forma: str, margem, h: float, rng: random.Random,
-               limite=None, estrito: bool = False) -> np.ndarray:
+               limite=None, estrito: bool = False, zoom: float = 1.0, info: dict | None = None) -> np.ndarray:
     """A seleção que a pessoa faz em volta do texto antigo ``velho`` (bool, recorte), sem pegar a tinta alheia
     (``tinta`` = toda a tinta do recorte). ``forma``: retangulo (letreiro: encolhe o lado que encostaria numa vizinha),
     laco (polígono à mão em volta), pincel (pinceladas redondas ao longo da linha) ou tinta (intervalo de cores: o
     próprio ``velho``). ``margem``: folga de cada lado (esquerda, cima, direita, baixo) em fração de ``h``. ``limite``
-    (x0, y0, x1, y1): a seleção não passa daí; ``estrito``: ver ``_protegida``. Sempre contém ``velho``."""
+    (x0, y0, x1, y1): a seleção não passa daí; ``estrito``: ver ``_protegida``. Sempre contém ``velho``.
+
+    O laço e o pincel saem do gesto de uma pessoa (``rotulador.gesto``): um traço REAL da biblioteca (gravado no
+    editor manual), quando há, ou o modelo de movimento (curva de mínimo esforço, tremor, passadas com toques e
+    pressão), no ``zoom`` em que ela trabalha. ``info`` recebe {"gesto": "real" | "modelo", "pontos": n}."""
     if forma == "tinta" or not velho.any():
         return velho.copy()
     Hr, Wr = velho.shape
@@ -214,26 +223,32 @@ def selecionar(velho: np.ndarray, tinta: np.ndarray, forma: str, margem, h: floa
         sel[b0:b1, a0:a1] = True
         return sel | velho
     sel = np.zeros((Hr, Wr), np.uint8)
+    escala = 1.0 / max(0.25, float(zoom or 1.0))
     if forma == "laco":
-        # o contorno feito à mão: pontos em volta da caixa com folga, tremidos
-        n = max(8, int((x1 - x0) / max(4.0, 0.8 * h)) * 2)
-        topo = [(x0 - m[0] + (x1 - x0 + m[0] + m[2]) * i / (n // 2), y0 - m[1]) for i in range(n // 2 + 1)]
-        baixo = [(x1 + m[2] - (x1 - x0 + m[0] + m[2]) * i / (n // 2), y1 + m[3]) for i in range(n // 2 + 1)]
-        j = 0.12 * h
-        pts = np.array([(x + rng.uniform(-j, j), y + rng.uniform(-j, j)) for x, y in topo + baixo], np.float32)
-        cv2.fillPoly(sel, [np.round(pts).astype(np.int32)], 1)
-    else:  # pincel: pinceladas horizontais ao longo da linha, raio de meia altura, até sumir com o texto
-        r = max(2, int(round((y1 - y0) * rng.uniform(0.55, 0.75))))
-        cy = (y0 + y1) / 2
-        for _ in range(rng.choice((1, 1, 2))):
-            dy = rng.uniform(-0.15, 0.15) * (y1 - y0)
-            pts = [(x0 - rng.uniform(0, m[0]), cy + dy)]
-            while pts[-1][0] < x1:
-                pts.append((pts[-1][0] + rng.uniform(1.5, 3.0) * r, cy + dy + rng.uniform(-0.1, 0.1) * (y1 - y0)))
-            for (ax, ay), (bx, by) in zip(pts, pts[1:]):
-                cv2.line(sel, (int(round(ax)), int(round(ay))), (int(round(bx)), int(round(by))), 1, 2 * r)
-            for x, y in (pts[0], pts[-1]):
-                cv2.circle(sel, (int(round(x)), int(round(y))), r, 1, -1)
+        # o contorno feito à mão em volta da caixa com folga: um laço real esticado para ela, ou o modelo
+        bx0, by0, bx1, by1 = x0 - m[0], y0 - m[1], x1 + m[2], y1 + m[3]
+        g = gesto.real("laco", rng)
+        pts = gesto.encaixar(g, bx0, by0, bx1, by1) if g else gesto.laco(bx0, by0, bx1, by1, rng, escala)
+        sel = gesto.rasterizar_laco((Hr, Wr), pts).astype(np.uint8)
+        if info is not None:
+            info.update(gesto="real" if g else "modelo", pontos=int(len(pts)))
+    else:  # pincel: passadas ao longo da linha, raio de meia altura, carimbando toques com pressão
+        r = max(2.0, float((y1 - y0) * rng.uniform(0.55, 0.75)))
+        g = gesto.real("pincel", rng)
+        if g:  # a passada real esticada na linha (a altura dela vira a da faixa que o raio cobre)
+            r = max(2.0, float(g.get("raio_rel", 0.6)) * (y1 - y0) * 2) if g.get("raio_rel") else r
+            cy, meia = (y0 + y1) / 2, max(1.0, 0.25 * (y1 - y0))
+            tracos = [np.column_stack([gesto.encaixar(g, x0 - m[0], cy - meia, x1 + m[2], cy + meia),
+                                       np.zeros(len(g["u"]))])]
+        else:
+            tracos = gesto.pinceladas(x0 - m[0] * rng.uniform(0, 1), y0, x1 + m[2] * rng.uniform(0, 1), y1, r, rng,
+                                      escala)
+        alfa = np.zeros((Hr, Wr), np.float32)
+        for t in tracos:
+            alfa = 1 - (1 - alfa) * (1 - gesto.alfa_toques((Hr, Wr), gesto.toques(t, r, rng), dureza=0.8))
+        sel = (alfa >= 0.5).astype(np.uint8)
+        if info is not None:
+            info.update(gesto="real" if g else "modelo", pontos=int(sum(len(t) for t in tracos)))
         # o que a pincelada não pegou (descendente, acento) leva mais um toque em cima
         sel |= (cv2.dilate(velho.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))) > 0)
     sel = sel.astype(bool) & ~prot
@@ -248,15 +263,19 @@ def texto(h: dict, rng: random.Random, desfoque_scan: float, altura: float) -> d
     (inteiros: a camada de texto fica no pixel), suavização e desfoque."""
     k = float(h.get("capricho", 1.0))
     escala = 1.0 + float(np.clip(rng.gauss(0.0, 0.015 * k), -0.05, 0.05))
-    dy = rng.choices((-1, 0, 1), weights=(0.2 * k, 1.0, 0.2 * k))[0]
-    dx = int(np.clip(round(rng.gauss(0.0, 0.7 * k)), -2, 2))
+    # o clique que põe o texto erra alguns pixels de TELA; as setas (1 px, 10 px com Shift) empurram até parecer
+    # alinhado: sobra o erro que a pessoa não vê naquele zoom (gesto.setas)
+    tela = 1.0 / max(0.25, float(h.get("zoom") or 1.0))
+    dx, nx = gesto.setas(rng.gauss(0.0, 3.0 * k) * tela, rng, tela, k)
+    dy, ny = gesto.setas(rng.gauss(0.0, 2.0 * k) * tela, rng, tela, k)
+    dx, dy = int(np.clip(dx, -2, 2)), int(np.clip(dy, -2, 2))
     nit = h.get("nitidez")
     if nit == "casada":  # desfocou até parecer o do scan: chega perto, não no mesmo valor
         desf = max(0.0, desfoque_scan * rng.uniform(0.75, 1.3))
     else:  # nítida como digitou; no "manual" o desfoque vem depois, na seleção inteira (retoque)
         desf = 0.0
     return {"escala": round(escala, 4), "dx": dx, "dy": dy, "rasterizador": RASTERIZADOR.get(h.get("antialias"), "ps_nitida"),
-            "desfoque": round(desf, 2)}
+            "desfoque": round(desf, 2), "setas": nx + ny}
 
 
 def cor_conta_gotas(img: np.ndarray, tinta: np.ndarray, h: dict, rng: random.Random) -> np.ndarray | None:

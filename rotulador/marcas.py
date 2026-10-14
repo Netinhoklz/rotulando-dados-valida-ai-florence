@@ -39,16 +39,19 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 TIPOS = {"autenticacao": 0.25, "carimbo": 0.2, "manuscrito": 0.2, "marca_texto": 0.12, "rubrica": 0.1,
-         "dobra": 0.1, "dedo": 0.1, "furos": 0.03,
+         "dobra": 0.1, "dedo": 0.1, "furos": 0.03, "caneta": 0.15, "grampo": 0.06, "mancha": 0.06,
+         "canto_dobrado": 0.05,
          "tarja": 0.2, "borrao": 0.07, "pixelado": 0.07, "marca_dagua": 0.1}
 NOMES = {"autenticacao": "autenticação mecânica", "carimbo": "carimbo", "manuscrito": "anotação à mão",
          "marca_texto": "marca-texto", "rubrica": "rubrica", "dobra": "dobra no papel", "furos": "furos de arquivo",
-         "dedo": "dedo segurando o papel na borda", "tarja": "tarja sobre dado sensível",
+         "dedo": "dedo segurando o papel na borda", "caneta": "marca de caneta (círculo, sublinhado ou visto)",
+         "grampo": "grampo no canto", "mancha": "mancha de copo/água", "canto_dobrado": "canto dobrado",
+         "tarja": "tarja sobre dado sensível",
          "borrao": "borrão sobre dado sensível", "pixelado": "pixelado sobre dado sensível",
          "marca_dagua": "marca d'água digital"}
 DIGITAIS = frozenset({"tarja", "borrao", "pixelado", "marca_dagua"})  # na imagem, sem captura física
 # tinta translúcida (multiplicativa): pode cair em cima da edição sem apagá-la (dedo, furos e tarja apagariam)
-SOBRE_EDICAO = ("carimbo", "manuscrito", "autenticacao", "rubrica", "marca_texto")
+SOBRE_EDICAO = ("carimbo", "manuscrito", "autenticacao", "rubrica", "marca_texto", "caneta")
 SENSIVEIS = ("cpf/cnpj", "identificador documento", "linha digitável", "codigo barras", "qr code/pix")
 _MARCAS_DAGUA = ("CÓPIA", "2ª VIA", "SEGUNDA VIA", "CONFIDENCIAL", "DOCUMENTO SEM VALOR FISCAL", "VIA DO CLIENTE")
 _PELES = ((224, 172, 138), (198, 134, 96), (160, 102, 70), (120, 72, 48), (240, 196, 170), (90, 55, 40))
@@ -189,6 +192,26 @@ def _desenho(tipo: str, H: int, W: int, rng: np.random.Generator):
             x, y = p3
         cv2.polylines(im, [np.int32(np.clip(pts, 0, [w + 9, h + 9]))], False, 255, max(2, int(2.5 * u)), cv2.LINE_AA)
         return cv2.GaussianBlur(im.astype(np.float32) / 255, (0, 0), 0.6), _TINTAS[rng.choice(["azul", "preto"])]
+    if tipo == "caneta":
+        # quem confere a conta circula o valor, sublinha a data ou faz um visto do lado: traço de caneta esferográfica
+        w, h = int(rng.uniform(110, 230) * u), int(rng.uniform(34, 60) * u)
+        t = max(2, int(2.2 * u))
+        im = np.zeros((h + 4 * t, w + 4 * t), np.uint8)
+        forma = rng.choice(["circulo", "sublinhado", "visto"])
+        if forma == "circulo":  # a volta não fecha certinho e passa um pouco do começo
+            ang = np.linspace(rng.uniform(-40, 0), 360 + rng.uniform(15, 50), 120)
+            rx, ry = w / 2 * rng.uniform(0.9, 1.0), h / 2 * rng.uniform(0.85, 1.0)
+            esp = 1 + 0.05 * np.sin(np.radians(ang) * 2 + rng.uniform(0, 6))
+            pts = np.stack([w / 2 + 2 * t + rx * esp * np.cos(np.radians(ang)),
+                            h / 2 + 2 * t + ry * esp * np.sin(np.radians(ang))], 1)
+        elif forma == "sublinhado":
+            xs = np.linspace(2 * t, w + 2 * t, 40)
+            pts = np.stack([xs, h + t + rng.uniform(-2, 2) * u * np.sin(xs / w * rng.uniform(2, 5))], 1)
+        else:
+            pts = np.array([[w * 0.35, h * 0.55], [w * 0.45, h * 0.95], [w * 0.65, h * 0.1]]) + 2 * t
+        cv2.polylines(im, [np.int32(pts)], False, 255, t, cv2.LINE_AA)
+        return cv2.GaussianBlur(im.astype(np.float32) / 255, (0, 0), 0.6) * rng.uniform(0.75, 0.95), \
+            _TINTAS[rng.choice(["azul", "azul", "preto", "vermelho"])]
     raise ValueError(tipo)
 
 
@@ -371,6 +394,81 @@ def _furos(imgs, proibido, rng, u) -> list | None:
     return [x - r - 2, ys[0] - r - 2, x + r + 3, ys[1] + r + 3]
 
 
+def _grampo(imgs, proibido, rng, u) -> list | None:
+    """Grampo num canto de cima: a fita de metal (escura com um brilho) e os dois furos nas pontas."""
+    H, W = proibido.shape
+    L, e = int(rng.uniform(45, 60) * u), max(2, int(2.5 * u))  # 12 mm x 0,6 mm
+    ang = rng.uniform(-50, -25) if rng.random() < 0.5 else rng.uniform(25, 50)
+    esquerda = ang < 0
+    cx = int(W * rng.uniform(0.05, 0.08)) if esquerda else int(W * rng.uniform(0.92, 0.95))
+    cy = int(max(L, H * rng.uniform(0.025, 0.05)))
+    dx, dy = math.cos(math.radians(ang)) * L / 2, math.sin(math.radians(ang)) * L / 2
+    p0, p1 = (int(cx - dx), int(cy - dy)), (int(cx + dx), int(cy + dy))
+    x0, y0 = min(p0[0], p1[0]) - 2 * e, min(p0[1], p1[1]) - 2 * e
+    x1, y1 = max(p0[0], p1[0]) + 2 * e, max(p0[1], p1[1]) + 2 * e
+    if not _livre(proibido, max(0, x0), max(0, y0), min(W, x1) - max(0, x0), min(H, y1) - max(0, y0)):
+        return None
+    escuro, brilho = np.zeros((H, W), np.float32), np.zeros((H, W), np.float32)
+    cv2.line(escuro, p0, p1, 1.0, e, cv2.LINE_AA)
+    cv2.line(brilho, p0, p1, 1.0, max(1, e // 3), cv2.LINE_AA)
+    sombra = cv2.GaussianBlur(np.roll(escuro, (max(1, e // 2), max(1, e // 2)), (0, 1)), (0, 0), e)
+    for p in (p0, p1):
+        cv2.circle(escuro, p, max(1, e // 2 + 1), 1.0, -1, cv2.LINE_AA)
+    metal = rng.uniform(90, 140)
+    for im in imgs:
+        im *= (1 - 0.25 * sombra)[..., None]
+        im[:] = im * (1 - escuro[..., None]) + metal * escuro[..., None]
+        im[:] = im * (1 - 0.5 * brilho[..., None]) + 215 * 0.5 * brilho[..., None]
+    return [max(0, x0), max(0, y0), min(W, x1), min(H, y1)]
+
+
+def _mancha(imgs, proibido, rng, u) -> list | None:
+    """Mancha de copo ou de água: anel irregular, mais escuro na borda (o líquido seca levando o pigmento), e um véu
+    claro por dentro; tinta multiplicativa amarronzada, o texto continua legível por baixo."""
+    H, W = proibido.shape
+    r = int(rng.uniform(60, 120) * u)
+    for _ in range(30):
+        cx, cy = int(rng.integers(r + 2, W - r - 2)), int(rng.integers(r + 2, H - r - 2))
+        if _livre(proibido, cx - r - 4, cy - r - 4, 2 * r + 8, 2 * r + 8):
+            break
+    else:
+        return None
+    yy, xx = np.mgrid[-r - 4:r + 5, -r - 4:r + 5].astype(np.float32)
+    ang = np.arctan2(yy, xx)
+    raio = r * (1 + 0.012 * np.sin(3 * ang + rng.uniform(0, 6)) + 0.008 * np.sin(7 * ang + rng.uniform(0, 6)))
+    d = np.hypot(xx, yy) - raio
+    anel = np.exp(-(d / max(1.2, 1.8 * u)) ** 2) * rng.uniform(0.3, 0.5)
+    # por dentro, um véu fraco que clareia para o centro (o pigmento foi para a borda)
+    veu = (d < 0) * rng.uniform(0.02, 0.05) * np.clip(1 + d / max(1.0, r), 0.3, 1)
+    alfa = np.clip(anel + veu, 0, 1).astype(np.float32)
+    _multiplicar(imgs, cx - r - 4, cy - r - 4, alfa, (150, 110, 70))
+    return [cx - r - 4, cy - r - 4, cx + r + 5, cy + r + 5]
+
+
+def _canto_dobrado(imgs, proibido, rng, u) -> list | None:
+    """Canto dobrado (orelha): um triângulo no canto mostra o verso do papel (liso, um pouco mais escuro, sem o
+    conteúdo) e uma sombra ao longo do vinco."""
+    H, W = proibido.shape
+    s = int(rng.uniform(50, 110) * u)
+    canto = rng.integers(4)
+    x0 = 0 if canto in (0, 2) else W - s
+    y0 = 0 if canto in (0, 1) else H - s
+    if not _livre(proibido, x0, y0, s, s):
+        return None
+    yy, xx = np.mgrid[0:s, 0:s].astype(np.float32)
+    lx = xx if canto in (0, 2) else s - 1 - xx
+    ly = yy if canto in (0, 1) else s - 1 - yy
+    tri = (lx + ly < s).astype(np.float32)
+    vinco = np.exp(-((lx + ly - s) / max(2.0, 3 * u)) ** 2) * (lx + ly >= s)
+    # o verso do papel: claro, com um degradê da luz (mais escuro perto do vinco)
+    tom = rng.uniform(228, 242) - 14 * np.clip((lx + ly) / s, 0, 1)
+    for im in imgs:
+        sub = im[y0:y0 + s, x0:x0 + s]
+        sub[:] = sub * (1 - tri[..., None]) + (tom * tri)[..., None]
+        sub *= (1 - 0.18 * vinco)[..., None]
+    return [x0, y0, x0 + s, y0 + s]
+
+
 def _alvos_da_edicao(regiao: np.ndarray, rng) -> list[list[int]]:
     """Caixas das linhas editadas (a região juntada na horizontal, uma componente por linha), em ordem sorteada."""
     k = max(9, regiao.shape[1] // 60)
@@ -436,6 +534,12 @@ def aplicar(imgs, regiao: np.ndarray, theta: dict) -> tuple[list[np.ndarray], li
             caixa = _dedo(saida, proibido, rng, u)
         elif tipo == "furos":
             caixa = _furos(saida, proibido, rng, u)
+        elif tipo == "grampo":
+            caixa = _grampo(saida, proibido, rng, u)
+        elif tipo == "mancha":
+            caixa = _mancha(saida, proibido, rng, u)
+        elif tipo == "canto_dobrado":
+            caixa = _canto_dobrado(saida, proibido, rng, u)
         elif tipo == "marca_texto":
             caixa = _marca_texto(saida, proibido, rng, u)
         else:
@@ -443,12 +547,19 @@ def aplicar(imgs, regiao: np.ndarray, theta: dict) -> tuple[list[np.ndarray], li
             h, w = alfa.shape
             if h >= H or w >= W:
                 continue
-            for _ in range(40):
+            for k in range(120 if tipo == "caneta" else 40):
                 x, y = int(rng.integers(0, W - w)), int(rng.integers(0, H - h))
-                if _livre(proibido, x, y, w, h):
-                    _multiplicar(saida, x, y, alfa, cor)
-                    caixa = [x, y, x + w, y + h]
-                    break
+                if not _livre(proibido, x, y, w, h):
+                    continue
+                # a caneta circula, sublinha ou dá visto em TEXTO: o miolo do desenho precisa ter tinta (nas
+                # últimas tentativas, aceita qualquer lugar livre)
+                if tipo == "caneta" and k < 100:
+                    miolo = saida[0][y + h // 4:y + 3 * h // 4, x + w // 6:x + 5 * w // 6].mean(axis=2)
+                    if not miolo.size or (miolo < 140).mean() < 0.04:
+                        continue
+                _multiplicar(saida, x, y, alfa, cor)
+                caixa = [x, y, x + w, y + h]
+                break
         if caixa:
             info.append({"tipo": tipo, "nome": NOMES[tipo], "caixa": [int(v) for v in caixa]})
             if tipo not in ("dobra", "marca_dagua"):  # a próxima marca não cobre esta

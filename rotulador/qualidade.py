@@ -241,6 +241,75 @@ def alertas_dataset(raiz_saida: Path, anots: dict[str, list[dict]] | None = None
             "modelos_entre_splits": entre}
 
 
+ATALHO_MIN_PARES = 10  # pares abaixo disto: o teste do sinal não diz nada
+ATALHO_FRACAO = 0.85  # a medida vai para o mesmo lado em mais que isto dos pares: dá para separar sem olhar a edição
+ATALHO_AMOSTRA = 200  # pares medidos no máximo (por split)
+
+
+def _medidas_do_par(raiz_split: Path, anot: dict) -> dict | None:
+    """O que pode separar a editada da original SEM olhar a edição: o ruído (resíduo passa-alta) e o tom longe da
+    região editada, o tamanho do arquivo e os metadados (chaves do ``info`` do Pillow). None se falta arquivo."""
+    arqs = {k: raiz_split / v for k, v in (anot.get("arquivos") or {}).items()}
+    if not all(k in arqs and arqs[k].is_file() for k in ("original", "editada", "mascara_regiao")):
+        return None
+    dpi = (anot.get("fonte") or {}).get("dpi_pdf") or documentos.DPI_PADRAO
+    try:
+        orig = documentos.carregar(arqs["original"], 0, dpi)
+        ed = documentos.carregar(arqs["editada"], 0, dpi)
+        reg = _abrir(arqs["mascara_regiao"]) > 0
+        with Image.open(arqs["original"]) as a, Image.open(arqs["editada"]) as b:
+            meta = set(a.info) ^ set(b.info)
+    except Exception:  # noqa: BLE001 - par ilegível fica fora da conta
+        return None
+    if orig.shape != ed.shape or reg.shape != orig.shape[:2]:
+        return None
+    longe = ~cv2.dilate(reg.astype(np.uint8), np.ones((31, 31), np.uint8)).astype(bool)
+    if longe.sum() < 1000:
+        return None
+
+    def ruido(img):
+        g = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32) if img.ndim == 3 else img.astype(np.float32)
+        return float(np.std((g - cv2.GaussianBlur(g, (0, 0), 1.5))[longe])), float(g[longe].mean())
+    (ro, to), (re_, te) = ruido(orig), ruido(ed)
+    return {"ruido": re_ / max(ro, 1e-6), "tom": te - to, "bytes": arqs["editada"].stat().st_size /
+            max(1, arqs["original"].stat().st_size), "metadados": sorted(meta)}
+
+
+def atalhos(raiz_saida: Path, anots: dict[str, list[dict]] | None = None) -> dict:
+    """Atalhos do conjunto: medidas que vão para o MESMO lado em quase todos os pares (teste do sinal), mesmo que em
+    cada par sejam pequenas demais para o ``conferir_par``. Um modelo aprenderia "arquivo maior = editado" ou "ruído
+    mais liso fora do campo = editado" em vez da adulteração. ``{"alertas": [...], "medidas": {...}}``."""
+    raiz_saida = Path(raiz_saida)
+    if anots is None:
+        anots = {sp: exportar._anotacoes(raiz_saida / sp) for sp in SPLITS}
+    pares = []
+    for sp in SPLITS:
+        for a in (anots.get(sp) or [])[:ATALHO_AMOSTRA]:
+            m = _medidas_do_par(raiz_saida / sp, a)
+            if m is not None:
+                pares.append(m)
+    medidas, al = {"pares": len(pares)}, []
+    if len(pares) < ATALHO_MIN_PARES:
+        return {"alertas": al, "medidas": medidas}
+    for chave, neutro, nome in (("ruido", 1.0, "ruído longe da edição (editada/original)"),
+                                ("tom", 0.0, "tom longe da edição (editada − original)"),
+                                ("bytes", 1.0, "tamanho do arquivo (editada/original)")):
+        v = np.array([p[chave] for p in pares], float)
+        acima = float(np.mean(v > neutro + 1e-6))
+        abaixo = float(np.mean(v < neutro - 1e-6))
+        medidas[chave] = {"mediana": round(float(np.median(v)), 4), "acima": round(acima, 3), "abaixo": round(abaixo, 3)}
+        lado = max(acima, abaixo)
+        if lado > ATALHO_FRACAO:
+            al.append(f"atalho: {nome} vai para o mesmo lado em {lado:.0%} dos {len(pares)} pares (mediana "
+                      f"{np.median(v):.4f}): dá para separar editada de original sem olhar a edição")
+    meta = Counter(k for p in pares for k in p["metadados"])
+    medidas["metadados_diferentes"] = dict(meta)
+    for k, n in meta.items():
+        if n / len(pares) > 0.5:
+            al.append(f"atalho: o metadado '{k}' está só em uma das imagens do par em {n} de {len(pares)} pares")
+    return {"alertas": al, "medidas": medidas}
+
+
 def alertas_de(anot: dict) -> list[str]:
     """Alertas gravados por ``auditar --gravar`` (``auditoria_qualidade``; até a 2.2, em ``qualidade``)."""
     for k in ("auditoria_qualidade", "qualidade"):
@@ -299,6 +368,9 @@ def auditar(raiz_saida: Path, splits=None, ocr: bool = False, gravar: bool = Fal
         log(f"{sp}: {len(anots)} versões, {sum(1 for k in resultado['alertas'] if k.startswith(sp + '/'))} com alerta")
     resultado["por_tipo"] = dict(resultado["por_tipo"].most_common())
     resultado["dataset"] = alertas_dataset(raiz_saida)
+    at = atalhos(raiz_saida)
+    resultado["dataset"]["alertas"] += at["alertas"]
+    resultado["dataset"]["atalhos"] = at["medidas"]
     raiz_saida.mkdir(parents=True, exist_ok=True)
     (raiz_saida / "relatorio_qualidade.json").write_text(json.dumps(resultado, ensure_ascii=False, indent=1), encoding="utf-8")
     (raiz_saida / "relatorio_qualidade.txt").write_text(texto(resultado), encoding="utf-8")
