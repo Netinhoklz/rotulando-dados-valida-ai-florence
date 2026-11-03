@@ -260,9 +260,10 @@ def selecionar(velho: np.ndarray, tinta: np.ndarray, forma: str, margem, h: floa
 # ------------------------------------------------------------------------------------------- texto
 def texto(h: dict, rng: random.Random, desfoque_scan: float, altura: float) -> dict:
     """Como a pessoa ajusta o texto novo NESTE campo: escala (no olho), deslocamento da linha de base e do começo
-    (inteiros: a camada de texto fica no pixel), suavização e desfoque."""
+    (inteiros: a camada de texto fica no pixel), suavização, desfoque e rotação. ``h["escala"]`` e ``h["rotacao"]``
+    (graus), quando vêm (o FSTS: rotulador.fsts.habito_humano), valem no lugar da escala no olho e da rotação zero."""
     k = float(h.get("capricho", 1.0))
-    escala = 1.0 + float(np.clip(rng.gauss(0.0, 0.015 * k), -0.05, 0.05))
+    escala = float(h["escala"]) if "escala" in h else 1.0 + float(np.clip(rng.gauss(0.0, 0.015 * k), -0.05, 0.05))
     # o clique que põe o texto erra alguns pixels de TELA; as setas (1 px, 10 px com Shift) empurram até parecer
     # alinhado: sobra o erro que a pessoa não vê naquele zoom (gesto.setas)
     tela = 1.0 / max(0.25, float(h.get("zoom") or 1.0))
@@ -275,7 +276,7 @@ def texto(h: dict, rng: random.Random, desfoque_scan: float, altura: float) -> d
     else:  # nítida como digitou; no "manual" o desfoque vem depois, na seleção inteira (retoque)
         desf = 0.0
     return {"escala": round(escala, 4), "dx": dx, "dy": dy, "rasterizador": RASTERIZADOR.get(h.get("antialias"), "ps_nitida"),
-            "desfoque": round(desf, 2), "setas": nx + ny}
+            "desfoque": round(desf, 2), "setas": nx + ny, "rotacao": float(h.get("rotacao", 0.0))}
 
 
 def cor_conta_gotas(img: np.ndarray, tinta: np.ndarray, h: dict, rng: random.Random) -> np.ndarray | None:

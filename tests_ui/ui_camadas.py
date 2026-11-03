@@ -117,10 +117,10 @@ def shot(n):
     d.save_screenshot(str(S / f"cam_{n}.png"))
 
 
-d.get(URL)
+d.get(URL + "/classico")
 # este teste usa o editor completo: entra direto no modo avançado, tutorial já visto
 d.execute_script("localStorage.setItem('rotulador.modoSimples','false');localStorage.setItem('rotulador.tutorialVisto','true');localStorage.setItem('rotulador.operador', JSON.stringify('Teste UI'))")
-d.get(URL)
+d.get(URL + "/classico")
 espera("window.rotulador && window.rotulador.sessao && document.getElementById('vazio').hidden")
 d.find_element(By.CSS_SELECTOR, '[data-sp="treino"]').click()
 ocioso()

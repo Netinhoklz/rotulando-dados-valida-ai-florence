@@ -1,8 +1,8 @@
 """Registro dos documentos de entrada e auditoria de vazamento entre splits.
 
 O split de um documento vem SÓ da pasta onde ele está (dados/treino, dados/teste,
-dados/validacao). O navegador nunca diz o split: manda o id do documento e o
-servidor resolve tudo por aqui.
+dados/validacao; o nome da subpasta vale com ou sem acento e em maiúsculas: "validação").
+O navegador nunca diz o split: manda o id do documento e o servidor resolve tudo por aqui.
 
 Na partida, cada página é identificada por dois hashes:
   - sha256 dos bytes do arquivo;
@@ -18,6 +18,10 @@ import csv
 import hashlib
 import json
 import os
+import re
+import shutil
+import threading
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +32,9 @@ from . import documentos
 
 SPLITS = ("treino", "teste", "validacao")
 _VERSAO_CACHE = 1
+# documento novo (aberto no estúdio, fora da pasta de dados) vai para o split que está mais abaixo desta proporção
+PROPORCAO = {"treino": 0.70, "teste": 0.15, "validacao": 0.15}
+PASTA_NOVOS = "photocraft"  # dados/<split>/photocraft/: onde ficam os documentos que entraram pelo estúdio
 
 
 class ErroVazamento(Exception):
@@ -54,6 +61,23 @@ class Item:
         return self.rel + (f" (pág. {self.pagina + 1}/{self.paginas})" if self.paginas > 1 else "")
 
 
+def split_do_nome(nome: str) -> str | None:
+    """O split que a subpasta ``nome`` é ("validação", "Validacao" e "TREINO" valem), ou None."""
+    k = unicodedata.normalize("NFKD", nome).encode("ascii", "ignore").decode().strip().lower()
+    return k if k in SPLITS else None
+
+
+def pastas_dos_splits(raiz: Path) -> dict[str, Path]:
+    """As subpastas de ``raiz`` que são splits, a primeira de cada (em ordem de nome)."""
+    out: dict[str, Path] = {}
+    if Path(raiz).is_dir():
+        for p in sorted(Path(raiz).iterdir()):
+            sp = split_do_nome(p.name) if p.is_dir() and not p.name.startswith(".") else None
+            if sp and sp not in out:
+                out[sp] = p
+    return out
+
+
 def hash_pixels(img: np.ndarray) -> str:
     h = hashlib.sha256(f"{img.shape[0]}x{img.shape[1]}x{img.shape[2]}|".encode())
     h.update(np.ascontiguousarray(img).tobytes())
@@ -77,7 +101,9 @@ class Registro:
         self.log = log
         self.itens: dict[str, Item] = {}
         self.por_split: dict[str, list[Item]] = {s: [] for s in SPLITS}
+        self.pastas: dict[str, Path] = {}  # split → a subpasta dele na pasta de dados
         self.avisos: list[str] = []
+        self._lock = threading.Lock()
         self._construir()
 
     # ------------------------------------------------------------------ consulta
@@ -91,21 +117,77 @@ class Registro:
             raise ErroVazamento([f"{it.split}/{it.nome} mudou desde a partida; reinicie o servidor"])
         return img
 
+    def adicionar(self, nome: str, conteudo: bytes) -> list[Item]:
+        """Documento aberto fora da pasta de dados (o "Abrir" do estúdio PhotoCraft). Já registrado (mesmo arquivo ou
+        mesmos pixels em alguma página): os itens que já existem, no split deles. Novo: vai para
+        ``dados/<split>/photocraft/`` no split que está mais abaixo de ``PROPORCAO`` (em arquivos), ou no split onde
+        esses pixels já foram rotulados, e entra no registro. Devolve as páginas, em ordem."""
+        sufixo = Path(nome).suffix.lower()
+        if not documentos.eh_documento(Path("x" + sufixo)):
+            raise ValueError(f"formato de documento não aceito: '{sufixo or nome}'")
+        sha_arq = hashlib.sha256(conteudo).hexdigest()
+        with self._lock:
+            mesmos = sorted((it for it in self.itens.values() if it.sha_arquivo == sha_arq), key=lambda i: i.pagina)
+            if mesmos:
+                return mesmos
+            tmp = self.raiz_saida / "_cache" / "entrada" / f"{sha_arq[:16]}{sufixo}"
+            tmp.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_bytes(conteudo)
+            try:
+                paginas = []
+                for pg in range(documentos.contar_paginas(tmp)):
+                    img = documentos.carregar(tmp, pg, self.dpi)
+                    paginas.append((hash_pixels(img), int(img.shape[0]), int(img.shape[1])))
+                ja = [self.itens[h[:16]] for h, _, _ in paginas if h[:16] in self.itens]
+                if ja:  # o mesmo documento em outro formato (o PNG que o estúdio deu ao PhotoCraft, por exemplo)
+                    tmp.unlink(missing_ok=True)
+                    return ja
+                dono = self._hashes_ja_rotulados()
+                rotulado = [dono[h] for h in [sha_arq] + [p[0] for p in paginas] + [p[0][:16] for p in paginas]
+                            if h in dono]
+                if rotulado:
+                    split = rotulado[0]
+                else:
+                    arquivos = {s: len({it.caminho for it in self.por_split[s]}) for s in SPLITS}
+                    total = sum(arquivos.values()) + 1
+                    split = max(SPLITS, key=lambda s: PROPORCAO[s] - arquivos[s] / total)
+                pasta = self.pastas[split] / PASTA_NOVOS
+                pasta.mkdir(parents=True, exist_ok=True)
+                base = re.sub(r"[^\w\- .]+", "_", Path(nome).stem).strip(" .")[:60] or "documento"
+                destino = pasta / f"{base}{sufixo}"
+                if destino.exists():
+                    destino = pasta / f"{base}_{sha_arq[:8]}{sufixo}"
+                shutil.copyfile(tmp, destino)  # _cache (saída) e dados podem estar em discos diferentes
+            finally:
+                tmp.unlink(missing_ok=True)
+            rel = destino.relative_to(self.pastas[split]).as_posix()
+            novos = [Item(doc=h[:16], split=split, caminho=destino.resolve(), rel=rel, pagina=pg, paginas=len(paginas),
+                          sha_arquivo=sha_arq, sha_pixels=h, altura=a, largura=l)
+                     for pg, (h, a, l) in enumerate(paginas)]
+            for it in novos:
+                if it.doc not in self.itens:  # duas páginas iguais no mesmo arquivo: vale a primeira
+                    self.itens[it.doc] = it
+                    self.por_split[split].append(it)
+            self.por_split[split].sort(key=lambda i: (i.rel.lower(), i.pagina))
+            return [self.itens[it.doc] for it in novos]
+
     # ------------------------------------------------------------------ construção
     def _construir(self) -> None:
         if not self.raiz_dados.is_dir():
             raise FileNotFoundError(f"pasta de dados não existe: {self.raiz_dados}")
+        self.pastas = pastas_dos_splits(self.raiz_dados)
         for p in sorted(self.raiz_dados.iterdir()):
-            if p.name.startswith("."):
+            if p.name.startswith(".") or p.resolve() == self.raiz_saida:  # a saída pode morar dentro da pasta de dados
                 continue
-            if p.is_dir() and p.name not in SPLITS:
-                self.avisos.append(f"pasta '{p.name}' em {self.raiz_dados} não é um split ({', '.join(SPLITS)}); ignorada")
+            if p.is_dir() and p not in self.pastas.values():
+                self.avisos.append(f"pasta '{p.name}' em {self.raiz_dados} não é um split ({', '.join(SPLITS)})"
+                                   f"{' ou repete um' if split_do_nome(p.name) else ''}; ignorada")
             elif p.is_file():
                 self.avisos.append(f"arquivo solto '{p.name}' fora de treino/teste/validacao; ignorado")
 
         arquivos: list[tuple[str, Path]] = []
         for split in SPLITS:
-            pasta = self.raiz_dados / split
+            pasta = self.pastas.setdefault(split, self.raiz_dados / split)
             pasta.mkdir(parents=True, exist_ok=True)
             for p in sorted(pasta.rglob("*")):
                 if p.is_file() and documentos.eh_documento(p) and not any(
@@ -140,7 +222,7 @@ class Registro:
 
         vistos: dict[str, Item] = {}
         for split, p, chave, info, erro in resultados:
-            rel = p.relative_to(self.raiz_dados / split).as_posix()
+            rel = p.relative_to(self.pastas[split]).as_posix()
             if erro:
                 self.avisos.append(f"não consegui ler {split}/{rel}: {erro}")
                 continue
@@ -172,7 +254,7 @@ class Registro:
         for split, p, _, info, erro in resultados:
             if erro:
                 continue
-            rel = p.relative_to(self.raiz_dados / split).as_posix()
+            rel = p.relative_to(self.pastas[split]).as_posix()
             hashes = {info["sha_arquivo"]} | {pg["sha_pixels"] for pg in info["paginas"]}
             for h in hashes:
                 por_hash.setdefault(h, {}).setdefault(split, []).append(rel)
@@ -186,7 +268,7 @@ class Registro:
         for split, p, _, info, erro in resultados:
             if erro:
                 continue
-            rel = p.relative_to(self.raiz_dados / split).as_posix()
+            rel = p.relative_to(self.pastas[split]).as_posix()
             hashes = {info["sha_arquivo"]} | {pg["sha_pixels"] for pg in info["paginas"]}
             hashes |= {pg["sha_pixels"][:16] for pg in info["paginas"]}
             for h in hashes:

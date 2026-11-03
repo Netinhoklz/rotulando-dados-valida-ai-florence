@@ -98,7 +98,7 @@ def carregar(amostra: dict) -> dict:
     H, W = ed.shape[:2]
     out = {"original": _ler(arqs["original"], dpi), "editada": ed}
     for chave, nome in CHAVES_MASCARA:
-        out[nome] = _ler(arqs[chave], dpi)[..., 0] > 127 if arqs.get(chave) else np.zeros((H, W), bool)
+        out[nome] = _ler(arqs[chave], dpi)[..., 0] > 0 if arqs.get(chave) else np.zeros((H, W), bool)  # 0/1 (antigas: 0/255)
     for chave, nome in CHAVES_ROTULO:
         out[nome] = _ler(arqs[chave], dpi)[..., 0].astype(np.uint8) if arqs.get(chave) else np.zeros((H, W), np.uint8)
     ruim = [k for k, v in out.items() if v.shape[:2] != (H, W)]

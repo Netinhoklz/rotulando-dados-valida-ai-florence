@@ -214,9 +214,11 @@ def descrever(n: int, r: dict, pixels: int, bbox) -> dict:
          "descricao": descricao, "bbox": [int(v) for v in bbox] if bbox is not None else None, "pixels": int(pixels)}
     d["origem"] = _ORIGEM_OPERACAO.get(r.get("tipo"), "manual")
     # conferido_ocr: True = o OCR leu o valor novo; None = não deu para julgar; sem a chave = não se aplica.
-    # peso_traco: espessura do traço novo ÷ a do original (1 = igual); semelhanca_fonte: o quanto a fonte usada casou
+    # peso_traco: espessura do traço novo ÷ a do original (1 = igual); semelhanca_fonte: o quanto a fonte usada casou;
+    # photocraft: como o motor editou (fonte em pt, cor, desfoque, peso, posição, origem do remendo/carimbo, passos);
+    # fsts: o tipo do artigo, a pessoa e as operações com os parâmetros (rotulador.fsts)
     for k in ("origem_glifo", "origem_campo", "trecho", "linha_digitavel", "conferido_ocr", "peso_traco",
-              "semelhanca_fonte"):
+              "semelhanca_fonte", "photocraft", "fsts"):
         if k in meta:
             d[k] = meta[k]
     return d
@@ -649,11 +651,12 @@ def salvar(sessao: Sessao, raiz_saida: Path, formato: str = "png", qualidade: in
             if o_lida.shape == e_lida.shape == img_ed.shape:
                 dif_saida = np.abs(o_lida.astype(np.int16) - e_lida.astype(np.int16)).max(2) > 0
                 espalhado = dif_saida if espalhado is None else espalhado | dif_saida
-        _gravar(arq["mascara"], codificar(alterados.astype(np.uint8) * 255, "png", 0))
-        _gravar(arq["mascara_regiao"], codificar(regiao.astype(np.uint8) * 255, "png", 0))
+        # máscaras binárias em 0/1: 1 onde houve edição (os leitores aceitam também as antigas, em 0/255: > 0)
+        _gravar(arq["mascara"], codificar(alterados.astype(np.uint8), "png", 0))
+        _gravar(arq["mascara_regiao"], codificar(regiao.astype(np.uint8), "png", 0))
         _gravar(arq["mascara_classes"], codificar(classes, "png", 0))
         _gravar(arq["mascara_tecnicas"], codificar(tecnicas, "png", 0))
-        _gravar(arq["mascara_ignorar"], codificar(mascara_ignorar(alterados, regiao, espalhado).astype(np.uint8) * 255,
+        _gravar(arq["mascara_ignorar"], codificar(mascara_ignorar(alterados, regiao, espalhado).astype(np.uint8),
                                                   "png", 0))
 
         H, W = alterados.shape
@@ -673,11 +676,11 @@ def salvar(sessao: Sessao, raiz_saida: Path, formato: str = "png", qualidade: in
             "caixas_ocorrencias_por_categoria": _caixas_ocorrencias(edicoes),
             "pixels_alterados": int(alterados.sum()), "pixels_regiao": int(regiao.sum()),
             "fracao_alterada": round(float(alterados.mean()), 6),
-            "mascaras": {"mascara": "0/255: pixels cujo valor mudou (antes da compressão de saída)",
-                         "mascara_regiao": "0/255: área editada (pegada das operações)",
+            "mascaras": {"mascara": "0/1: 1 = pixel editado (o valor mudou, antes da compressão de saída)",
+                         "mascara_regiao": "0/1: 1 = área editada (pegada das operações)",
                          "mascara_classes": "uint8: id da categoria por pixel; 0 = não editado",
                          "mascara_tecnicas": "uint8: num da técnica por pixel (catalogo.json); 0 = não editado",
-                         "mascara_ignorar": "0/255: rótulo ambíguo, para tirar da perda e da métrica: 1 px em volta "
+                         "mascara_ignorar": "0/1: 1 = rótulo ambíguo, para tirar da perda e da métrica: 1 px em volta "
                                             "dos pixels alterados (por fora), a parte da região que não mudou e o que "
                                             "o codec (canal ou gravação com perda) espalhou: fora da região, todo "
                                             "pixel em que a original e a editada gravadas diferem"},

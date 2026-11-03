@@ -104,9 +104,9 @@ def shot(n):
 
 
 # ------------------------------------------------------------------ 1ª visita
-d.get(URL)
+d.get(URL + "/classico")
 js("localStorage.clear(); localStorage.setItem('rotulador.operador', JSON.stringify('Teste UI'))")
-d.get(URL)
+d.get(URL + "/classico")
 espera("window.rotulador && window.rotulador.sessao", 120)
 espera("document.getElementById('modal').open", 10)
 checa("Bem-vindo" in d.find_element(By.ID, "modal-titulo").text, "tutorial aparece na 1ª visita")

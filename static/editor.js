@@ -1156,9 +1156,13 @@ function abrirAtalhos() {
 }
 
 // ------------------------------------------------------------------ início
+// embutido na aba "Ferramentas antigas" do estúdio (/classico?embutido=1&doc=…): não pergunta o nome (como o estúdio) e
+// abre o documento pedido, no split dele
+const PEDIDO = new URLSearchParams(location.search);
+
 async function iniciar() {
   try { app.estado = await get("/api/estado"); } catch (e) { app.aviso("servidor indisponível: " + e.message, "erro"); return; }
-  await exigirOperador();  // o nome vai nas travas, nas versões salvas e nas revisões
+  if (PEDIDO.get("embutido") !== "1") await exigirOperador();  // o nome vai nas travas, nas versões salvas e nas revisões
   app.F = criarFerramentas(app);
   montarFerramentas();
   instalarGlossario($("btn-glossario"));
@@ -1266,6 +1270,12 @@ async function iniciar() {
     },
   });
   if (!SPLITS.some(([s]) => s === app.split)) app.split = "treino";
+  const pedido = PEDIDO.get("doc");
+  if (pedido) {  // o split do documento pedido, e ele como o último aberto no split (o trocarSplit abre esse)
+    const todos = await get("/api/gerador/documentos").catch(() => ({}));
+    const sp = SPLITS.map(([s]) => s).find((s) => (todos[s] || []).some((d) => d.id === pedido));
+    if (sp) { app.split = sp; armazenar("split", sp); armazenar("ultimo." + sp, pedido); }
+  }
   await trocarSplit(app.split);
 }
 

@@ -11,5 +11,7 @@ dados/*/*
 !dados/*/.gitkeep
 saida/
 teste_ia_saida*.png
+# a pasta de imagens escolhida na tela (caminho desta máquina)
+config/pasta_escolhida.json
 # modelos do OCR, baixados do Hugging Face na primeira leitura (rotulador/ocr.py)
 modelos/

@@ -28,6 +28,8 @@ export const TERMOS = [
     explica: "A área que a pessoa mexeu (a seleção dela), inclusive pixels que mudaram pouco. É maior que só os pixels alterados." },
   { chave: "mesma_fonte", termo: "Mesma fonte", grupo: "Técnicas",
     explica: "O texto novo é escrito na fonte do documento (identificada entre as 10 mais usadas em contas), com o tamanho, a cor, a inclinação e a espessura do traço do original. Se a fonte não é identificada, a técnica não é usada." },
+  { chave: "photocraft", termo: "PhotoCraft (as ferramentas do Photoshop)", grupo: "Técnicas",
+    explica: "Um editor de imagem de código aberto que refaz o Photoshop. O gerador o usa escondido, como uma pessoa usaria: seleciona o texto antigo, apaga com uma ferramenta de verdade (preenchimento sensível ao conteúdo, Remendo, Carimbo, Pincel de Recuperação ou Remover), escreve o valor novo numa camada de texto na fonte do documento e acerta desfoque, cor e espessura do traço. A técnica é \"Reescrever no PhotoCraft\"; nas versões em que o falsificador usa o motor, as técnicas que trocam, invertem ou apagam um dígito também apagam com as ferramentas dele. Se o papel refeito fica liso ou manchado, a pessoa refaz com o Carimbo, e o rótulo diz." },
   { chave: "letras_documento", termo: "Letras do próprio documento", grupo: "Técnicas",
     explica: "O campo novo é montado recortando letras que já existem no documento, no mesmo estilo. É a técnica mais difícil de achar, porque a letra é a do papel." },
   { chave: "trecho", termo: "Trecho / caractere", grupo: "Técnicas",

@@ -11,6 +11,65 @@ de endereço (contas de luz, água, gás, telefone, boletos). A cada documento e
 A separação **treino / teste / validação** é garantida pelo servidor. Nada que nasce de um
 documento do treino vai para o teste.
 
+## O estúdio (a página principal)
+
+`http://127.0.0.1:5000/` é a interface do **PhotoCraft** (a versão web dele, em português, servida pelo app em
+`/photocraft/`) com uma aba a mais, **⚡ Gerar**, no alto à direita. O editor antigo continua em `/classico`, e o
+gerador em lote em `/gerador`.
+
+- **Abrir:** pela lista da aba (documentos de cada split), pelo **Arquivo › Abrir** do PhotoCraft ou arrastando o
+  arquivo para a tela. O arquivo sempre abre num documento novo. Um arquivo que ainda não está no dataset entra em
+  `dados/<split>/photocraft/`, no split que está mais abaixo da proporção 70/15/15. Se os mesmos pixels já foram
+  rotulados em um split, vai para esse split.
+- **⚡ Gerar e abrir para revisar:** uma versão feita pelas ferramentas do PhotoCraft, aberta para revisar. É o perfil
+  profissional com `motor="photocraft"`: troca nome e endereço e, às vezes, CPF, CEP/bairro/cidade, datas ou valores,
+  coerentes entre si. O valor novo é escolhido sozinho. **Gerar e salvar direto** grava N versões sem abrir.
+- **Método "Artigo FSTS (NeurIPS 2025)":** a mesma aba gera pelo método do artigo *Toward Real-world Text Image
+  Forgery Localization* (`rotulador/fsts.py`): de 1 a 12 adulterações em campos de texto (cópia interna, colagem de
+  outro documento, remoção, inserção ou substituição), com as operações e o disfarce (desfoques, nitidez, ruído,
+  curvas, cor, traçado, sombra, brilho) sorteados da população, como na geração do artigo: cada operação pela
+  frequência e cada parâmetro dentro da faixa das tabelas 8–12. Alguns disfarces aparecem a olho, como no artigo.
+  Detalhes em
+  [docs/falsificadores.md](docs/falsificadores.md#4d-o-método-de-geração-do-fsts-inteiro-29102026).
+- **Salvar (Ctrl+S no PhotoCraft):** o arquivo salvo (PSD) vem para o servidor em vez de virar download e é gravado
+  no split do documento. A **máscara marca 1 onde houve edição** (0 no resto) e é a diferença exata entre o salvo e o
+  que foi aberto: o PNG que o estúdio dá ao PhotoCraft volta sem mudar nenhum pixel. Nada é perguntado:
+  - a classe de cada pedaço editado vem do campo lido no documento;
+  - o texto antigo é o do campo e o novo é lido no salvo;
+  - fora dos campos, a edição vira "outro".
+
+  Depois de salvar, o documento fecha no PhotoCraft e o **próximo da lista** (o mesmo split, na ordem e com a busca
+  da tela) abre para editar; no último, só fecha. Enquanto salva, a tela do PhotoCraft não recebe clique. Se o
+  salvamento é recusado, o documento continua aberto para corrigir. São recusados:
+  - arquivo com perda (JPEG);
+  - tamanho diferente do original;
+  - mais de 25% da página mudada.
+- **Imagem aberta (no alto do painel, sempre à vista):**
+  - **💾 Salvar e ir para a próxima:** o mesmo que o Ctrl+S.
+  - **⏭ Pular:** fecha a imagem sem salvar e abre a próxima. Se a pessoa já mexeu nela, pergunta antes.
+  - **↩ Apagar a última edição salva:** tira do dataset a versão salva por último no estúdio (imagem editada,
+    máscaras, anotação e linha da planilha). A imagem original, na pasta das imagens, nunca é tocada. Depois a pessoa
+    escolhe **Voltar a essa imagem** (reabre para refazer) ou **Continuar aqui**. Repetindo, sai a anterior.
+  - Na lista, cada imagem mostra o tipo de edição que já tem (família da técnica ou tipo do FSTS) e, ao passar o
+    mouse, os campos editados.
+- **Pasta das imagens:** **📁 Escolher outra pasta** navega pelas pastas do computador e passa a usar qualquer pasta com
+  as subpastas `treino`, `teste` e `validação` (com ou sem acento, maiúsculas valem). O servidor monta tudo de novo
+  nela, sem reiniciar. As edições e máscaras ficam na `saida/` dentro da pasta escolhida (a `dados/` do projeto
+  continua usando a `saida/` do projeto). A escolha fica em `config/pasta_escolhida.json` e vale na próxima partida
+  sem `--dados`. Só funciona no próprio computador do servidor; não troca com um lote rodando, e com o mesmo
+  documento em dois splits fica na pasta de antes.
+- **Dataset:** `saida/dataset.xlsx` é refeita a cada versão salva (no estúdio, no editor clássico e no fim de cada
+  lote) e pode ser baixada pela aba. Tem cinco abas:
+  - **Resumo:** contagens por split e o que tem em cada pasta;
+  - **Versões:** uma linha por imagem editada, com links para a original, a editada, as máscaras e a anotação;
+  - **Edições:** campo, texto antigo e novo, técnica e ferramentas (e, no método FSTS, o tipo);
+  - **Documentos;**
+  - **Legenda:** o valor de cada pixel nas máscaras.
+
+Para instalar a interface, baixe `photocraft-web-<versão>.zip` na página de versões do PhotoCraft e aponte a pasta
+(a que tem o `index.html`) em `config/photocraft.json`, na chave `"web"`. O `photocraft-cli` do motor (abaixo) é
+necessário para salvar PSD e para gerar.
+
 ## Instalação
 
 ```powershell
@@ -18,6 +77,16 @@ python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 .venv\Scripts\python.exe -m pip install --no-deps rapidocr_onnxruntime==1.2.3   # OCR, sem o OpenCV que conflita
 ```
+
+### Motor de edição (PhotoCraft)
+
+O gerador edita com as ferramentas do [PhotoCraft](https://github.com/storytold/photocraft) (o Photoshop refeito em
+Rust, Apache-2.0/MIT), rodando escondido (`photocraft-cli serve`). Baixe a versão portátil para Windows da página de
+versões do projeto, descompacte fora do repositório e aponte para o `photocraft-cli.exe` em
+`config/photocraft.json` (`"cli"`) ou na variável `PHOTOCRAFT_CLI`. Com ele, o campo inteiro sai da técnica
+**Reescrever no PhotoCraft** e, em 60% das versões do perfil profissional, as técnicas parciais (trocar um dígito,
+inverter, apagar, copiar letra) apagam com as ferramentas dele. Sem ele, a técnica sai do sorteio e o gerador apaga com
+o Python (ver `docs/tecnicas.md`, "O motor PhotoCraft").
 
 ### OCR
 
@@ -155,6 +224,10 @@ completa (modos exato, fácil e avançado, abaixo) fica em **▸ Opções avanç
   "documentos": {...}}}` em `/api/gerador/iniciar` e `/api/gerador/previa`; `GET /api/gerador/estilos` lista os
   estilos; `GET /api/gerador/receita_profissional?estilo=...` mostra a mistura.
   A anotação traz `gerador.estilo` (classes, extras, técnica e granularidade de cada campo).
+- O método do artigo FSTS é outro perfil: `{"receita": {"perfil": "fsts", "variacoes": 3, "documentos": {...}}}`.
+  `"fsts": {"tipos": {"replacement": 2, "removal": 1}}` muda o peso dos tipos (o tipo que não vem fica de fora), e
+  `"categorias": ["nome", ...]` restringe os campos. A anotação traz `gerador.fsts` (regiões pedidas e feitas); cada
+  edição traz `fsts` (tipo, operações e parâmetros).
 
 ### 🎯 Modo exato: marque o que editar
 
@@ -483,10 +556,12 @@ threads) quando ele está instalado (`requirements.txt`).
 ## Uso
 
 1. Coloque os documentos em `dados/treino`, `dados/teste` e `dados/validacao` (subpastas
-   valem). Formatos aceitos: JPG, PNG, TIFF (inclusive multipágina), BMP, WEBP, HEIC e PDF.
+   valem; `validação`, com acento, também), ou escolha outra pasta com essas subpastas no estúdio.
+   Formatos aceitos: JPG, PNG, TIFF (inclusive multipágina), BMP, WEBP, HEIC e PDF.
    Cada página vira um item; PDF é rasterizado a 200 DPI (`--dpi`).
 2. `.venv\Scripts\python.exe app.py` abre o navegador em http://127.0.0.1:5000.
-   Opções: `--dados`, `--saida`, `--porta`, `--dpi`, `--sem-navegador`.
+   Opções: `--dados`, `--saida`, `--porta`, `--dpi`, `--sem-navegador`. Sem `--dados` nem `--saida`, vale a
+   pasta escolhida na tela (`config/pasta_escolhida.json`), se houver.
 3. Para cada documento:
    1. Escolha a **categoria** do que vai editar (barra amarela, `Alt+1..0`, ou clique na lista
       "O que foi editado").
@@ -612,12 +687,14 @@ saida/<split>/
                                    envio ou marcas: uma por versão, <doc>__v01.png (passou pelo
                                    mesmo canal que a editada)
   editadas/<doc>__v01.png          cada variação salva
-  mascaras/<doc>__v01.png          0/255: pixels cujo valor mudou (exato, antes da compressão; com
-                                   canal de envio, reamostrada pela mesma geometria: ≥ 15% de cobertura)
-  mascaras_regiao/<doc>__v01.png   0/255: área editada (pegada das ferramentas)
+  mascaras/<doc>__v01.png          0/1: 1 = pixel cujo valor mudou (exato, antes da compressão; com
+                                   canal de envio, reamostrada pela mesma geometria: ≥ 15% de cobertura).
+                                   Até 28/10/2026 as máscaras binárias saíam em 0/255: os leitores
+                                   aceitam as duas (pixel > 0)
+  mascaras_regiao/<doc>__v01.png   0/1: área editada (pegada das ferramentas)
   mascaras_classes/<doc>__v01.png  id da categoria por pixel (0 = não editado): o QUÊ
   mascaras_tecnicas/<doc>__v01.png nº da técnica por pixel (0 = não editado): o COMO
-  mascaras_ignorar/<doc>__v01.png  0/255: rótulo ambíguo, para tirar da perda e da métrica: 1 px em
+  mascaras_ignorar/<doc>__v01.png  0/1: rótulo ambíguo, para tirar da perda e da métrica: 1 px em
                                    volta do que mudou (só por fora), a região que não mudou e, com canal
                                    ou saída com perda (JPEG, WEBP, PDF), tudo o que o codec espalhou em volta
   anotacoes/<doc>__v01.json        origem + hashes, categorias, operações e "edicoes" (técnica,
@@ -632,6 +709,9 @@ saida/<split>/
   catalogo.csv                     uma linha por EDIÇÃO (técnica, família, nível, classe, textos,
                                    fornecedores)
 saida/catalogo.json                legenda dos números das máscaras de técnica e de classe
+saida/dataset.xlsx                 a planilha do dataset (Resumo, Versões, Edições, Documentos, Legenda),
+                                   refeita a cada versão salva; aberta no Excel: "dataset (nova).xlsx"
+saida/_estudio/                    as versões geradas pela aba ⚡ Gerar, à espera de revisão (rascunho)
 saida/relatorio_vazamento.txt/.json  resultado da última auditoria (auditar_vazamento.py)
 saida/DATASHEET.md, datasheet.json composição, técnicas, canais, marcas, auditoria, usos e limitações
                                    (refeitos a cada lote; ou: python -m rotulador.datasheet saida)

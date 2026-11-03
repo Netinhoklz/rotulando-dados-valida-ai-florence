@@ -297,7 +297,7 @@ def carregar_versao(raiz_saida: Path, split: str, nome: str) -> tuple[np.ndarray
             raise ErroOperacao(f"arquivo '{k}' da versão não encontrado")
         imgs.append(documentos.carregar(c, 0, dpi))
     original, editada, regiao = imgs
-    regiao = regiao[..., 0] > 127
+    regiao = regiao[..., 0] > 0  # 0/1 (as antigas, 0/255)
     if original.shape != editada.shape or regiao.shape != editada.shape[:2]:
         raise ErroOperacao("original, editada e máscara de região com tamanhos diferentes")
     return original, editada, regiao, anot

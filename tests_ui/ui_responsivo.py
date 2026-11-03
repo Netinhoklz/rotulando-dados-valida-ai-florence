@@ -61,9 +61,9 @@ def largura(seletor):
 
 try:
     # ------------------------------------------------------------------ computador (1400x900)
-    d.get(URL + "/")
+    d.get(URL + "/classico")
     js("localStorage.clear(); localStorage.setItem('rotulador.operador', JSON.stringify('Teste UI'))")
-    d.get(URL + "/")
+    d.get(URL + "/classico")
     checa(espera("document.getElementById('modal-titulo') && document.getElementById('modal-titulo').textContent.includes('Bem-vindo')"),
           "tutorial abre na 1ª visita")
     checa(len(d.find_element(By.ID, "modal-corpo").text) > 150, "tutorial mostra os 4 passos (não vazio)")
@@ -81,7 +81,7 @@ try:
 
     # ------------------------------------------------------------------ celular (390x844)
     d.set_window_size(390, 844)
-    d.get(URL + "/")
+    d.get(URL + "/classico")
     checa(espera("document.querySelectorAll('#lista-docs li').length > 0"), "celular: página do editor carrega")
     d.find_elements(By.CSS_SELECTOR, "#lista-docs li")[0].click()
     time.sleep(1.5)

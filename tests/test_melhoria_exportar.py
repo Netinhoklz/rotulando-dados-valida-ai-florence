@@ -52,7 +52,7 @@ def _sem_rotulo(raiz_split: Path, a: dict) -> int:
     de mudança e da faixa de ignorar)."""
     o, e = _ler(raiz_split, a, "original"), _ler(raiz_split, a, "editada")
     dif = np.abs(o.astype(np.int16) - e.astype(np.int16)).max(2) > 0
-    alt, ign = _ler(raiz_split, a, "mascara")[..., 0] > 127, _ler(raiz_split, a, "mascara_ignorar")[..., 0] > 127
+    alt, ign = _ler(raiz_split, a, "mascara")[..., 0] > 0, _ler(raiz_split, a, "mascara_ignorar")[..., 0] > 0
     return int((dif & ~alt & ~ign).sum())
 
 
@@ -429,7 +429,7 @@ class TestMarcaSobreEdicao(_ComSessao):
         _, anot = _anot(self.saida, f"{self.it.doc}__v{a['versao']:02d}")
         r = self.saida / "treino"
         o, e = _ler(r, anot, "original"), _ler(r, anot, "editada")
-        alt = _ler(r, anot, "mascara")[..., 0] > 127
+        alt = _ler(r, anot, "mascara")[..., 0] > 0
         self.assertTrue(np.array_equal(alt, (o != e).any(2)))
         self.assertTrue(alt.any())
         self.assertIn("sobre_edicao", anot["nota_marcas"])

@@ -117,7 +117,7 @@ def gerar(raiz_saida: Path, split: str, destino: Path, perfis=None, semente: int
             for chave, nome_arr in (("original", "original"), ("editada", "editada")):
                 _png(raiz / arq[chave], novo[nome_arr])
             for chave, nome_arr in dados.CHAVES_MASCARA:
-                _png(raiz / arq[chave], novo[nome_arr].astype(np.uint8) * 255)
+                _png(raiz / arq[chave], novo[nome_arr].astype(np.uint8))  # 0/1, como as do exportar
             for chave, nome_arr in dados.CHAVES_ROTULO:
                 _png(raiz / arq[chave], novo[nome_arr])
             anot = json.loads(Path(a["arquivos"]["anotacao"]).read_text(encoding="utf-8"))

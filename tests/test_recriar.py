@@ -154,7 +154,7 @@ class TestCatalogo(unittest.TestCase):
         self.assertEqual(jeito["tecnicas"], ["pagina.recriar"])
         self.assertEqual(set(T.opcoes), {"fonte_editor", "rasterizador", "apagar"})
         self.assertEqual([v for v, _ in T.opcoes["fonte_editor"]["valores"]], ["imitada", "substituta"])
-        self.assertEqual(len([t for t in cat.TECNICAS.values() if t.automatica]), 30)  # + campo.letras_do_documento
+        self.assertEqual(len([t for t in cat.TECNICAS.values() if t.automatica]), 31)  # + campo.letras_do_documento, campo.photocraft
         self.assertIn("recriacao", cat.legenda()["familias"])
         self.assertEqual(T.para_json()["tipos"], ["pagina"])
 

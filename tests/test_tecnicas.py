@@ -40,7 +40,8 @@ def F(nome, tam):
     return ImageFont.truetype(f"C:/Windows/Fonts/{nome}", tam)
 
 
-def documento(nome="MARIA DOS SANTOS SILVA", valor="R$ 158,37", consumo="183 kWh", semente=1):
+def documento(nome="MARIA DOS SANTOS SILVA", valor="R$ 158,37", consumo="183 kWh", semente=1,
+              endereco="RUA DAS FLORES, 101"):
     """(imagem, linhas do OCR) de uma conta sintética; as linhas têm o texto exato."""
     im = Image.new("RGB", (1240, 760), (252, 252, 250))
     d = ImageDraw.Draw(im)
@@ -53,7 +54,7 @@ def documento(nome="MARIA DOS SANTOS SILVA", valor="R$ 158,37", consumo="183 kWh
 
     rot, val = F("arialbd.ttf", 22), F("arial.ttf", 30)
     y = 80
-    for r, v in [("NOME", nome), ("CPF", "123.456.789-09"), ("ENDERECO", "RUA DAS FLORES, 101"),
+    for r, v in [("NOME", nome), ("CPF", "123.456.789-09"), ("ENDERECO", endereco),
                  ("CEP", "30123-456"), ("VENCIMENTO", "10/10/2026"), ("LEITURA", "05/09/2026"), ("CONSUMO", consumo)]:
         escrever(60, y + 4, r, rot)
         escrever(330, y, v, val)
@@ -87,7 +88,9 @@ class Base(unittest.TestCase):
         cls.saida = cls.tmp / "saida"
         docs = {}
         for doc, split, kw in (("aaaa1111", "treino", {}),
-                               ("bbbb2222", "treino", {"nome": "PEDRO ALVES COSTA", "valor": "R$ 942,10", "semente": 2}),
+                               # o doador mora em outro endereço: colar o bloco de um endereço igual não mudaria nada
+                               ("bbbb2222", "treino", {"nome": "PEDRO ALVES COSTA", "valor": "R$ 942,10", "semente": 2,
+                                                       "endereco": "RUA DOS PINHEIROS, 250"}),
                                ("cccc3333", "teste", {"nome": "LUCAS PINTO GOMES", "valor": "R$ 777,77", "semente": 3})):
             img, linhas = documento(**kw)
             it = item(doc, split, img)

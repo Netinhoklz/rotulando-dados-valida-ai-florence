@@ -36,7 +36,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from .. import catalogo, glifos, humano, identificar_fonte, ocr, pericia, selecao, vetorial
+from .. import catalogo, fsts, glifos, humano, identificar_fonte, ocr, pericia, photocraft, selecao, vetorial
 from ..selecao import mascara_tinta
 from ..sessao import ErroOperacao, Resultado
 from . import ajustes, auto, codigos, geradores, ia, texto
@@ -183,6 +183,8 @@ class _C:
         self._aj = self._gs = self._desf = self._base = self._vestigio = self._tinta = None
         # só as 10 fontes mais usadas em documentos (técnica "mesma fonte", ou ``fontes: "top10"`` nos parâmetros)
         self.fontes = identificar_fonte.fontes_top10() if (p.get("fontes") == "top10" or (self.tec and self.tec.id in _TOP10)) else None
+        # o editor da versão: "photocraft" refaz o papel com as ferramentas do motor (``papel``); sem ele, o Python
+        self.motor = "photocraft" if p.get("motor") == "photocraft" and photocraft.disponivel() else None
 
     # ------------------------------------------------------------------ opções
     def opcao(self, nome: str):
@@ -324,7 +326,8 @@ class _C:
             y0, y1, x0, x1, a = texto.renderizar(self.params_fonte(s, X, self.linha_base - dyb), self.H, self.W)
             return (x0, y0, x1, y1), a
         p = self.params_fonte(s, float(round(X) + t["dx"]), float(round(self.linha_base - dyb) + t["dy"]), t["desfoque"])
-        p.update(tamanho=p["tamanho"] * t["escala"], rasterizador=t["rasterizador"])
+        p.update(tamanho=p["tamanho"] * t["escala"], rasterizador=t["rasterizador"],
+                 rotacao=float(p.get("rotacao") or 0.0) + float(t.get("rotacao", 0.0)))
         y0, y1, x0, x1, a = texto.renderizar(p, self.H, self.W)
         return (x0, y0, x1, y1), a
 
@@ -424,7 +427,9 @@ class _C:
         x0, y0, x1, y1 = regiao
         h = max(8, self.caixa[3] - self.caixa[1])
         modo = self.apagador()
-        M = int(max(16, (3.0 if modo in ("carimbo", "recuperar") else 1.5) * h))  # o carimbo precisa de papel livre
+        pc = photocraft.DO_HUMANO.get(modo) if self.motor == "photocraft" else None
+        # o carimbo precisa de papel livre; as ferramentas do motor também (o Remendo, a amostra do preenchimento)
+        M = int(max(16, (3.0 if modo in ("carimbo", "recuperar") or pc else 1.5) * h))
         ax0, ay0, ax1, ay1 = max(0, x0 - M), max(0, y0 - M), min(self.W, x1 + M), min(self.H, y1 + M)
         rec = self.img[ay0:ay1, ax0:ax1]
         buraco = _dilatar(mascara_tinta(rec), 2)
@@ -433,6 +438,16 @@ class _C:
         buraco |= alvo
         if buraco.all():
             raise ErroOperacao("não há papel em volta para reconstruir o fundo")
+        if pc:
+            try:
+                cheio, sobre = photocraft.reconstruir(rec, buraco, alvo, pc, self.semente, float(h))
+            except ErroOperacao:  # nem o Carimbo do motor deu conta: o apagador do Python, rotulado como tal
+                pass
+            else:
+                self.fornecedores.update(motor="photocraft", apagar=f"photocraft.{sobre['ferramenta']}")
+                if sobre.get("refez"):
+                    self.fornecedores["refez"] = sobre["refez"]["de"]
+                return cheio[y0 - ay0:y1 - ay0, x0 - ax0:x1 - ax0]
         cheio = reconstruir(rec, buraco, modo, self.semente, float(h), alvo=alvo)
         return cheio[y0 - ay0:y1 - ay0, x0 - ax0:x1 - ax0]
 
@@ -474,6 +489,7 @@ class _Tela:
         self.c, self.caixa = c, (x0, y0, x1, y1)
         self.px = c.img[y0:y1, x0:x1].astype(np.float32)
         self.pegada = np.zeros((y1 - y0, x1 - x0), bool)
+        self.colada = np.zeros((y1 - y0, x1 - x0), bool)  # a tinta que um laço já trouxe (o próximo não a cobre)
 
     def _local(self, caixa, forma):
         x0, y0, x1, y1 = (int(v) for v in caixa)
@@ -548,6 +564,37 @@ class _Tela:
         self.px = poisson(destino, fonte, mascara).astype(np.float32)
         self.pegada |= mascara
 
+    def laco(self, caixa, rec: np.ndarray, m: np.ndarray, proprio: np.ndarray) -> None:
+        """Cola o recorte ``rec`` com a seleção ``m`` (0..1, o laço com a borda suavizada), os pixels exatos, como a
+        camada de Ctrl+J arrastada; ``proprio`` (bool) é a tinta que ele traz. O papel em volta da letra nunca cobre
+        a tinta que ficou no lugar nem a que outro laço já trouxe."""
+        r = self._local(caixa, m.shape)
+        if not r:
+            return
+        X0, Y0, X1, Y1 = self.caixa
+        fica = mascara_tinta(self.c.img[Y0:Y1, X0:X1]).astype(bool) & ~self.pegada
+        dono = np.zeros(self.pegada.shape, bool)
+        dono[r[0]] = proprio[r[1]]
+        livre = ~(_dilatar(fica | self.colada, 1) & ~dono)
+        mm = np.zeros(self.pegada.shape, np.float32)
+        mm[r[0]] = m[r[1]]
+        mm *= livre
+        frente = self.px.copy()
+        frente[r[0]] = np.asarray(rec, np.float32)[r[1]]
+        self.px = self.px * (1 - mm[..., None]) + frente * mm[..., None]
+        self.pegada |= mm > 0
+        self.colada |= dono
+
+    def multiplicar(self, caixa, t: np.ndarray) -> None:
+        """Modo Multiplicar: ``t`` (h, w, 3) é a transmitância da camada (1 = papel, que some; a tinta escurece o que
+        está embaixo na proporção dela)."""
+        r = self._local(caixa, t.shape[:2])
+        if not r:
+            return
+        tt = np.asarray(t, np.float32)[r[1]]
+        self.px[r[0]] = self.px[r[0]] * tt
+        self.pegada[r[0]] |= np.abs(tt - 1).max(-1) > 1e-3
+
     def resultado(self, meta: dict) -> Resultado:
         x0, y0, x1, y1 = self.caixa
         if not self.pegada.any():
@@ -598,7 +645,85 @@ def _glifo_movel(img_src: np.ndarray, g: glifos.Glifo, escala: float = 1.0, cor_
     return rec, a, (gx0, gy0, gx1, gy1)
 
 
-def _colar(tela: _Tela, caixa, rec, a, modo: str) -> None:
+def _raio_halo(c: _C) -> int:
+    """Até onde vai o halo da letra (antialias e desfoque do scan): 2 px, 3 no texto borrado (foto)."""
+    try:
+        return 3 if c.desfoque >= 1.0 else 2
+    except ErroOperacao:
+        return 2
+
+
+def _pintar(m: np.ndarray, X0: int, Y0: int, g: glifos.Glifo) -> None:
+    """Põe a tinta de ``g`` na máscara ``m`` (canto em X0, Y0), só a parte que cai dentro dela."""
+    H, W = m.shape
+    ax0, ay0, ax1, ay1 = max(g.x0, X0), max(g.y0, Y0), min(g.x1, X0 + W), min(g.y1, Y0 + H)
+    if ax1 > ax0 and ay1 > ay0:
+        m[ay0 - Y0:ay1 - Y0, ax0 - X0:ax1 - X0] |= g.tinta[ay0 - g.y0:ay1 - g.y0, ax0 - g.x0:ax1 - g.x0]
+
+
+def _laco(img: np.ndarray, gs, r: int, outros=()):
+    """O Ctrl+J das letras ``gs``: (caixa, recorte, seleção 0..1, tinta delas). O laço contorna a tinta delas a ``r``
+    px (o halo vem junto, nos pixels de verdade), com a borda suavizada em 1 px, e desvia da tinta de qualquer outra
+    letra (``outros`` e o que a máscara de tinta achar longe delas)."""
+    H, W = img.shape[:2]
+    p = r + 3
+    x0, y0 = max(0, min(g.x0 for g in gs) - p), max(0, min(g.y0 for g in gs) - p)
+    x1, y1 = min(W, max(g.x1 for g in gs) + p), min(H, max(g.y1 for g in gs) + p)
+    proprio, alheia = np.zeros((y1 - y0, x1 - x0), bool), np.zeros((y1 - y0, x1 - x0), bool)
+    for g in gs:
+        _pintar(proprio, x0, y0, g)
+    for g in outros:
+        _pintar(alheia, x0, y0, g)
+    alheia = (alheia & ~proprio) | (mascara_tinta(img[y0:y1, x0:x1]).astype(bool) & ~_dilatar(proprio, r))
+    barrado = _dilatar(alheia, 1)
+    sel = _dilatar(proprio, r) & ~barrado
+    m = np.maximum(cv2.GaussianBlur(sel.astype(np.float32), (0, 0), 0.7), _dilatar(proprio, r - 1)) * ~barrado
+    return (x0, y0, x1, y1), img[y0:y1, x0:x1].astype(np.float32), m.astype(np.float32), proprio
+
+
+def _mover_glifos(tela: _Tela, movimentos, todos=()) -> None:
+    """Move grupos de letras como quem seleciona com o laço, faz Ctrl+J e arrasta a camada com as setas: os pixels
+    originais, no pixel inteiro (``movimentos``: [(letras, dx, dy)]; cada grupo vai junto, num laço só, que desvia das
+    outras letras de ``todos``). O lugar de destino já tem de estar apagado. O alfa da letra composto de novo com os
+    pixels dela (o jeito antigo) deixava a borda com cobertura a² em vez de a: em 449 dígitos movidos para o mesmo
+    lugar, o traço saía 10% mais fino, mais nítido e 8 níveis mais claro; com o laço, igual (peso 0,998)."""
+    r = _raio_halo(tela.c)
+    for gs, dx, dy in movimentos:
+        (x0, y0, x1, y1), rec, m, proprio = _laco(tela.c.img, gs, r, [g for g in todos if all(g is not x for x in gs)])
+        tela.laco((x0 + dx, y0 + dy, x1 + dx, y1 + dy), rec, m, proprio)
+
+
+def _transmitancia(rec: np.ndarray, a: np.ndarray, papel) -> np.ndarray:
+    """A camada de uma letra colada em Multiplicar, depois dos Níveis que levam o papel dela ao branco: a transmitância
+    ``rec / papel`` (a textura da tinta e a borda antisserrilhada de verdade, cobertura a). Onde o alfa é quase zero
+    (o papel em volta) ela vai a 1 — o grão do papel de lá não entra junto com o daqui."""
+    t = np.clip(np.asarray(rec, np.float32) / np.maximum(np.asarray(papel, np.float32), 1.0), 0, 1.25)
+    w = np.clip(np.asarray(a, np.float32) / 0.15, 0, 1)[..., None]
+    return 1 + (t - 1) * w
+
+
+def _girar(rec, a, graus: float, cheio: bool):
+    """(rec, alfa) girados de ``graus`` em volta do centro, na mesma caixa (a camada colada girada na Transformação
+    Livre). ``cheio``: o recorte é um retângulo opaco, e o alfa passa a ser o retângulo girado."""
+    h, w = a.shape[:2]
+    M = cv2.getRotationMatrix2D(((w - 1) / 2, (h - 1) / 2), graus, 1.0)
+    rec = cv2.warpAffine(np.asarray(rec, np.float32), M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    a = cv2.warpAffine(np.ones((h, w), np.float32) if cheio else np.asarray(a, np.float32), M, (w, h),
+                       flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    return rec, a
+
+
+def _colar(tela: _Tela, caixa, rec, a, modo: str, papel=None) -> None:
+    """Cola (rec, alfa) já posicionados em ``caixa``. ``papel``: a cor do papel de onde o recorte veio — com ela, o modo
+    "tinta" cola em Multiplicar (``_transmitancia``). Com o FSTS, o recorte entra girado do ângulo da pessoa (passo 2.3
+    da cópia e da colagem); o retângulo girado é composto pelo alfa dele."""
+    graus = fsts.rotacao_da_colagem(tela.c.habitos)
+    if graus:
+        rec, a = _girar(rec, a, graus, modo in ("retangulo", "papel"))
+        tela.c.fornecedores["rotacao"] = graus
+        if modo in ("retangulo", "papel"):
+            tela.tinta(caixa, a, rec)
+            return
     if modo == "retangulo":
         tela.opaco(caixa, rec)
     elif modo == "papel":  # recorte de papel colado por cima e fotografado: opaco, borda escura e sombra em dois lados
@@ -625,6 +750,8 @@ def _colar(tela: _Tela, caixa, rec, a, modo: str) -> None:
             _ = (X0, Y0)
     elif modo == "poisson":
         tela.poisson(caixa, rec, _dilatar(a > 0.05, 2))
+    elif papel is not None:
+        tela.multiplicar(caixa, _transmitancia(rec, a, papel))
     else:
         tela.tinta(caixa, a, rec)
 
@@ -845,7 +972,8 @@ def _t_campo_reescrever(c: _C, extra_p: dict | None = None) -> Resultado:
     t = c.hum_texto
     if t is not None:  # o operador humano: o tamanho no olho, a camada no pixel, a suavização, o desfoque e a cor dele
         desf = t["desfoque"]
-        fonte_params = {**fonte_params, "tamanho": round(float(fonte_params["tamanho"]) * t["escala"], 2)}
+        fonte_params = {**fonte_params, "tamanho": round(float(fonte_params["tamanho"]) * t["escala"], 2),
+                        "rotacao": float(fonte_params.get("rotacao") or 0.0) + float(t.get("rotacao", 0.0))}
         extra_p.update(no_olho=[t["dx"], t["dy"]], rasterizador=t["rasterizador"])
         cor = c.cor_humana()
         if cor is not None:
@@ -966,6 +1094,82 @@ def _t_campo_mesma_fonte(c: _C) -> Resultado:
                              f"{condensado}); apagado com {c.fornecedores.get('apagar')}.")
     res.meta["semelhanca_fonte"] = None if sem is None else round(float(sem), 3)
     c.fornecedores["fonte_identificada"] = ident
+    return res
+
+
+def _refez(sobre: dict) -> str:
+    """O pedaço da descrição de quando a ferramenta de apagar do PhotoCraft foi trocada pelo Carimbo."""
+    r = sobre.get("refez")
+    return f" (refeito: {photocraft.DIZ_APAGADOR.get(r['de'], r['de'])} deixou {r['porque']})" if r else ""
+
+
+def _t_campo_photocraft(c: _C) -> Resultado:
+    """O campo inteiro trocado com as ferramentas do PhotoCraft (``rotulador.photocraft``): o texto antigo selecionado
+    (só a tinta, ou a seleção do operador humano), apagado com uma ferramenta de verdade (a opção "ferramenta", ou a do
+    operador) e o valor novo numa camada de texto na fonte identificada, alinhado como o campo está na página. Sem o
+    operador, o desfoque, o tom e o peso do traço saem MEDIDOS iguais aos do texto escaneado. As recusas são as da
+    "mesma fonte": fonte não identificada (``SEMELHANCA_MINIMA``) e traço que não casa (``PESO_MAXIMO``)."""
+    if not photocraft.disponivel():
+        raise ErroOperacao("o motor PhotoCraft não está instalado")
+    sem = c.aj.get("semelhanca")
+    if c.aj.get("metodo") != "estimativa" and sem is not None and float(sem) < SEMELHANCA_MINIMA \
+            and not c.p.get("fonte_params"):
+        raise ErroOperacao(f"a fonte do campo não foi identificada (semelhança {float(sem):.2f} < "
+                           f"{SEMELHANCA_MINIMA:.2f}): na mais parecida o texto novo sairia em outra letra")
+    alin = (c.p.get("opcoes") or {}).get("alinhamento")
+    if alin not in ("esquerda", "direita"):
+        alin = (_alinhamento_no_documento(c)
+                or ("direita" if c.categoria in ("valor", "consumo/leitura") else "esquerda"))
+    novo = _novo_valor(c)
+    entreletra = float(c.aj.get("espacamento") or 0.0)
+    antiga, nova = _largura(c, c.texto), _largura(c, novo)
+    extra = int(math.ceil(nova - antiga))
+    condensado = ""
+    if extra > 2:  # o texto novo é mais largo: só cresce para o lado com papel livre (e um espaço até o vizinho)
+        x0, y0, x1, y1 = c.caixa
+        f = max(4, int(round(glifos.fonte_pil(c.aj["fonte"], c.aj["tamanho"]).getlength(" ")
+                             * float(c.aj.get("largura", 100)) / 100)))
+        meio = extra // 2 + 1
+        cabe = {"esquerda": c.livre((x1 + 1, y0, x1 + extra + f, y1)),
+                "direita": c.livre((x0 - extra - f, y0, x0 - 1, y1)),
+                "centro": c.livre((x1 + 1, y0, x1 + meio + f, y1)) and c.livre((x0 - meio - f, y0, x0 - 1, y1))}
+        if not cabe.get(alin):
+            alin = next((a for a in ("esquerda", "direita") if cabe[a]), alin)
+        if not cabe.get(alin):
+            if c.dado:  # valor imposto (repetido no documento): condensa (o Tracking) em vez de invadir o vizinho
+                entreletra = _condensar(c, novo, c.aj, entreletra, alin, nova, antiga, f)
+                condensado = f"; condensado ({entreletra:+.2f} px entre as letras) para caber"
+            else:
+                novo = _novo_valor(c, maximo=1.0)
+    c.escolhas["alinhamento"] = alin
+    if c.humano is not None:  # a ferramenta da pessoa; a seleção, a suavização, a cor e os retoques vêm no motor
+        ferramenta = photocraft.DO_HUMANO.get(c.humano.get("apagar"), "preenchimento")
+        c.fornecedores["selecao"] = c.humano["selecao"]
+    else:
+        ferramenta = c.opcao("ferramenta")
+    res, sobre = photocraft.reescrever(c, novo, alin, ferramenta, entreletra, lambda r: _razao_peso(c, r))
+    pesos = _razao_peso(c, res)
+    if pesos and abs(pesos[1] / pesos[0] - 1) > PESO_MAXIMO:
+        raise ErroOperacao(f"o traço do texto novo não casa com o do documento ({pesos[1] / pesos[0]:.2f}x a "
+                           "espessura do original)")
+    usada = sobre["ferramenta"]  # a pedida, ou o Carimbo com que a pessoa refez (``photocraft.apagar_no_documento``)
+    c.fornecedores.update(motor="photocraft", apagar=f"photocraft.{usada}",
+                          texto=f"photocraft.{sobre['suavizacao']}", fonte=c.aj["fonte"])
+    if sobre.get("gesto"):
+        c.fornecedores["gesto"] = sobre["gesto"]
+    peso = f", peso {sobre['peso']:+.2f}" if sobre["peso"] else ""
+    acerto = "" if c.humano is not None else f"; desfoque {sobre['desfoque']} px, cor {sobre['cor']}{peso} medidos no documento"
+    res.meta = {**res.meta, **c.meta(novo, [_alt(0, c.texto, novo, "campo")],
+                                     f"Campo reescrito no PhotoCraft: '{c.texto}' → '{novo}' em {sobre['fonte']} "
+                                     f"{sobre['tamanho_pt']} pt (suavização {sobre['suavizacao']}), alinhado pela {alin}"
+                                     f"{condensado}; seleção {sobre['selecao']}, apagado com "
+                                     f"{photocraft.DIZ_APAGADOR[usada]}{_refez(sobre)}{acerto}.",
+                                     fonte=c.aj["fonte"], photocraft=sobre)}
+    if c.humano is not None:  # os retoques da pessoa já saíram do motor: o _acabar_humano não refaz em Python
+        res.meta["retoques_motor"] = sobre.get("retoques") or []
+    if pesos:
+        res.meta["peso_traco"] = round(pesos[1] / pesos[0], 3)
+    res.meta["semelhanca_fonte"] = None if sem is None else round(float(sem), 3)
     return res
 
 
@@ -2212,13 +2416,12 @@ def _t_caractere_inserir(c: _C) -> Resultado:
         else:
             continue
         caixa_r, alfa_novo = c.desenhar(ch, ancora=X, humano_=True)
-        caixas = [_caixa_glifo(g) for g in movidos] + [
-            (g.x0 + dx - 3, g.y0 - 3, g.x1 + dx + 3, g.y1 + 3) for g in movidos]
+        m = _raio_halo(c) + 4
+        caixas = [_caixa_glifo(g, m) for g in movidos] + [
+            (g.x0 + dx - m, g.y0 - m, g.x1 + dx + m, g.y1 + m) for g in movidos]
         tela = _Tela(c, _uniao(caixa_r, *caixas))
         tela.apagar(_furo_glifos(tela, movidos))
-        for g in movidos:
-            rec, al, (gx0, gy0, gx1, gy1) = glifos.alfa_glifo(c.img, g, margem=2)
-            tela.tinta((gx0 + dx, gy0, gx1 + dx, gy1), al, rec.astype(np.float32))
+        _mover_glifos(tela, [(movidos, int(dx), 0)], gs)
         tela.tinta(caixa_r, alfa_novo, _cor_escrita(c, a_))
         novo = c.texto[:b.i] + ch + c.texto[b.i:]
         lado = "o resto do texto foi empurrado para a direita" if dx > 0 else "o começo foi empurrado para a esquerda"
@@ -2270,23 +2473,25 @@ def _t_copiar_glifo(c: _C, externo: bool = False) -> Resultado:
             if not achados:
                 continue
             _, origem, img_src, s = min(achados, key=lambda t: t[0])
-            escala = h_esp / s.altura if abs(h_esp / s.altura - 1) > 0.03 else 1.0
+            escala = h_esp / s.altura if abs(h_esp / s.altura - 1) > 0.03 and fsts.escala_da_colagem(c.habitos) else 1.0
             # quem cola no Paint arrasta o canto e deforma a letra na horizontal (desleixo)
             escala_x = c.rng.uniform(0.88, 1.12) if modo == "retangulo" and float(c.habitos.get("capricho", 1.0)) > 1.0 else 1.0
             c.fornecedores["colagem"] = modo
-            rec, a, (gx0, gy0, gx1, gy1) = _glifo_movel(img_src, s, escala, None if modo in ("retangulo", "papel") else cor_alvo,
+            papel_src = np.asarray(glifos.cor_papel(img_src, s.caixa), np.float32)
+            # em Multiplicar a tinta escurece o papel daqui: a cor que dá a do alvo é a dele na escala do papel de lá
+            papel_dst = np.maximum(np.asarray(glifos.cor_papel(c.img, g.caixa), np.float32), 1.0)
+            cor = cor_alvo * papel_src / papel_dst if modo == "tinta" else cor_alvo
+            rec, a, (gx0, gy0, gx1, gy1) = _glifo_movel(img_src, s, escala, None if modo in ("retangulo", "papel") else cor,
                                                         escala_x)
             if modo == "retangulo":  # retângulo amador, mas no tom do papel e da tinta daqui (não caixa branca)
-                papel_src = np.asarray(glifos.cor_papel(img_src, s.caixa), np.float32)
-                papel_dst = np.asarray(glifos.cor_papel(c.img, g.caixa), np.float32)
-                rec = (np.asarray(rec, np.float32) + (cor_alvo - glifos.cor_tinta(img_src, s)) * a[..., None]
+                rec =(np.asarray(rec, np.float32) + (cor_alvo - glifos.cor_tinta(img_src, s)) * a[..., None]
                        + (papel_dst - papel_src) * (1 - a)[..., None])
             Y = (c.linha_base - gy1) if ch not in glifos.DESCENDENTES else (g.y0 - gy0)
             reamostrado = escala != 1 or escala_x != 1  # sem escala, a cópia é colada em pixel inteiro
             caixa_p, rec, a = _posicionar(rec, a, g.cx - (gx0 + gx1) / 2, Y, inteiro=not reamostrado)
             tela = _Tela(c, _uniao(_caixa_glifo(g), caixa_p))
             tela.apagar(_furo_glifos(tela, [g]))
-            _colar(tela, caixa_p, rec, a, modo)
+            _colar(tela, caixa_p, rec, a, modo, papel_src)
             novo = c.texto[:g.i] + ch + c.texto[g.i + 1:]
             de_onde = f"do documento {origem}" if externo else "de outro ponto do documento"
             return tela.resultado(c.meta(
@@ -2307,12 +2512,10 @@ def _t_caractere_transpor(c: _C) -> Resultado:
     if not pares:
         raise ErroOperacao("não há dois dígitos vizinhos diferentes para inverter")
     a, b = c.rng.choice(pares)
-    tela = _Tela(c, _uniao(_caixa_glifo(a, 4), _caixa_glifo(b, 4)))
+    m = _raio_halo(c) + 4
+    tela = _Tela(c, _uniao(_caixa_glifo(a, m), _caixa_glifo(b, m)))
     tela.apagar(_furo_glifos(tela, [a, b]))
-    for de, para in ((a, b), (b, a)):
-        rec, al, (gx0, gy0, gx1, gy1) = _glifo_movel(c.img, de)
-        caixa_p, rec, al = _posicionar(rec, al, para.cx - (gx0 + gx1) / 2, de.y0 - gy0, inteiro=True)
-        tela.tinta(caixa_p, al, rec)
+    _mover_glifos(tela, [([a], int(round(b.cx - a.cx)), 0), ([b], int(round(a.cx - b.cx)), 0)], gs)
     novo = c.texto[:a.i] + b.ch + a.ch + c.texto[b.i + 1:]
     return tela.resultado(c.meta(novo, [_alt(a.i, a.ch + b.ch, b.ch + a.ch, "transposicao")],
                                  f"'{a.ch}' e '{b.ch}' (posições {a.i + 1}-{b.i + 1}) trocaram de lugar, movendo os "
@@ -2371,6 +2574,8 @@ def _t_copiar_campo(c: _C, externo: bool = False) -> Resultado:
         escala = alt_alvo / alt_src if abs(alt_alvo / alt_src - 1) > 0.03 else 1.0
         if not 0.75 <= escala <= 1.33:
             continue
+        if not fsts.escala_da_colagem(c.habitos):  # FSTS: a pessoa não ajustou a escala do recorte (passo 2.2)
+            escala = 1.0
         fx0, fy0, fx1, fy1 = f["caixa"]
         cor_doador = glifos.cor_tinta(d.img, mascara_tinta(d.img[fy0:fy1, fx0:fx1]).astype(bool), f["caixa"])
         if not externo and not _mesmo_estilo(escala, cor_doador, cor_alvo, glifos.nitidez_tinta(d.img, f["caixa"]),
@@ -2389,7 +2594,8 @@ def _t_copiar_campo(c: _C, externo: bool = False) -> Resultado:
         if (tinta_cor.mean() > papel_src.mean()) != (cor_alvo.mean() > papel_alvo.mean()):
             continue  # contraste invertido (texto claro no cabeçalho escuro): viraria texto laranja no branco
         a = glifos.alfa(rec, papel_src, tinta_cor) * _dilatar(tinta_src, 1)
-        rec = rec + (cor_alvo - tinta_cor) * a[..., None]
+        cor = cor_alvo * papel_src / np.maximum(papel_alvo, 1.0) if modo == "tinta" else cor_alvo  # ver copiar_glifo
+        rec = rec + (cor - tinta_cor) * a[..., None]
         if modo == "retangulo":  # o retângulo é amador, mas com o tom do papel de destino (não cinza no branco)
             rec = rec + (papel_alvo - papel_src) * (1 - a)[..., None]
         if escala != 1.0:
@@ -2415,7 +2621,7 @@ def _t_copiar_campo(c: _C, externo: bool = False) -> Resultado:
         tela = _Tela(c, _uniao((x0 - 4, y0 - 4, x1 + 4, y1 + 4), caixa_p))
         furo = tela.mascara(c.caixa, mascara_tinta(c.img[y0:y1, x0:x1]).astype(bool))
         tela.apagar(_dilatar(furo, 2))
-        _colar(tela, caixa_p, rec, a, modo)
+        _colar(tela, caixa_p, rec, a, modo, papel_src)
         novo = f["texto"]
         de_onde = f"do documento {d.doc} (mesmo split)" if externo else "de outro campo do mesmo documento"
         return tela.resultado(c.meta(
@@ -2493,6 +2699,8 @@ def _t_bloco_colagem_externa(c: _C) -> Resultado:
             vistos |= {g.get("id") for g in bd}
             if len(bd) < 2 or [g["categoria"] for g in bd] != cats:
                 continue
+            if [g["texto"].strip() for g in bd] == [b["texto"].strip() for b in bloco]:
+                continue  # o mesmo endereço: colar não mudaria nada (como na colagem de um campo só)
             ud = _uniao(*[g["caixa"] for g in bd])
             razao = alt_alvo / max(1.0, ud[3] - ud[1])
             if 0.75 <= razao <= 1.33:
@@ -2514,11 +2722,12 @@ def _t_bloco_colagem_externa(c: _C) -> Resultado:
             continue
         tinta_cor = glifos.cor_tinta(d.img, tinta_src, (rx0, ry0, rx1, ry1))
         a = glifos.alfa(rec, papel_src, tinta_cor) * _dilatar(tinta_src, 1)
-        rec = rec + (cor_alvo - tinta_cor) * a[..., None]
+        cor = cor_alvo * papel_src / np.maximum(papel_alvo, 1.0) if modo == "tinta" else cor_alvo  # ver copiar_glifo
+        rec = rec + (cor - tinta_cor) * a[..., None]
         if modo in ("retangulo", "papel"):
             rec = rec + (papel_alvo - papel_src) * (1 - a)[..., None]
         escala = alt_alvo / max(1.0, ud[3] - ud[1])
-        escala = escala if abs(escala - 1) > 0.03 else 1.0
+        escala = escala if abs(escala - 1) > 0.03 and fsts.escala_da_colagem(c.habitos) else 1.0
         if escala != 1.0:
             h, w = a.shape
             nw, nh = max(1, int(round(w * escala))), max(1, int(round(h * escala)))
@@ -2533,7 +2742,7 @@ def _t_bloco_colagem_externa(c: _C) -> Resultado:
             continue  # mais alto: cobriria a linha de baixo
         tela = _Tela(c, _uniao((u[0] - 4, u[1] - 4, u[2] + 4, u[3] + 4), caixa_p))
         tela.apagar(_dilatar(tela.mascara(u, tinta_alvo), 2))
-        _colar(tela, caixa_p, rec, a, modo)
+        _colar(tela, caixa_p, rec, a, modo, papel_src)
         c.fornecedores["colagem"] = modo
         antigo = " | ".join(f["texto"] for f in bloco)
         novo = " | ".join(g["texto"] for g in bd)
@@ -2578,13 +2787,12 @@ def _t_caractere_apagar(c: _C) -> Resultado:
         movidos, dx = dir_, -(dir_[0].x0 - g.x0)
     else:
         movidos, dx = esq, g.x1 - esq[-1].x1
-    caixas = [_caixa_glifo(x) for x in movidos + [g]] + [
-        (x.x0 + dx - 3, x.y0 - 3, x.x1 + dx + 3, x.y1 + 3) for x in movidos]
+    m = _raio_halo(c) + 4
+    caixas = [_caixa_glifo(x, m) for x in movidos + [g]] + [
+        (x.x0 + dx - m, x.y0 - m, x.x1 + dx + m, x.y1 + m) for x in movidos]
     tela = _Tela(c, _uniao(*caixas))
     tela.apagar(_furo_glifos(tela, movidos + [g]))
-    for x in movidos:
-        rec, al, (gx0, gy0, gx1, gy1) = glifos.alfa_glifo(c.img, x, margem=2)
-        tela.tinta((gx0 + dx, gy0, gx1 + dx, gy1), al, rec.astype(np.float32))
+    _mover_glifos(tela, [(movidos, int(dx), 0)], gs)
     lado = "o resto do texto foi puxado para a esquerda" if dx < 0 else "o começo foi empurrado para a direita"
     return tela.resultado(c.meta(novo, [_alt(g.i, g.ch, "", "remocao")],
                                  f"'{g.ch}' (posição {g.i + 1}) apagado e o vão fechado ({lado}): "
@@ -3530,6 +3738,7 @@ def _t_pagina_recriar(c: _C) -> Resultado:
 _IMPL = {
     "campo.reescrever": _t_campo_reescrever,
     "campo.mesma_fonte": _t_campo_mesma_fonte,
+    "campo.photocraft": _t_campo_photocraft,
     "campo.letras_do_documento": _t_campo_letras_do_documento,
     "campo.amador": _t_campo_amador,
     "campo.acrescentar": _t_campo_acrescentar,
@@ -3779,7 +3988,9 @@ def _acabar_humano(c: _C, res: Resultado) -> Resultado:
             ops.append(op)
             fixo[op] = r[op]
     feitos = []
-    if ops:
+    if "retoques_motor" in res.meta:  # o PhotoCraft já fez os retoques da pessoa, com as ferramentas dele
+        feitos += [f"retoque: {x}" for x in res.meta.pop("retoques_motor")]
+    elif ops:
         res, d = _disfarcar(c, res, False, {"ops": ops, **fixo})
         feitos += [f"retoque: {x}" for x in d]
     c.fornecedores["grao"] = "ruido_do_editor" if "ruido" in r else "nenhum"
@@ -3789,6 +4000,21 @@ def _acabar_humano(c: _C, res: Resultado) -> Resultado:
             feitos.append(requant)
     c.fornecedores["salvar"] = h.get("salvar")
     res.meta = {**res.meta, "acabamento": feitos, "pericia": _nivel_pericia(c), "humano": humano.descrever(h),
+                "fornecedores": {**res.meta.get("fornecedores", {}), **c.fornecedores}}
+    return res
+
+
+def _acabar_fsts(c: _C, res: Resultado) -> Resultado:
+    """O acabamento do método FSTS (rotulador.fsts): o pós-processamento da região sorteado para a pessoa, no PhotoCraft,
+    como o roteiro do artigo faz no Photoshop; nada da perícia automática (grão espectral, luz, requantização) nem dos
+    retoques do operador humano. O rótulo leva o tipo e cada operação com os parâmetros."""
+    cfg = c.habitos["fsts"]
+    res.meta.pop("retoques_motor", None)
+    res, feitos = fsts.pos_processar(c.img, res, cfg, c.semente)
+    c.fornecedores.update(fsts=cfg["tipo"], grao="nenhum", salvar="png")
+    desc = fsts.descrever(cfg)
+    res.meta = {**res.meta, "acabamento": feitos, "pericia": _nivel_pericia(c), "fsts": {**cfg, "descricao": desc},
+                "descricao": f"{res.meta.get('descricao') or ''} {desc}".strip(),
                 "fornecedores": {**res.meta.get("fornecedores", {}), **c.fornecedores}}
     return res
 
@@ -3821,7 +4047,7 @@ def _acabar(c: _C, res: Resultado) -> Resultado:
             feitos.append("ruído branco igualado ao papel")
     # papel reconstruído liso (balde, difusão) não segue o gradiente de luz da foto: degrau de 4-7 níveis na borda.
     # O apagador "local" já segue o gradiente; PatchMatch e carimbo copiam papel de verdade
-    ilum = c.fornecedores.get("apagar") in ("chapado", "telea", "ns")
+    ilum = c.fornecedores.get("apagar") in ("chapado", "telea", "ns", "photocraft.cor")
     if (forense or grao == "espectral" or ilum) and c.tec.id != "trecho.jitter":
         # perícia: grão com o espectro do papel e, do profissional para cima, iluminação e nitidez casadas
         rec = res.recorte.astype(np.float32)
@@ -3968,6 +4194,8 @@ def tecnica(img: np.ndarray, p: dict, sel, base: np.ndarray = None, carregar_doa
     # coerentes entre si na versão inteira
     with geradores.usando(c.rng, getattr(documento, "split", None), documento=getattr(documento, "_campos", None), **kw):
         res = _IMPL[t.id](c)
+        if isinstance(c.habitos.get("fsts"), dict):  # o OCR confere o texto escrito; o disfarce do artigo vem depois
+            return _acabar_fsts(c, _conferir(c, res))
         return _conferir(c, _acabar(c, res))
 
 

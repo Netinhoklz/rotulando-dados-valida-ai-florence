@@ -1,8 +1,8 @@
 """Rotulador de fraude documental (comprovantes de endereço).
 
 Rode com:  python app.py
-  --dados PASTA     entrada com treino/ teste/ validacao/   (padrão: ./dados)
-  --saida PASTA     saída, separada por split                (padrão: ./saida)
+  --dados PASTA     entrada com treino/ teste/ validacao/   (padrão: a escolhida na tela, ou ./dados)
+  --saida PASTA     saída, separada por split                (padrão: a da pasta escolhida, ou ./saida)
   --dpi N           resolução da rasterização de PDF         (padrão: 200)
   --porta N         porta HTTP                               (padrão: 5000 ou $PORT)
   --sem-navegador   não abre o navegador
@@ -29,20 +29,21 @@ from pathlib import Path
 try:
     import cv2
     import numpy as np
-    from flask import Flask, jsonify, render_template, request, send_file
+    from flask import Flask, jsonify, render_template, request, send_file, send_from_directory
     from PIL import Image
 except ModuleNotFoundError as erro:
     sys.exit(f"Falta a dependência '{erro.name}'. Instale com:  pip install -r requirements.txt")
 
 from rotulador import (automatico, canal, campos as mod_campos, catalogo, documentos, entradas, exportar, falsificador,
-                       identificar_fonte, ocr, perito, qualidade, selecao)
+                       fsts, identificar_fonte, ocr, perito, photocraft, planilha, qualidade, selecao)
+from rotulador.estudio import Estudio
 from rotulador.contexto import Contexto, cache_ocr
 from rotulador.equipe import ANONIMO, Equipe, Travas, operador_da_requisicao, progresso
 from rotulador.gerador import (CATEGORIAS_FOCO, PESOS_CATEGORIA, Gerador, Plano, _perito_por_edicao, aplicar_receita,
                                editar_campos, receita_profissional)
 from rotulador.gerador import estilos as estilos_prontos, humano_da_sessao
 from rotulador.ops import COM_PREVIA, executar, geradores, ia, texto
-from rotulador.registro import SPLITS, ErroVazamento, Registro
+from rotulador.registro import SPLITS, ErroVazamento, Registro, pastas_dos_splits
 from rotulador.sessao import ErroOperacao, Sessao
 
 RAIZ = Path(__file__).resolve().parent
@@ -93,6 +94,8 @@ def criar_app(registro: Registro, raiz_saida: Path, categorias: list[dict]) -> F
     app.sessoes = sessoes
     gerador = Gerador(registro, raiz_saida, ids_categoria)
     app.gerador = gerador
+    estudio = Estudio(registro, raiz_saida, ids_categoria, gerador)
+    app.estudio = estudio
     travas = Travas()
     equipe = Equipe(raiz_saida)
     app.travas = travas
@@ -195,13 +198,220 @@ def criar_app(registro: Registro, raiz_saida: Path, categorias: list[dict]) -> F
         return jsonify(erro="requisição grande demais"), 413
 
     # ------------------------------------------------------------------ páginas
+    def versao_estatico(*nomes: str) -> int:
+        """Vai na URL dos scripts do estúdio: código novo nunca roda com um script velho do cache do navegador."""
+        return max(int((RAIZ / "static" / n).stat().st_mtime) for n in nomes)
+
     @app.get("/")
     def index():
+        """O estúdio: a interface do PhotoCraft com a aba ⚡ Gerar (rotulador.estudio)."""
+        return render_template("estudio.html", web=photocraft.caminho_web() is not None,
+                               motor=photocraft.disponivel(),
+                               versao=versao_estatico("estudio.js", "estudio.css", "api.js", "operador.js"))
+
+    @app.get("/classico")
+    def pagina_classico():
         return render_template("index.html")
 
     @app.get("/gerador")
     def pagina_gerador():
         return render_template("gerador.html")
+
+    # ------------------------------------------------------------------ PhotoCraft (versão web) e as fontes
+    MIMES = {".wasm": "application/wasm", ".js": "text/javascript", ".html": "text/html", ".txt": "text/plain"}
+    fontes_web: list[tuple[str, str, Path]] = []  # (família, estilo, arquivo) servidas ao PhotoCraft
+    trava_fontes = threading.Lock()  # o manifesto e as fontes chegam em paralelo na primeira carga
+
+    def web_ou_404() -> Path:
+        web = photocraft.caminho_web()
+        if web is None:
+            raise ErroOperacao("a versão web do PhotoCraft não foi encontrada (config/photocraft.json, chave 'web')")
+        return web
+
+    @app.get("/photocraft/")
+    def photocraft_pagina():
+        """O index.html do PhotoCraft com os ganchos do estúdio antes de tudo (abrir e salvar passam pelo rotulador)."""
+        html = (web_ou_404() / "index.html").read_text(encoding="utf-8")
+        html = html.replace("<head>", '<head>\n  <script src="/static/estudio_ganchos.js?v='
+                            f'{versao_estatico("estudio_ganchos.js")}"></script>', 1)
+        r = app.response_class(html, mimetype="text/html")
+        r.headers["Cache-Control"] = "no-cache"
+        return r
+
+    def _fontes_web() -> list[tuple[str, str, Path]]:
+        """As fontes do rotulador (as do documento) para o menu de fontes do PhotoCraft web, que só traz duas."""
+        with trava_fontes:
+            if not fontes_web:
+                from PIL import ImageFont
+                vistos = set()
+                for _nome, (caminho, idx) in texto.listar_fontes().items():
+                    p = Path(caminho)
+                    if idx or p.suffix.lower() not in (".ttf", ".otf") or p in vistos:
+                        continue
+                    try:
+                        fam, est = ImageFont.truetype(str(p), 12).getname()
+                    except OSError:
+                        continue
+                    vistos.add(p)
+                    fontes_web.append((fam.replace("|", " "), (est or "Regular").replace("|", " "), p))
+        return fontes_web
+
+    @app.get("/photocraft/<path:arq>")
+    def photocraft_arquivo(arq):
+        if arq == "index.html":
+            return photocraft_pagina()
+        if arq == "fonts/manifest.txt":
+            linhas = [f"{fam} | {est} | fonts/{i}{p.suffix.lower()}" for i, (fam, est, p) in enumerate(_fontes_web())]
+            r = app.response_class("\n".join(linhas) + "\n", mimetype="text/plain")
+            r.headers["Cache-Control"] = "no-cache"
+            return r
+        m = re.fullmatch(r"fonts/(\d+)\.(ttf|otf)", arq)
+        if m:
+            fs = _fontes_web()
+            if int(m[1]) >= len(fs):
+                return ("fonte não encontrada", 404)
+            return send_file(fs[int(m[1])][2], mimetype=f"font/{m[2]}", max_age=86400)
+        r = send_from_directory(web_ou_404(), arq, max_age=0 if arq in ("app/parts.txt", "app/photocraft-web.js") else 31536000)
+        tipo = MIMES.get(Path(arq).suffix.lower())
+        if tipo:
+            r.mimetype = tipo
+        return r
+
+    # ------------------------------------------------------------------ estúdio: a aba ⚡ Gerar e o salvar do PhotoCraft
+    @app.get("/api/estudio/estado")
+    def api_estudio_estado():
+        splits = {}
+        for sp in SPLITS:
+            cont = contagem_versoes(sp)
+            splits[sp] = {"documentos": len(registro.por_split[sp]), "versoes": sum(cont.values()),
+                          "com_versao": len(cont)}
+        return jsonify(splits=splits, motor=photocraft.disponivel(), web=photocraft.caminho_web() is not None,
+                       saida=str(raiz_saida), excel=(raiz_saida / planilha.NOME).is_file())
+
+    @app.post("/api/estudio/abrir")
+    def api_estudio_abrir():
+        return jsonify(estudio.abrir(str(corpo().get("doc", ""))))
+
+    @app.post("/api/estudio/arquivo")
+    def api_estudio_arquivo():
+        """O arquivo aberto (ou arrastado) no PhotoCraft entra no dataset e volta como o PNG do registro."""
+        request.max_content_length = 512 * 1024 * 1024
+        f = request.files.get("arquivo")
+        if f is None or not f.filename:
+            raise ErroOperacao("nenhum arquivo")
+        return jsonify(estudio.registrar_arquivo(f.filename, f.read()))
+
+    @app.post("/api/estudio/gerar")
+    def api_estudio_gerar():
+        d = corpo()
+        return jsonify(estudio.gerar(str(d.get("doc", "")), d))
+
+    @app.get("/api/estudio/png/<token>")
+    def api_estudio_png(token):
+        r = send_file(io.BytesIO(png(estudio.imagem_gerada(token))), mimetype="image/png")
+        r.headers["Cache-Control"] = "no-store"
+        return r
+
+    @app.post("/api/estudio/salvar")
+    def api_estudio_salvar():
+        """O Ctrl+S do PhotoCraft: o arquivo salvo (PSD, PNG, TIFF) vira a versão do documento no dataset."""
+        request.max_content_length = 512 * 1024 * 1024
+        f = request.files.get("arquivo")
+        if f is None:
+            raise ErroOperacao("nenhum arquivo")
+        try:
+            abertos = [str(t) for t in json.loads(request.form.get("abertos") or "[]")][:30]
+        except ValueError:
+            abertos = []
+        nome = str(request.form.get("nome") or f.filename or "")[:300]
+        op = operador()
+        return jsonify(estudio.salvar(nome, f.read(), abertos, op if op != ANONIMO else ""))
+
+    @app.get("/api/estudio/ultima")
+    def api_estudio_ultima():
+        """A última versão salva pelo estúdio que ainda está no dataset (o "Apagar a última edição" mostra qual é)."""
+        return jsonify(ultima=estudio.ultima())
+
+    @app.post("/api/estudio/desfazer")
+    def api_estudio_desfazer():
+        """Tira do dataset a versão salva pelo estúdio (a imagem de entrada fica)."""
+        return jsonify(estudio.desfazer(str(corpo().get("nome", ""))))
+
+    # ------------------------------------------------------------------ a pasta das imagens (treino, teste, validação)
+    # Escolher a pasta mostra as pastas do disco do servidor: só para quem está no próprio computador
+    def local() -> bool:
+        return request.remote_addr in ("127.0.0.1", "::1")
+
+    def pasta_pedida(caminho) -> Path:
+        if not local():
+            raise ErroOperacao("a pasta das imagens só se escolhe no computador onde o rotulador roda")
+        p = Path(str(caminho or ""))
+        if not p.is_absolute() or not p.is_dir():
+            raise ErroOperacao(f"pasta não encontrada: {p}")
+        return p.resolve()
+
+    @app.get("/api/pasta")
+    def api_pasta():
+        return jsonify(dados=str(registro.raiz_dados), saida=str(raiz_saida),
+                       pode_trocar="TROCAR_PASTA" in app.config and local())
+
+    @app.get("/api/pasta/listar")
+    def api_pasta_listar():
+        """As subpastas de ``caminho`` (padrão: a pasta de dados), as unidades do disco e quais splits ela tem."""
+        p = pasta_pedida(request.args.get("caminho") or registro.raiz_dados)
+        pastas = []
+        try:
+            for q in sorted(p.iterdir(), key=lambda x: x.name.lower()):
+                try:
+                    if q.is_dir() and not q.name.startswith((".", "$")) and q.name != "System Volume Information":
+                        pastas.append({"nome": q.name, "caminho": str(q)})
+                except OSError:
+                    continue
+        except OSError as e:
+            raise ErroOperacao(f"não deu para ler {p} ({e.strerror or e})")
+        unidades = [f"{u}:\\" for u in "CDEFGHIJKLMNOPQRSTUVWXYZ" if os.path.isdir(f"{u}:\\")] if os.name == "nt" else ["/"]
+        achadas = pastas_dos_splits(p)
+        return jsonify(caminho=str(p), pai=str(p.parent) if p.parent != p else None, pastas=pastas, unidades=unidades,
+                       splits={sp: achadas[sp].name if sp in achadas else None for sp in SPLITS})
+
+    @app.post("/api/pasta/usar")
+    def api_pasta_usar():
+        """Passa a usar outra pasta de imagens (com as subpastas treino, teste e validação): o servidor monta tudo de
+        novo para ela (``TROCAR_PASTA``, de ``main``). Achando o mesmo documento em dois splits, fica na pasta de antes."""
+        p = pasta_pedida(corpo().get("caminho"))
+        trocar = app.config.get("TROCAR_PASTA")
+        if trocar is None:
+            raise ErroOperacao("este servidor não troca de pasta: rode pelo app.py")
+        if gerador.estado.get("rodando"):
+            raise ErroOperacao("há uma geração em lote rodando: espere terminar (ou pare) antes de trocar a pasta")
+        faltam = [n for sp, n in (("treino", "treino"), ("teste", "teste"), ("validacao", "validação"))
+                  if sp not in pastas_dos_splits(p)]
+        if faltam:
+            raise ErroOperacao(f"{p} precisa ter as subpastas treino, teste e validação; falta: {', '.join(faltam)}")
+        return jsonify(trocar(p))
+
+    @app.get("/api/estudio/excel")
+    def api_estudio_excel():
+        r = planilha.escrever(raiz_saida, registro, ids_categoria)
+        resp = send_file(r["arquivo"], as_attachment=True, download_name=planilha.NOME, max_age=0)
+        if r["aviso"]:
+            resp.headers["X-Aviso"] = r["aviso"].encode("ascii", "ignore").decode()
+        return resp
+
+    @app.post("/api/estudio/lote")
+    def api_estudio_lote():
+        """Várias versões do documento pela aba Gerar, gravadas direto (o lote do gerador, com o motor PhotoCraft; com
+        ``metodo="fsts"``, o método do artigo FSTS)."""
+        d = corpo()
+        it = item_ou_404(str(d.get("doc", "")))
+        n = max(1, min(50, int(d.get("quantidade", 5) or 5)))
+        docs = {"splits": [it.split], "ids": [it.doc]}
+        if d.get("metodo") == "fsts":
+            return jsonify(gerador.iniciar({"perfil": "fsts", "variacoes": n, "documentos": docs,
+                                            "operador": "estúdio PhotoCraft (aba Gerar, lote, método FSTS)"}))
+        return jsonify(gerador.iniciar({"perfil": "profissional", "motor": "photocraft", "estilo": "recomendado",
+                                        "extras": bool(d.get("extras", True)), "variacoes": n, "documentos": docs,
+                                        "operador": "estúdio PhotoCraft (aba Gerar, lote)"}))
 
     @app.get("/api/estado")
     def api_estado():
@@ -468,6 +678,7 @@ def criar_app(registro: Registro, raiz_saida: Path, categorias: list[dict]) -> F
             perito_eds = _perito_por_edicao(s)
         r = exportar.salvar(s, raiz_saida, str(d.get("formato", "png")), q, op[:80], registro.dpi,
                             extra={"perito_por_edicao": perito_eds})
+        planilha.agendar(raiz_saida, registro, ids_categoria)
         return jsonify(salvo=r, estado=estado_sessao(s))
 
     @app.get("/api/gerar")
@@ -610,13 +821,29 @@ def criar_app(registro: Registro, raiz_saida: Path, categorias: list[dict]) -> F
                         "formatos": list(exportar.FORMATOS),
                         "canais": [["nenhum", "Nenhum (imagem como está)"]] + [[k, v] for k, v in canal.NOMES.items()]})
 
+    def feito_em_cada_doc() -> dict[str, dict]:
+        """O que já foi feito em cada documento, pelas versões salvas: os tipos de edição (o tipo do FSTS ou a família
+        da técnica) e os campos editados."""
+        out: dict[str, dict] = {}
+        for l in exportar.ler_catalogo(raiz_saida):
+            forn = dict(x.split("=", 1) for x in (l.get("fornecedores") or "").split(";") if "=" in x)
+            tipo = (fsts.TIPOS.get(forn.get("fsts"), {}).get("rotulo")
+                    or catalogo.FAMILIAS.get(l.get("familia"), {}).get("rotulo"))
+            d = out.setdefault(l.get("doc", ""), {"tipos": [], "campos": []})
+            if tipo and tipo not in d["tipos"]:
+                d["tipos"].append(tipo)
+            if l.get("categoria") and l["categoria"] not in d["campos"]:
+                d["campos"].append(l["categoria"])
+        return out
+
     @app.get("/api/gerador/documentos")
     def api_gerador_documentos():
-        out = {}
+        out, feito = {}, feito_em_cada_doc()
         for sp in SPLITS:
             cont = contagem_versoes(sp)
             out[sp] = [{"id": it.doc, "nome": it.nome, "versoes": cont.get(it.doc, 0),
-                        "lido": (raiz_saida / "_cache" / "ocr" / f"{it.sha_pixels[:32]}.json").is_file()}
+                        "lido": (raiz_saida / "_cache" / "ocr" / f"{it.sha_pixels[:32]}.json").is_file(),
+                        **feito.get(it.doc, {"tipos": [], "campos": []})}
                        for it in registro.por_split[sp]]
         return jsonify(out)
 
@@ -841,6 +1068,7 @@ def criar_app(registro: Registro, raiz_saida: Path, categorias: list[dict]) -> F
             itens = [(str(d.get("split")), str(d.get("nome", "")))]
         n = exportar.revisar(raiz_saida, itens, str(d.get("estado", "")), operador() if operador() != ANONIMO else "",
                              d.get("motivos") or [], str(d.get("comentario") or ""))
+        planilha.agendar(raiz_saida, registro, ids_categoria)
         return jsonify(revisadas=n)
 
     # ------------------------------------------------------------------ equipe e metas
@@ -923,7 +1151,8 @@ def criar_app(registro: Registro, raiz_saida: Path, categorias: list[dict]) -> F
             if tipo in ("mascara", "tecnicas"):
                 with Image.open(caminho) as im:
                     img = np.array(im)
-                img = exportar.colorir_tecnicas(img) if tipo == "tecnicas" else np.repeat(img[..., None], 3, 2)
+                img = (exportar.colorir_tecnicas(img) if tipo == "tecnicas"
+                       else np.repeat(((img > 0) * 255).astype(np.uint8)[..., None], 3, 2))  # 0/1 → preto/branco
             else:
                 img = documentos.carregar(caminho, 0, registro.dpi)
             if tipo == "sobreposicao" and "mascara_tecnicas" in arqs and (raiz_split / arqs["mascara_tecnicas"]).is_file():
@@ -950,13 +1179,16 @@ def criar_app(registro: Registro, raiz_saida: Path, categorias: list[dict]) -> F
     @app.post("/api/catalogo/excluir")
     def api_catalogo_excluir():
         d = corpo()
-        return jsonify(exportar.excluir_versao(raiz_saida, str(d.get("split", "")), str(d.get("nome", ""))))
+        r = exportar.excluir_versao(raiz_saida, str(d.get("split", "")), str(d.get("nome", "")))
+        planilha.agendar(raiz_saida, registro, ids_categoria)
+        return jsonify(r)
 
     @app.post("/api/catalogo/reindexar")
     def api_catalogo_reindexar():
         for sp in SPLITS:
             if (raiz_saida / sp / "anotacoes").is_dir():
                 exportar.reconstruir_indices(raiz_saida, sp)
+        planilha.agendar(raiz_saida, registro, ids_categoria)
         return jsonify(ok=True)
 
     @app.get("/api/ia/status")
@@ -1026,6 +1258,50 @@ def criar_app(registro: Registro, raiz_saida: Path, categorias: list[dict]) -> F
     return app
 
 
+# a pasta de imagens escolhida na tela (e a saída de cada pasta já usada): vale na partida sem --dados nem --saida
+PASTA_ESCOLHIDA = RAIZ / "config" / "pasta_escolhida.json"
+
+
+def pasta_lembrada() -> dict:
+    try:
+        return json.loads(PASTA_ESCOLHIDA.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def saida_da_pasta(dados: Path, atual: Registro) -> Path:
+    """Onde ficam as versões da pasta ``dados``: a mesma saída de quando ela já foi usada; a saida/ do projeto para a
+    dados/ do projeto; para outra pasta, a subpasta saida/ dela (o dataset fica junto das imagens)."""
+    if dados == atual.raiz_dados:
+        return atual.raiz_saida
+    par = (pasta_lembrada().get("pares") or {}).get(str(dados))
+    if par:
+        return Path(par)
+    return RAIZ / "saida" if dados == (RAIZ / "dados").resolve() else dados / "saida"
+
+
+def lembrar_pasta(antes: Registro, agora: Registro) -> None:
+    m = pasta_lembrada()
+    pares = m.get("pares") or {}
+    pares[str(antes.raiz_dados)] = str(antes.raiz_saida)
+    pares[str(agora.raiz_dados)] = str(agora.raiz_saida)
+    tmp = PASTA_ESCOLHIDA.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"dados": str(agora.raiz_dados), "saida": str(agora.raiz_saida), "pares": pares},
+                              ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, PASTA_ESCOLHIDA)
+
+
+class Despachante:
+    """O que o servidor atende: trocar a pasta das imagens monta um app novo (registro, gerador, estúdio...) e as
+    requisições seguintes vão para ele; as que já estavam em curso terminam no de antes."""
+
+    def __init__(self):
+        self.app: Flask | None = None
+
+    def __call__(self, environ, start_response):
+        return self.app(environ, start_response)
+
+
 def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -1033,14 +1309,20 @@ def main() -> None:
     except (AttributeError, ValueError):
         pass
     ap = argparse.ArgumentParser(description="Rotulador de fraude documental")
-    ap.add_argument("--dados", default=str(RAIZ / "dados"))
-    ap.add_argument("--saida", default=str(RAIZ / "saida"))
+    ap.add_argument("--dados", default=None, help="padrão: a pasta escolhida na tela, ou ./dados")
+    ap.add_argument("--saida", default=None, help="padrão: a saída da pasta escolhida na tela, ou ./saida")
     ap.add_argument("--dpi", type=int, default=200)
     ap.add_argument("--porta", type=int, default=int(os.environ.get("PORT", 5000)))
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--categorias", default=str(RAIZ / "config" / "categorias.json"))
     ap.add_argument("--sem-navegador", action="store_true")
     a = ap.parse_args()
+    lembrada = pasta_lembrada() if a.dados is None and a.saida is None else {}
+    if lembrada.get("dados") and Path(lembrada["dados"]).is_dir() and lembrada.get("saida"):
+        a.dados, a.saida = lembrada["dados"], lembrada["saida"]
+        print(f"pasta escolhida na tela: {a.dados} (saída em {a.saida})")
+    a.dados = a.dados or str(RAIZ / "dados")
+    a.saida = a.saida or str(RAIZ / "saida")
 
     try:
         reg = Registro(Path(a.dados), Path(a.saida), dpi=a.dpi)
@@ -1055,7 +1337,27 @@ def main() -> None:
     for sp in SPLITS:
         print(f"{sp:>10}: {len(reg.por_split[sp])} página(s)")
 
-    app = criar_app(reg, Path(a.saida), carregar_categorias(Path(a.categorias)))
+    categorias = carregar_categorias(Path(a.categorias))
+    despachante = Despachante()
+    trava_troca = threading.Lock()
+
+    def montar(r: Registro) -> None:
+        app = criar_app(r, r.raiz_saida, categorias)
+        app.config["TROCAR_PASTA"] = trocar_pasta
+        despachante.app = app
+
+    def trocar_pasta(dados: Path) -> dict:
+        """A pasta escolhida na tela (POST /api/pasta/usar): registro novo (ErroVazamento: fica a de antes) e app novo."""
+        with trava_troca:
+            antes = despachante.app.registro
+            r = Registro(dados, saida_da_pasta(dados, antes), dpi=a.dpi)
+            montar(r)
+            lembrar_pasta(antes, r)
+        print(f"pasta trocada: {r.raiz_dados} (saída em {r.raiz_saida})")
+        return {"dados": str(r.raiz_dados), "saida": str(r.raiz_saida), "avisos": r.avisos[:20],
+                "documentos": {sp: len(r.por_split[sp]) for sp in SPLITS}}
+
+    montar(reg)
     endereco = f"http://{a.host}:{a.porta}"
     print(f"Rotulador rodando em {endereco}  (Ctrl+C para sair)")
     if not a.sem_navegador:
@@ -1064,9 +1366,10 @@ def main() -> None:
         try:  # servidor de produção (várias pessoas ao mesmo tempo); sem ele, o do Flask
             from waitress import serve
         except ImportError:
-            app.run(host=a.host, port=a.porta, debug=False, threaded=True)
+            from werkzeug.serving import run_simple
+            run_simple(a.host, a.porta, despachante, threaded=True)
         else:
-            serve(app, host=a.host, port=a.porta, threads=12, channel_timeout=3600)
+            serve(despachante, host=a.host, port=a.porta, threads=12, channel_timeout=3600)
     except OSError as erro:
         sys.exit(f"Não consegui usar a porta {a.porta} ({erro}). Tente: python app.py --porta 5001")
 

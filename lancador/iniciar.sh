@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Sobe o rotulador (porta 5010) e o servidor de IA (porta 5051) sem janela.
 # Logs e demonstração ficam em $ROTULADOR_BASE (padrão E:/rotulador, porque o C: vive cheio).
-# Usa dados/ do projeto se houver documentos; senão, gera e usa contas de demonstração.
+# Usa a pasta escolhida na tela, ou dados/ do projeto se houver documentos; senão, gera e usa contas de demonstração.
 PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE="${ROTULADOR_BASE:-/e/rotulador}"
 mkdir -p "$BASE/logs"
 cd "$PROJ" || exit 1
 
-if find dados -type f ! -name .gitkeep | grep -q .; then
+if [ -f config/pasta_escolhida.json ] || find dados -type f ! -name .gitkeep | grep -q .; then
   ARGS=()
 else
   [ -d "$BASE/demo/dados" ] || .venv/Scripts/python.exe tests_ui/gerar_amostras.py "$BASE/demo/dados"
