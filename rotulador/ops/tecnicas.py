@@ -36,7 +36,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from .. import catalogo, fsts, glifos, humano, identificar_fonte, ocr, pericia, photocraft, selecao, vetorial
+from .. import catalogo, fsts, glifos, humano, identificar_fonte, ocr, pericia, selecao, vetorial
 from ..selecao import mascara_tinta
 from ..sessao import ErroOperacao, Resultado
 from . import ajustes, auto, codigos, geradores, ia, texto
@@ -183,8 +183,6 @@ class _C:
         self._aj = self._gs = self._desf = self._base = self._vestigio = self._tinta = None
         # só as 10 fontes mais usadas em documentos (técnica "mesma fonte", ou ``fontes: "top10"`` nos parâmetros)
         self.fontes = identificar_fonte.fontes_top10() if (p.get("fontes") == "top10" or (self.tec and self.tec.id in _TOP10)) else None
-        # o editor da versão: "photocraft" refaz o papel com as ferramentas do motor (``papel``); sem ele, o Python
-        self.motor = "photocraft" if p.get("motor") == "photocraft" and photocraft.disponivel() else None
 
     # ------------------------------------------------------------------ opções
     def opcao(self, nome: str):
@@ -427,9 +425,7 @@ class _C:
         x0, y0, x1, y1 = regiao
         h = max(8, self.caixa[3] - self.caixa[1])
         modo = self.apagador()
-        pc = photocraft.DO_HUMANO.get(modo) if self.motor == "photocraft" else None
-        # o carimbo precisa de papel livre; as ferramentas do motor também (o Remendo, a amostra do preenchimento)
-        M = int(max(16, (3.0 if modo in ("carimbo", "recuperar") or pc else 1.5) * h))
+        M = int(max(16, (3.0 if modo in ("carimbo", "recuperar") else 1.5) * h))  # o carimbo precisa de papel livre
         ax0, ay0, ax1, ay1 = max(0, x0 - M), max(0, y0 - M), min(self.W, x1 + M), min(self.H, y1 + M)
         rec = self.img[ay0:ay1, ax0:ax1]
         buraco = _dilatar(mascara_tinta(rec), 2)
@@ -438,16 +434,6 @@ class _C:
         buraco |= alvo
         if buraco.all():
             raise ErroOperacao("não há papel em volta para reconstruir o fundo")
-        if pc:
-            try:
-                cheio, sobre = photocraft.reconstruir(rec, buraco, alvo, pc, self.semente, float(h))
-            except ErroOperacao:  # nem o Carimbo do motor deu conta: o apagador do Python, rotulado como tal
-                pass
-            else:
-                self.fornecedores.update(motor="photocraft", apagar=f"photocraft.{sobre['ferramenta']}")
-                if sobre.get("refez"):
-                    self.fornecedores["refez"] = sobre["refez"]["de"]
-                return cheio[y0 - ay0:y1 - ay0, x0 - ax0:x1 - ax0]
         cheio = reconstruir(rec, buraco, modo, self.semente, float(h), alvo=alvo)
         return cheio[y0 - ay0:y1 - ay0, x0 - ax0:x1 - ax0]
 
@@ -1094,82 +1080,6 @@ def _t_campo_mesma_fonte(c: _C) -> Resultado:
                              f"{condensado}); apagado com {c.fornecedores.get('apagar')}.")
     res.meta["semelhanca_fonte"] = None if sem is None else round(float(sem), 3)
     c.fornecedores["fonte_identificada"] = ident
-    return res
-
-
-def _refez(sobre: dict) -> str:
-    """O pedaço da descrição de quando a ferramenta de apagar do PhotoCraft foi trocada pelo Carimbo."""
-    r = sobre.get("refez")
-    return f" (refeito: {photocraft.DIZ_APAGADOR.get(r['de'], r['de'])} deixou {r['porque']})" if r else ""
-
-
-def _t_campo_photocraft(c: _C) -> Resultado:
-    """O campo inteiro trocado com as ferramentas do PhotoCraft (``rotulador.photocraft``): o texto antigo selecionado
-    (só a tinta, ou a seleção do operador humano), apagado com uma ferramenta de verdade (a opção "ferramenta", ou a do
-    operador) e o valor novo numa camada de texto na fonte identificada, alinhado como o campo está na página. Sem o
-    operador, o desfoque, o tom e o peso do traço saem MEDIDOS iguais aos do texto escaneado. As recusas são as da
-    "mesma fonte": fonte não identificada (``SEMELHANCA_MINIMA``) e traço que não casa (``PESO_MAXIMO``)."""
-    if not photocraft.disponivel():
-        raise ErroOperacao("o motor PhotoCraft não está instalado")
-    sem = c.aj.get("semelhanca")
-    if c.aj.get("metodo") != "estimativa" and sem is not None and float(sem) < SEMELHANCA_MINIMA \
-            and not c.p.get("fonte_params"):
-        raise ErroOperacao(f"a fonte do campo não foi identificada (semelhança {float(sem):.2f} < "
-                           f"{SEMELHANCA_MINIMA:.2f}): na mais parecida o texto novo sairia em outra letra")
-    alin = (c.p.get("opcoes") or {}).get("alinhamento")
-    if alin not in ("esquerda", "direita"):
-        alin = (_alinhamento_no_documento(c)
-                or ("direita" if c.categoria in ("valor", "consumo/leitura") else "esquerda"))
-    novo = _novo_valor(c)
-    entreletra = float(c.aj.get("espacamento") or 0.0)
-    antiga, nova = _largura(c, c.texto), _largura(c, novo)
-    extra = int(math.ceil(nova - antiga))
-    condensado = ""
-    if extra > 2:  # o texto novo é mais largo: só cresce para o lado com papel livre (e um espaço até o vizinho)
-        x0, y0, x1, y1 = c.caixa
-        f = max(4, int(round(glifos.fonte_pil(c.aj["fonte"], c.aj["tamanho"]).getlength(" ")
-                             * float(c.aj.get("largura", 100)) / 100)))
-        meio = extra // 2 + 1
-        cabe = {"esquerda": c.livre((x1 + 1, y0, x1 + extra + f, y1)),
-                "direita": c.livre((x0 - extra - f, y0, x0 - 1, y1)),
-                "centro": c.livre((x1 + 1, y0, x1 + meio + f, y1)) and c.livre((x0 - meio - f, y0, x0 - 1, y1))}
-        if not cabe.get(alin):
-            alin = next((a for a in ("esquerda", "direita") if cabe[a]), alin)
-        if not cabe.get(alin):
-            if c.dado:  # valor imposto (repetido no documento): condensa (o Tracking) em vez de invadir o vizinho
-                entreletra = _condensar(c, novo, c.aj, entreletra, alin, nova, antiga, f)
-                condensado = f"; condensado ({entreletra:+.2f} px entre as letras) para caber"
-            else:
-                novo = _novo_valor(c, maximo=1.0)
-    c.escolhas["alinhamento"] = alin
-    if c.humano is not None:  # a ferramenta da pessoa; a seleção, a suavização, a cor e os retoques vêm no motor
-        ferramenta = photocraft.DO_HUMANO.get(c.humano.get("apagar"), "preenchimento")
-        c.fornecedores["selecao"] = c.humano["selecao"]
-    else:
-        ferramenta = c.opcao("ferramenta")
-    res, sobre = photocraft.reescrever(c, novo, alin, ferramenta, entreletra, lambda r: _razao_peso(c, r))
-    pesos = _razao_peso(c, res)
-    if pesos and abs(pesos[1] / pesos[0] - 1) > PESO_MAXIMO:
-        raise ErroOperacao(f"o traço do texto novo não casa com o do documento ({pesos[1] / pesos[0]:.2f}x a "
-                           "espessura do original)")
-    usada = sobre["ferramenta"]  # a pedida, ou o Carimbo com que a pessoa refez (``photocraft.apagar_no_documento``)
-    c.fornecedores.update(motor="photocraft", apagar=f"photocraft.{usada}",
-                          texto=f"photocraft.{sobre['suavizacao']}", fonte=c.aj["fonte"])
-    if sobre.get("gesto"):
-        c.fornecedores["gesto"] = sobre["gesto"]
-    peso = f", peso {sobre['peso']:+.2f}" if sobre["peso"] else ""
-    acerto = "" if c.humano is not None else f"; desfoque {sobre['desfoque']} px, cor {sobre['cor']}{peso} medidos no documento"
-    res.meta = {**res.meta, **c.meta(novo, [_alt(0, c.texto, novo, "campo")],
-                                     f"Campo reescrito no PhotoCraft: '{c.texto}' → '{novo}' em {sobre['fonte']} "
-                                     f"{sobre['tamanho_pt']} pt (suavização {sobre['suavizacao']}), alinhado pela {alin}"
-                                     f"{condensado}; seleção {sobre['selecao']}, apagado com "
-                                     f"{photocraft.DIZ_APAGADOR[usada]}{_refez(sobre)}{acerto}.",
-                                     fonte=c.aj["fonte"], photocraft=sobre)}
-    if c.humano is not None:  # os retoques da pessoa já saíram do motor: o _acabar_humano não refaz em Python
-        res.meta["retoques_motor"] = sobre.get("retoques") or []
-    if pesos:
-        res.meta["peso_traco"] = round(pesos[1] / pesos[0], 3)
-    res.meta["semelhanca_fonte"] = None if sem is None else round(float(sem), 3)
     return res
 
 
@@ -3738,7 +3648,6 @@ def _t_pagina_recriar(c: _C) -> Resultado:
 _IMPL = {
     "campo.reescrever": _t_campo_reescrever,
     "campo.mesma_fonte": _t_campo_mesma_fonte,
-    "campo.photocraft": _t_campo_photocraft,
     "campo.letras_do_documento": _t_campo_letras_do_documento,
     "campo.amador": _t_campo_amador,
     "campo.acrescentar": _t_campo_acrescentar,
@@ -3988,9 +3897,7 @@ def _acabar_humano(c: _C, res: Resultado) -> Resultado:
             ops.append(op)
             fixo[op] = r[op]
     feitos = []
-    if "retoques_motor" in res.meta:  # o PhotoCraft já fez os retoques da pessoa, com as ferramentas dele
-        feitos += [f"retoque: {x}" for x in res.meta.pop("retoques_motor")]
-    elif ops:
+    if ops:
         res, d = _disfarcar(c, res, False, {"ops": ops, **fixo})
         feitos += [f"retoque: {x}" for x in d]
     c.fornecedores["grao"] = "ruido_do_editor" if "ruido" in r else "nenhum"
@@ -4005,15 +3912,13 @@ def _acabar_humano(c: _C, res: Resultado) -> Resultado:
 
 
 def _acabar_fsts(c: _C, res: Resultado) -> Resultado:
-    """O acabamento do método FSTS (rotulador.fsts): o pós-processamento da região sorteado para a pessoa, no PhotoCraft,
-    como o roteiro do artigo faz no Photoshop; nada da perícia automática (grão espectral, luz, requantização) nem dos
-    retoques do operador humano. O rótulo leva o tipo e cada operação com os parâmetros."""
+    """O acabamento do método FSTS (rotulador.fsts): nenhum. O pós-processamento das tabelas não é aplicado, e nada da
+    perícia automática (grão espectral, luz, requantização) nem dos retoques do operador humano entra no lugar. O rótulo
+    leva o tipo e cada operação principal com os parâmetros."""
     cfg = c.habitos["fsts"]
-    res.meta.pop("retoques_motor", None)
-    res, feitos = fsts.pos_processar(c.img, res, cfg, c.semente)
     c.fornecedores.update(fsts=cfg["tipo"], grao="nenhum", salvar="png")
     desc = fsts.descrever(cfg)
-    res.meta = {**res.meta, "acabamento": feitos, "pericia": _nivel_pericia(c), "fsts": {**cfg, "descricao": desc},
+    res.meta = {**res.meta, "acabamento": [], "pericia": _nivel_pericia(c), "fsts": {**cfg, "descricao": desc},
                 "descricao": f"{res.meta.get('descricao') or ''} {desc}".strip(),
                 "fornecedores": {**res.meta.get("fornecedores", {}), **c.fornecedores}}
     return res
@@ -4047,7 +3952,7 @@ def _acabar(c: _C, res: Resultado) -> Resultado:
             feitos.append("ruído branco igualado ao papel")
     # papel reconstruído liso (balde, difusão) não segue o gradiente de luz da foto: degrau de 4-7 níveis na borda.
     # O apagador "local" já segue o gradiente; PatchMatch e carimbo copiam papel de verdade
-    ilum = c.fornecedores.get("apagar") in ("chapado", "telea", "ns", "photocraft.cor")
+    ilum = c.fornecedores.get("apagar") in ("chapado", "telea", "ns")
     if (forense or grao == "espectral" or ilum) and c.tec.id != "trecho.jitter":
         # perícia: grão com o espectro do papel e, do profissional para cima, iluminação e nitidez casadas
         rec = res.recorte.astype(np.float32)
@@ -4121,7 +4026,12 @@ def _conferir(c: _C, res: Resultado) -> Resultado:
         # a região, a leitura pegava o fim da palavra vizinha ("Emissão em 25/01/2026" lia "n27/07/2026", o "m" do
         # "em") e a edição certa era descartada
         cinza = res.recorte.mean(axis=2) if res.recorte.ndim == 3 else res.recorte.astype(float)
-        fundo = float(np.median(cinza[res.pegada])) if res.pegada.any() else 255.0
+        # o papel: a mediana do que a edição tocou (quase só papel quando ela apaga e reescreve) ou, se for mais claro,
+        # a do lugar antes dela. Quem só ACRESCENTA toca só a tinta nova: com esse "papel" escuro, a tinta nova (cinza
+        # no escaneado) não era achada, a leitura ficava na caixa antiga e a edição certa era descartada
+        antes = c.img[res.y0:res.y1, res.x0:res.x1]
+        papel_antes = float(np.median(antes.mean(axis=2) if antes.ndim == 3 else antes))
+        fundo = max(float(np.median(cinza[res.pegada])) if res.pegada.any() else 255.0, papel_antes)
         # tinta NOVA: escura e mudada (a seleção com margem do operador humano leva o "m" vizinho intacto na região)
         mudou = np.abs(res.recorte.astype(int) - c.img[res.y0:res.y1, res.x0:res.x1].astype(int)).max(axis=-1) > 30
         cols = np.flatnonzero((res.pegada & mudou & (cinza < fundo - 40)).any(axis=0))

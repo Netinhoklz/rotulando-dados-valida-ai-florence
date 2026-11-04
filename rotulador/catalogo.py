@@ -34,9 +34,21 @@ FAMILIAS = {
     "recriacao": {"rotulo": "Recriação (documento refeito)", "literatura": "FAB",
                   "dica": "o documento inteiro é refeito num editor: mesmo layout, texto todo re-tipografado"},
     "manual": {"rotulo": "Manual (editor)", "literatura": "MAN",
-               "dica": "edição feita à mão no modo avançado"},
+               "dica": "edição feita à mão no editor"},
 }
-NIVEIS = {"simples": "Simples (amador)", "profissional": "Profissional", "ia": "IA generativa", "manual": "Manual"}
+# As 3 categorias do editor: a pessoa escolhe uma antes de editar, e ela vai para a máscara de classes das edições
+# feitas à mão, com ids próprios (fora dos das classes de campo de config/categorias.json, que o gerador usa)
+CATEGORIAS_EDITOR = [
+    {"chave": "copiar e colar", "id": 201, "rotulo": "Copiar e colar",
+     "dica": "um pedaço do próprio documento copiado e colado em outro lugar dele (cópia interna)"},
+    {"chave": "pegar de outro documento", "id": 202, "rotulo": "Pegar de outro documento",
+     "dica": "um pedaço de outro documento do MESMO split colado neste (splicing)"},
+    {"chave": "apagar e substituir", "id": 203, "rotulo": "Apagar e substituir",
+     "dica": "o texto apagado e, no lugar, outro escrito (ou nada)"},
+]
+# a família de uma técnica automática → a categoria do editor; as outras famílias apagam e escrevem por cima
+CATEGORIA_DA_FAMILIA = {"copia_interna": "copiar e colar", "colagem_externa": "pegar de outro documento"}
+NIVEIS ={"simples": "Simples (amador)", "profissional": "Profissional", "ia": "IA generativa", "manual": "Manual"}
 GRANULARIDADES = {"caractere": "Caractere", "trecho": "Trecho do campo", "campo": "Campo inteiro",
                   "regiao": "Região livre", "pagina": "Página inteira"}
 
@@ -59,13 +71,6 @@ APAGAR = {"rotulo": "Como apagar", "valores": [
     ("borrao", "borrão do entorno (pincel de recuperação simples)"),
     ("carimbo", "carimbo: papel vizinho copiado por cima"),
     ("recuperar", "pincel de recuperação: textura de papel vizinho no tom do entorno")]}
-# Quem apaga no PhotoCraft (rotulador.photocraft): as ferramentas dele, cada uma com a sua textura
-APAGAR_PHOTOCRAFT = {"rotulo": "Ferramenta de apagar (PhotoCraft)", "valores": [
-    ("preenchimento", "preenchimento sensível ao conteúdo, com a amostra pintada só no papel"),
-    ("remendo", "Remendo: a seleção arrastada até papel limpo"),
-    ("carimbo", "Carimbo em passadas, com a origem em papel limpo"),
-    ("recuperacao", "Pincel de Recuperação em passadas"),
-    ("remover", "ferramenta Remover, pincelando a linha")]}
 VESTIGIO = {"rotulo": "Vestígio do texto antigo", "valores": [("nenhum", "apagado limpo"),
                                                                ("leve", "sobra um fantasma fraco do texto antigo")]}
 RASTERIZADOR = {"rotulo": "Rasterizador do texto", "valores": [
@@ -149,16 +154,6 @@ _LISTA = [
             opcoes={"alinhamento": {"rotulo": "Alinhamento", "valores": [("esquerda", "pela esquerda"),
                                                                          ("direita", "pela direita")]},
                     "apagar": APAGAR}),
-    Tecnica("campo.photocraft", 14, "Reescrever no PhotoCraft (ferramentas do Photoshop)", "imitacao", "profissional",
-            "campo",
-            "O campo inteiro trocado com as ferramentas do PhotoCraft (o Photoshop refeito em código aberto), como uma "
-            "pessoa faz: seleciona o texto antigo, apaga com uma ferramenta de verdade (preenchimento sensível ao "
-            "conteúdo com a amostra só no papel, Remendo, Carimbo, Pincel de Recuperação ou Remover), escreve o valor "
-            "novo numa camada de texto na fonte identificada e acerta desfoque, tom e peso do traço até medirem igual "
-            "aos do documento. Com o operador humano, a seleção, a ferramenta e os retoques são os dele.",
-            opcoes={"alinhamento": {"rotulo": "Alinhamento", "valores": [("esquerda", "pela esquerda"),
-                                                                         ("direita", "pela direita")]},
-                    "ferramenta": APAGAR_PHOTOCRAFT}),
     Tecnica("campo.reescrever_pdf", 7, "Reescrever o campo no PDF (edição vetorial)", "imitacao", "profissional",
             "campo",
             "Edita a camada de TEXTO do PDF, como um editor de PDF faz: apaga as palavras do campo (redação) e "
@@ -310,9 +305,6 @@ _LISTA = [
             automatica=False),
     Tecnica("manual.mover_camada", 111, "Mover camada (manual)", "manual", "manual", "regiao",
             "Deslocamento de uma camada inteira.", automatica=False),
-    Tecnica("manual.photocraft", 113, "Edição no PhotoCraft (manual)", "manual", "manual", "regiao",
-            "Qualquer ferramenta do PhotoCraft (estúdio): a área é a diferença entre o arquivo salvo e o aberto.",
-            automatica=False),
 ]
 TECNICAS: dict[str, Tecnica] = {t.id: t for t in _LISTA}
 POR_NUM: dict[int, Tecnica] = {t.num: t for t in _LISTA}
@@ -325,7 +317,7 @@ _OPERACAO = {"pincel": "manual.pintura", "carimbo": "manual.clonagem", "transfor
              "remendo": "manual.preenchimento", "recuperacao": "manual.preenchimento", "texto": "manual.texto",
              "substituir_texto": "manual.texto", "ajuste": "manual.ajuste", "codigo_barras": "manual.codigo",
              "qrcode": "manual.codigo", "ia": "manual.ia", "forma": "manual.forma", "balde": "manual.forma",
-             "retoque": "manual.retoque", "mover_camada": "manual.mover_camada", "photocraft": "manual.photocraft",
+             "retoque": "manual.retoque", "mover_camada": "manual.mover_camada",
              "trocar_campo_ia": "ia.reescrever"}
 
 
@@ -346,8 +338,8 @@ JEITOS = [
     {"id": "reescrever", "rotulo": "Trocar o texto todo", "icone": "✍️",
      "dica": "o valor antigo some e o novo é escrito no lugar, imitando a fonte (ou de qualquer jeito, no amador)",
      "exemplo": ["R$ 171,37", "R$ 405,82"],
-     "tecnicas": ["campo.mesma_fonte", "campo.photocraft", "campo.letras_do_documento", "campo.reescrever",
-                  "campo.amador", "ia.reescrever", "campo.reescrever_pdf"]},
+     "tecnicas": ["campo.mesma_fonte", "campo.letras_do_documento", "campo.reescrever", "campo.amador", "ia.reescrever",
+                  "campo.reescrever_pdf"]},
     {"id": "trecho", "rotulo": "Mudar só um pedaço", "icone": "✂️",
      "dica": "troca o dia, os centavos ou o número da casa; ou acrescenta algo no fim do campo",
      "exemplo": ["10/09/2026", "18/09/2026"], "tecnicas": ["trecho.trocar", "campo.acrescentar"]},

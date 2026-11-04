@@ -19,7 +19,7 @@ export const TERMOS = [
   { chave: "ocr", termo: "Leitor de texto (OCR)", grupo: "Documento",
     explica: "Lê o texto da imagem e diz onde está cada linha. Na primeira vez leva uns segundos por documento; depois fica guardado. Também confere se a edição ficou legível." },
   { chave: "classe", termo: "Classe (categoria)", grupo: "Rótulos",
-    explica: "O tipo de dado adulterado: nome, endereço, CEP, data, valor… Vai na máscara de classes (cada classe com uma cor/número) e diz ao modelo O QUE foi falsificado." },
+    explica: "No editor, o tipo da edição: copiar e colar, pegar de outro documento ou apagar e substituir (números 201, 202 e 203). No gerador, o dado adulterado: nome, endereço, CEP, data, valor… Vai na máscara de classes (cada classe com uma cor/número)." },
   { chave: "tecnica", termo: "Técnica", grupo: "Rótulos",
     explica: "COMO a edição foi feita: o campo reescrito na mesma fonte, remontado com letras do próprio documento, só um trecho trocado (número da casa, sobrenome), uma letra copiada… Vai na máscara de técnicas." },
   { chave: "mascara", termo: "Máscara", grupo: "Rótulos",
@@ -28,8 +28,6 @@ export const TERMOS = [
     explica: "A área que a pessoa mexeu (a seleção dela), inclusive pixels que mudaram pouco. É maior que só os pixels alterados." },
   { chave: "mesma_fonte", termo: "Mesma fonte", grupo: "Técnicas",
     explica: "O texto novo é escrito na fonte do documento (identificada entre as 10 mais usadas em contas), com o tamanho, a cor, a inclinação e a espessura do traço do original. Se a fonte não é identificada, a técnica não é usada." },
-  { chave: "photocraft", termo: "PhotoCraft (as ferramentas do Photoshop)", grupo: "Técnicas",
-    explica: "Um editor de imagem de código aberto que refaz o Photoshop. O gerador o usa escondido, como uma pessoa usaria: seleciona o texto antigo, apaga com uma ferramenta de verdade (preenchimento sensível ao conteúdo, Remendo, Carimbo, Pincel de Recuperação ou Remover), escreve o valor novo numa camada de texto na fonte do documento e acerta desfoque, cor e espessura do traço. A técnica é \"Reescrever no PhotoCraft\"; nas versões em que o falsificador usa o motor, as técnicas que trocam, invertem ou apagam um dígito também apagam com as ferramentas dele. Se o papel refeito fica liso ou manchado, a pessoa refaz com o Carimbo, e o rótulo diz." },
   { chave: "letras_documento", termo: "Letras do próprio documento", grupo: "Técnicas",
     explica: "O campo novo é montado recortando letras que já existem no documento, no mesmo estilo. É a técnica mais difícil de achar, porque a letra é a do papel." },
   { chave: "trecho", termo: "Trecho / caractere", grupo: "Técnicas",
@@ -60,6 +58,12 @@ export const TERMOS = [
     explica: "A altura das letras do campo. Texto miúdo (datas do boleto, rodapé) é mais difícil de editar bem e falha mais; o status mostra quantos campos de cada tamanho foram editados e quantos ficaram de fora." },
   { chave: "camada", termo: "Camada (editor)", grupo: "Editor",
     explica: "Cada edição fica numa camada, como no Photoshop: dá para esconder, mudar a opacidade, reordenar, mesclar. A categoria da camada vai para a máscara de classes." },
+  { chave: "puxar", termo: "Puxar / recortar", grupo: "Editor",
+    explica: "Levar o trecho selecionado para outro lugar da mesma imagem: Ctrl+arrastar dentro da seleção (ou Ctrl+X e arrastar). O lugar de onde ele saiu é preenchido com o papel em volta. Alt+arrastar duplica em vez de levar. Enter aplica, Esc devolve." },
+  { chave: "apagar_preenchimento", termo: "Apagar com preenchimento", grupo: "Editor",
+    explica: "Delete com uma seleção: o que está selecionado some e é refeito a partir do papel em volta (preenchimento por similaridade, o \"sensível ao conteúdo\" do Photoshop). O dado na barra refaz com outra variação." },
+  { chave: "area_transferencia", termo: "Copiar e colar entre imagens", grupo: "Editor",
+    explica: "Ctrl+C numa imagem e Ctrl+V em outra do MESMO split cola o trecho no formato da seleção (laço, elipse…). Entre splits é recusado: o mesmo pedaço no treino e no teste seria vazamento de dados." },
 ];
 
 const POR_CHAVE = Object.fromEntries(TERMOS.map((t) => [t.chave, t]));

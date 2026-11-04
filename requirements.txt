@@ -1,4 +1,4 @@
-flask>=3.1  # request.max_content_length por requisição (o salvar do estúdio)
+flask>=3.0
 waitress>=3.0  # servidor para várias pessoas ao mesmo tempo (sem ele, app.py usa o do Flask)
 numpy>=1.26
 pillow>=10.1

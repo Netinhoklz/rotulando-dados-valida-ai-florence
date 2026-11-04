@@ -650,61 +650,9 @@ geometria como uma pessoa faria, sem abrir editor nem mexer no cursor:
 da equipe fez de verdade, esticado para a caixa do campo. A edição diz qual foi usado: `fornecedores.gesto` vale
 `real` ou `modelo`.
 
-### O motor PhotoCraft (28/10/2026)
+### Letra movida e letra colada (28/10/2026)
 
-A edição do campo inteiro também sai das ferramentas de um editor de verdade: o
-[PhotoCraft](https://github.com/storytold/photocraft), o Photoshop refeito em Rust (Apache-2.0/MIT). Ele roda
-escondido como `photocraft-cli serve` e recebe comandos JSON pelo stdio. A técnica é `campo.photocraft`, num 14, e
-fica em `rotulador/photocraft.py`.
-
-O Python continua decidindo o quê (campo, valor novo, fonte identificada, hábitos do operador) e medindo; o pixel é
-do motor:
-
-- **Seleção:** só a tinta do texto antigo, quando a edição é cuidadosa, ou a seleção do operador humano (letreiro,
-  laço, pincel, intervalo de cores, com o gesto de `gesto.py`). Vai como polígonos do Laço, em modo adicionar.
-- **Apagar:** é a opção `ferramenta`. Com o operador, é a ferramenta dele.
-  - **Preenchimento sensível ao conteúdo:** com a amostra pintada só nas faixas de papel livre acima e abaixo. Com a
-    amostra automática ele puxava pedaços das letras vizinhas.
-  - **Remendo:** arrastado até papel limpo, de preferência na vertical. Sem papel do tamanho da linha, remenda em
-    pedaços.
-  - **Carimbo e Pincel de Recuperação:** em passadas com pressão, com um Alt+clique novo a cada 3 a 6 alturas de
-    letra.
-  - **Remover.**
-  - **A cor do papel:** o "chapado" do operador.
-
-  O miolo duro do pincel cobre a altura da linha. Se ainda sobra fantasma (luma abaixo de papel − 25), a pessoa
-  repassa uma vez; persistindo, a técnica desiste e o gerador vai para a "mesma fonte".
-- **Texto:** uma camada de texto na família e no estilo da fonte identificada. O motor agrupa pela família
-  tipográfica, então "Arial Narrow Bold" vira Arial, estilo "Narrow Bold".
-  - O tamanho vai em pt: o recorte vai sem resolução, a 72 ppi, e 1 pt = 1 px.
-  - A escala horizontal, o tracking (o entreletra e o condensado do valor imposto) e a rotação vêm da medida da fonte.
-  - Primeiro a camada entra nítida, para medir onde a tinta cai. Depois volta ao instantâneo do papel apagado e entra
-    alinhada pela borda do texto antigo.
-- **Acabamento medido (sem o operador):**
-  - O Desfoque Gaussiano tem o raio que iguala a nitidez da tinta à do texto escaneado.
-  - A cor é corrigida pelo tom do miolo.
-  - O peso do traço é acertado em fração de pixel com uma cópia da camada com Mínimo ou Máximo de 1 px, misturada
-    pela opacidade. Com a mesma fonte do arquivo, quase nunca é preciso.
-- **Operador humano:** suavização (Nítida, Precisa, Forte, Suave, Nenhuma), conta-gotas, erro de escala e de posição
-  no pixel inteiro, e os retoques dele (Desfoque Gaussiano na área, Máscara de Nitidez, Desfoque de Superfície,
-  Adicionar Ruído) feitos no motor. O `_acabar_humano` não os refaz.
-
-No perfil profissional, `campo.photocraft` tem o dobro do peso das outras técnicas de campo inteiro. Sem o motor
-instalado, sai do sorteio; quando recusa, a "mesma fonte" é a reserva. A anotação guarda `fornecedores.motor =
-photocraft`, `apagar = photocraft.<ferramenta>`, `texto = photocraft.<suavização>` e o relatório `photocraft`:
-fonte, pt, cor, desfoque, peso, posição, origem do remendo ou carimbo e os passos.
-
-**Lote de 28/10** (perfil profissional, 10 contas, 5 versões cada; `E:/rotulador/ferr/lote_photocraft.py`):
-- 54 versões e 151 edições, 31 delas no PhotoCraft (25 com o operador humano, 6 cuidadosas). Nenhuma falha e
-  31/31 confirmadas pelo OCR. A "mesma fonte" recusou 17.
-- Peso do traço do PhotoCraft: mediana 0,983. As 6 fora de ±12% (0,82–0,88) são do operador que deixa o texto
-  nítido como digitou, um hábito rotulado; as cuidadosas ficaram dentro.
-- Detectabilidade, AUC por técnica (0,5 = não se separa da original): PhotoCraft **0,553**, a mais baixa do lote;
-  trecho 0,57, letras do documento 0,578, mesma fonte 0,61, copiar glifo 0,93.
-- Tempo: 0,5–0,9 s por campo no motor, com o processo aberto entre as edições.
-
-**Parciais no motor e o apagador revisto (28/10, noite).** Scripts de medida em `E:/rotulador/ferr`
-(`mover_identidade.py`, `apagar_grao.py`, `ab_apagador.py`).
+Medido com `E:/rotulador/ferr/mover_identidade.py`.
 
 - **Letra movida pelo laço:** `transpor`, `caractere.apagar` (fechar o vão) e `caractere.inserir` compunham o alfa da
   letra sobre os pixels dela mesma. A borda saía com cobertura a² em vez de a.
@@ -715,58 +663,6 @@ fonte, pt, cor, desfoque, peso, posição, origem do remendo ou carimbo e os pas
 - **Colar "só a tinta":** em `copiar_glifo`, `copiar_interno`/`colagem_externa` e `bloco`, a letra entra em Multiplicar
   (`_transmitancia`), depois dos Níveis que levam o papel de lá ao branco. A cobertura da borda é a e o peso fica em
   0,986.
-- **Apagador do motor nas parciais:** em 60% das versões do perfil profissional (`MOTOR_PROFISSIONAL`; parâmetro
-  `motor`), o `_C.papel` refaz o papel com o PhotoCraft (`photocraft.reconstruir`). Nas outras 40%, com o Python: dois
-  fornecedores. Se o motor não dá conta, o Python entra, rotulado como tal.
-- **Ferramentas do motor**, medidas em 80 dígitos de verdade (grão do papel refeito ÷ grão do papel limpo em volta):
-  - Pincel de Recuperação: com pincel de 2 alturas a cura falha e devolve cor lisa (grão 0,02, tom +4,2). Com 1,4 altura
-    em três faixas: 0,75 e tom +0,1.
-  - Preenchimento sensível ao conteúdo: a adaptação de cor "default" é uma mistura de Poisson que alisa (os 10%
-    piores, 0,14). Passou para "none": 0,57, os piores 0,49, tom ±0,3.
-  - Carimbo, Remendo e Remover: 0,79–0,82.
-- **A pessoa olha o resultado** (`apagar_no_documento`):
-  - se sobrou fantasma, repassa;
-  - se a ferramenta não deu conta (sem papel livre), ou o papel refeito ficou com algum destes defeitos, volta e refaz
-    com o Carimbo, e o rótulo guarda `refez`:
-    - manchado: tom fora de ±2 níveis. A Recuperação deixava +3 num papel de luma 250, visível a olho;
-    - com costura: um degrau acima de 3 níveis entre 1–3 px dentro e fora da borda da seleção, em trechos de uma
-      altura de letra;
-    - liso: grão abaixo de 0,3 do papel limpo LONGE da tinta. Perto dela, o mosquito do JPEG parece grão.
-
-    Em 80 dígitos, o Pincel de Recuperação do motor é refeito em 70, o Remendo em 18, o Remover em 10, e o Carimbo e o
-    preenchimento nunca;
-  - se nem o Carimbo der conta, a edição é recusada.
-- **Origem do Carimbo e da Recuperação:** a origem limpa é exigida só onde o pincel alcança (as colunas e as linhas da
-  passada), não na seleção inteira. Sem ela, a passada é dividida ao meio e cada metade ganha o seu Alt+clique. As
-  falhas por "sem papel livre" no A/B caíram de 14–22 para 1–2.
-- **A/B pareado no `campo.photocraft`:** mesmos campos, sementes e operadores, só o apagador mudando; 10 contas.
-  - Falhas iguais (9 e 9).
-  - Edição cuidadosa: AUC 0,692 → 0,660; com a Recuperação, 0,756 → 0,688.
-  - O operador que deixa o texto nítido como digitou (hábito `nitidez: nitida`, 30% dos operadores) é separado com AUC
-    0,99 pelo ruído do papel em volta das bordas nítidas, com qualquer apagador. É o hábito, rotulado.
-- **Lote de 28/10 à noite** (o mesmo de cima, com o código final; `E:/rotulador/ferr/lote_photocraft2.py`):
-  - 54 versões e 180 edições, 71 no `campo.photocraft`: nenhuma falha, 71/71 confirmadas pelo OCR. 12 refeitas com o
-    Carimbo.
-  - AUC geral 0,596 → 0,552. Por técnica: `copiar_glifo` 0,926 → 0,30; `campo.photocraft` 0,553 → 0,547;
-    `trecho.trocar` 0,57 → 0,569.
-  - `campo.remover` (0,99) e `campo.acrescentar` (1,0) continuam no topo por construção: o par compara papel com texto
-    contra papel sem texto.
-  - Visto a olho: o texto novo ainda destoa em dois casos, um do operador e um do caminho cuidadoso.
-    - O conta-gotas do operador pega o miolo mais escuro (#060604) num valor borrado em cinza escuro.
-    - No texto pequeno (~15 px), o caminho cuidadoso sai mais claro e 9–13% mais grosso.
-
-### O estúdio: a interface do PhotoCraft (29/10/2026)
-
-A página principal é o PhotoCraft web com a aba ⚡ Gerar (`rotulador/estudio.py`; ver o README).
-- **Aba Gerar:** a receita do perfil profissional com `"motor": "photocraft"`. O campo inteiro sai só pelo
-  `campo.photocraft`, e as parciais apagam no motor em todas as versões (`MOTOR_PROFISSIONAL` não sorteia). A montagem
-  é a mesma do lote (`Gerador._versao`), com a versão incoerente refeita. O "Salvar como" JPEG do operador é tirado do
-  rótulo, porque o estúdio grava o PNG que a pessoa revisou.
-- **Edição à mão:** o que a pessoa fizer no PhotoCraft vira a técnica `manual.photocraft` (nº 113). Uma edição por
-  grupo de pedaços próximos (a menos de 0,6 × a altura do texto), numa camada no topo da pilha. A classe vem do campo
-  lido que o grupo cobre; fora dos campos, "outro".
-- **Máscara:** é a diferença exata entre o arquivo salvo e o aberto. A sessão confere, pixel a pixel, que a editada
-  gravada é o arquivo salvo.
 
 ### O que a ferramenta não gera
 

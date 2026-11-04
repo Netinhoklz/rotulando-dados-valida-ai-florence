@@ -629,37 +629,130 @@ export function criarFerramentas(app) {
     },
   };
 
-  // ------------------------------------------------------------- transformar
-  const V = { quad: null };
+  // ------------------------------------------------------------- mover / puxar
+  // Com uma seleção, arrastar PUXA os pixels: eles seguem o mouse na hora e, ao soltar, o servidor mostra o resultado de
+  // verdade (com o buraco já preenchido). Alt no começo do arraste = duplicar. Cantos escalam (Shift = proporção, Ctrl =
+  // perspectiva); fora da caixa, gira. Enter (ou ✓) aplica, Esc desfaz o arraste. Como no Photoshop, trocar de
+  // ferramenta, desmarcar, salvar ou trocar de imagem também aplicam o que está solto.
+  const V = { quad: null, base: null, sujo: false, modo: null, recorte: false, arrastando: false, flut: null, buraco: null };
   function iniciarQuad() {
     const bb = app.selBbox();
-    V.quad = bb ? new Quad(bb[0], bb[1], bb[2], bb[3]) : null;
+    Object.assign(V, { quad: bb ? new Quad(bb[0], bb[1], bb[2], bb[3]) : null, base: bb, sujo: false, modo: null,
+      recorte: false, arrastando: false, flut: null, buraco: null });
+    app.visor.esconderSelecao = false;
+  }
+  const modoV = () => V.modo || op("transformar").acao || "mover";
+  function paramsV() {
+    const o = op("transformar");
+    return { modo: modoV(), origem: o.origem, interpolacao: o.interpolacao, semente: o.semente,
+      destino: V.quad.destino(), cor_fundo: app.corFundo };
   }
   function previaV() {
-    if (!V.quad) { app.limparPrevia(); return; }
-    app.previa("transformar", { ...op("transformar"), destino: V.quad.destino(), cor_fundo: app.corFundo });
+    app.limparPrevia();
+    app.visor.esconderSelecao = Boolean(V.quad && (V.sujo || V.recorte));
+    if (V.quad && V.sujo) app.previa("transformar", paramsV());
     app.visor.redesenhar();
   }
-  const quadV = interacaoQuad(app, () => V.quad, previaV);
+  const quadV = interacaoQuad(app, () => V.quad, () => { V.sujo = true; previaV(); });
+  // o buraco que a seleção deixa (listrado = será preenchido pelo papel em volta; ou a cor de fundo)
+  function buracoV() {
+    if (V.buraco) return V.buraco;
+    const s = app.visor.selecao, origem = op("transformar").origem;
+    if (!s?.alfa || origem === "nada") return null;
+    const c = document.createElement("canvas");
+    c.width = s.alfa.width; c.height = s.alfa.height;
+    const g = c.getContext("2d");
+    if (origem === "cor") g.fillStyle = app.corFundo;
+    else {
+      const t = document.createElement("canvas");
+      t.width = t.height = 8;
+      const gt = t.getContext("2d");
+      gt.fillStyle = "#eceef1"; gt.fillRect(0, 0, 8, 8);
+      gt.strokeStyle = "#b8c0ca"; gt.lineWidth = 1.5; gt.beginPath(); gt.moveTo(-1, 9); gt.lineTo(9, -1); gt.stroke();
+      g.fillStyle = g.createPattern(t, "repeat");
+    }
+    g.fillRect(0, 0, c.width, c.height);
+    g.globalCompositeOperation = "destination-in";
+    g.drawImage(s.alfa, 0, 0);
+    return (V.buraco = c);
+  }
+  // o trecho solto, desenhado no navegador enquanto o servidor não devolve a prévia (perspectiva: só a prévia)
+  function desenharSolto(ctx, v) {
+    if (!V.base) return;
+    const [x0, y0, x1, y1] = V.base, w0 = x1 - x0, h0 = y1 - y0, e = v.escala;
+    V.flut ||= app.visor.recortarSelecao();
+    ctx.save();
+    ctx.transform(e, 0, 0, e, -v.ox * e, -v.oy * e);  // daqui em diante, coordenadas da imagem
+    ctx.imageSmoothingEnabled = e < 1.5;
+    if (modoV() === "mover") { const b = buracoV(); if (b) ctx.drawImage(b, x0, y0); }
+    if (V.flut && !V.quad.livre) {
+      const q = V.quad;
+      ctx.translate(q.cx, q.cy); ctx.rotate(q.ang); ctx.scale(q.w / w0, q.h / h0);
+      ctx.drawImage(V.flut, -w0 / 2, -h0 / 2);
+    }
+    ctx.restore();
+  }
   F.transformar = {
-    nome: "Mover (V): com seleção = mover/transformar (canto escala, Shift proporção, Ctrl perspectiva, fora gira); sem seleção = move a CAMADA ativa",
+    nome: "Mover / puxar (V): arraste a seleção para puxar os pixels (Alt = duplicar); cantos escalam, fora gira; sem seleção, move a CAMADA ativa",
     icone: "✥", atalho: "v", cursor: "move",
     campos: [
-      { chave: "modo", tipo: "select", rotulo: "Modo", opcoes: [["mover", "mover (copy-move)"], ["duplicar", "duplicar"]], padrao: "duplicar" },
-      { chave: "origem", tipo: "select", rotulo: "Buraco na origem", opcoes: [["preencher", "preencher inteligente"], ["cor", "cor de fundo"], ["nada", "deixar"]], padrao: "preencher" },
+      { chave: "acao", tipo: "select", rotulo: "Ao arrastar", opcoes: [["mover", "puxar (o buraco é preenchido)"], ["duplicar", "duplicar (ou Alt+arrastar)"]], padrao: "mover" },
+      { chave: "origem", tipo: "select", rotulo: "Buraco", opcoes: [["preencher", "preencher com o papel em volta"], ["cor", "cor de fundo"], ["nada", "deixar como está"]], padrao: "preencher" },
       { chave: "interpolacao", tipo: "select", rotulo: "Interp.", opcoes: [["bicubica", "bicúbica"], ["bilinear", "bilinear"], ["vizinho", "vizinho"]], padrao: "bicubica" },
       semente,
     ],
-    botoes: [{ rotulo: "Aplicar (Enter)", primario: true, acao: () => F.transformar.aplicar() },
-      { rotulo: "Reiniciar (Esc)", acao: () => { iniciarQuad(); previaV(); } }],
-    async aplicar() {
-      if (!V.quad) { app.aviso("selecione algo para mover", "erro"); return; }
-      if (await app.aplicar("transformar", { ...op("transformar"), destino: V.quad.destino(), cor_fundo: app.corFundo })) {
-        app.desmarcar(); V.quad = null;
+    botoes: [{ rotulo: "Aplicar (Enter)", primario: true, acao: () => F.transformar.confirmar(true) },
+      { rotulo: "Cancelar (Esc)", acao: () => F.transformar.cancelar() }],
+    pendente: () => Boolean(V.quad && (V.sujo || V.recorte) && !V.aplicando),
+    solto: () => (V.quad ? { modo: modoV(), recorte: V.recorte, sujo: V.sujo, arrastando: V.arrastando } : null),
+    ancora() {
+      if (!V.quad) return null;
+      const c = V.quad.cantos();
+      return [Math.min(...c.map((p) => p.x)), Math.min(...c.map((p) => p.y)), Math.max(...c.map((p) => p.x)), Math.max(...c.map((p) => p.y))];
+    },
+    // deixa a seleção solta para puxar (Ctrl+X = recortar; Ctrl+V no mesmo documento = duplicar, um pouco deslocada)
+    soltar({ recorte = false, modo = null, deslocar = 0 } = {}) {
+      iniciarQuad();
+      if (!V.quad) return false;
+      V.recorte = recorte; V.modo = modo;
+      if (deslocar) { V.quad.mover(deslocar, deslocar); V.sujo = true; }
+      previaV();
+      return true;
+    },
+    trocarModo(modo) { V.modo = modo; V.buraco = null; previaV(); },
+    async confirmar(explicito = false) {
+      if (V.aplicando) return false;
+      if (!V.quad) { if (explicito) app.aviso("selecione algo para mover", "erro"); return false; }
+      if (!V.sujo && !V.recorte) {
+        if (explicito) app.aviso("arraste o trecho para outro lugar antes de aplicar (Esc cancela)", "erro");
+        return false;
       }
+      V.aplicando = true;
+      try {
+        if (!V.sujo) {  // recortou e não levou a lugar nenhum: o trecho some (apagar com preenchimento)
+          const ok = await app.apagarComPreenchimento();
+          if (ok) { V.recorte = false; app.visor.esconderSelecao = false; app.visor.redesenhar(); }
+          return ok;
+        }
+        app.ajustarCategoria("copiar e colar");
+        const ok = await app.aplicar("transformar", paramsV(),
+          { msg: modoV() === "mover" ? "puxando… (preenchendo o buraco)" : "duplicando…" });
+        if (ok) { V.sujo = V.recorte = false; app.desmarcar(); }
+        return ok;
+      } finally { V.aplicando = false; }
+    },
+    cancelar() {
+      const tinha = V.sujo || V.recorte;
+      iniciarQuad(); previaV();
+      if (tinha) app.status("puxar cancelado: o trecho voltou ao lugar");
     },
     down(p, ev) {
-      if (V.quad) { quadV.down(p, ev); return; }
+      if (V.quad) {
+        if (!V.sujo && ev.altKey) { V.modo = "duplicar"; V.buraco = null; }
+        V.arrastando = true;
+        quadV.down(p, ev);
+        return;
+      }
       const at = app.camadaAtiva();
       if (!at || at.vazia) { app.aviso("faça uma seleção (ou escolha uma camada com conteúdo) para mover", "erro"); return; }
       V.cam = { a: p, d: { x: 0, y: 0 }, bbox: at.bbox, id: at.id };
@@ -674,12 +767,14 @@ export function criarFerramentas(app) {
         if (c.d.x || c.d.y) app.acaoCamada("mover", { camada: c.id, dx: c.d.x, dy: c.d.y });
         app.visor.redesenhar(); return;
       }
+      V.arrastando = false;
       quadV.up();
+      app.visor.redesenhar();
     },
     cursorEm: (p) => quadV.cursor(p),
     tecla(ev) {
-      if (ev.key === "Enter") { F.transformar.aplicar(); return true; }
-      if (ev.key === "Escape") { iniciarQuad(); previaV(); return true; }
+      if (ev.key === "Enter") { F.transformar.confirmar(true); return true; }
+      if (ev.key === "Escape" && V.quad) { F.transformar.cancelar(); return true; }
       if (!V.quad) {  // sem seleção: setas empurram a camada ativa
         const at = app.camadaAtiva(), passo = ev.shiftKey ? 10 : 1;
         const mov = { ArrowLeft: [-passo, 0], ArrowRight: [passo, 0], ArrowUp: [0, -passo], ArrowDown: [0, passo] }[ev.key];
@@ -689,69 +784,158 @@ export function criarFerramentas(app) {
       return quadV.tecla(ev);
     },
     desenhar(ctx, v) {
-      if (V.quad) desenharQuad(ctx, v, V.quad);
+      if (V.quad) {
+        if ((V.sujo || V.recorte) && !v.previa) desenharSolto(ctx, v);
+        desenharQuad(ctx, v, V.quad);
+      }
       if (V.cam && V.cam.bbox) {
         const [x0, y0, x1, y1] = V.cam.bbox, d = V.cam.d;
         const a = v.imgParaTela(x0 + d.x, y0 + d.y), b = v.imgParaTela(x1 + d.x, y1 + d.y);
         contorno(ctx, () => { ctx.beginPath(); ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y); });
       }
     },
-    mudouOpcao: previaV,
-    ativar() { iniciarQuad(); if (V.quad) previaV(); },
-    desativar() { V.quad = null; app.limparPrevia(); },
+    mudouOpcao() { V.buraco = null; previaV(); },
+    ativar(origem) { if (!V.quad || origem === "documento") iniciarQuad(); previaV(); },
+    desativar() { V.quad = null; V.sujo = V.recorte = V.arrastando = false; app.visor.esconderSelecao = false; app.limparPrevia(); },
     aoMudarSelecao() { iniciarQuad(); previaV(); },
   };
 
-  // ------------------------------------------------------------- colar de outro documento
-  const C = { quad: null, doador: null, origem: null };
+  // ------------------------------------------------------------- colar (Ctrl+V de outro documento ou o diálogo do doador)
+  const C = { quad: null, doador: null, origem: null, selecao: null, pre: null };
+  function paramsC() {
+    return { ...op("colar"), doador: C.doador, origem: C.origem, destino: C.quad.destino(),
+      ...(C.selecao ? { selecao_doador: C.selecao } : {}) };
+  }
   function previaC() {
     if (!C.quad) return;
-    app.previa("colar", { ...op("colar"), doador: C.doador, origem: C.origem, destino: C.quad.destino() });
+    app.limparPrevia();
+    app.previa("colar", paramsC());
     app.visor.redesenhar();
   }
   const quadC = interacaoQuad(app, () => C.quad, previaC);
   F.colar = {
-    nome: "Colar trecho de outro documento do MESMO split (splicing)", icone: "⧉", atalho: "", cursor: "move", oculta: false,
+    nome: "Colar de outro documento do MESMO split (Ctrl+V depois de copiar em outra imagem, ou escolha o trecho)", icone: "⧉", atalho: "", cursor: "move",
     campos: [
       { chave: "suavizar_borda", tipo: "num", rotulo: "Suavizar borda px", min: 0, max: 50, passo: 0.5, padrao: 0 },
       { chave: "interpolacao", tipo: "select", rotulo: "Interp.", opcoes: [["bicubica", "bicúbica"], ["bilinear", "bilinear"], ["vizinho", "vizinho"]], padrao: "bicubica" },
       { chave: "limitar_selecao", tipo: "bool", rotulo: "Só dentro da seleção", padrao: false },
     ],
     botoes: [{ rotulo: "Escolher trecho…", acao: () => app.escolherDoador() },
-      { rotulo: "Aplicar (Enter)", primario: true, acao: () => F.colar.aplicar() }],
-    iniciar(doador, origem) {
-      C.doador = doador; C.origem = origem;
+      { rotulo: "Aplicar (Enter)", primario: true, acao: () => F.colar.confirmar(true) },
+      { rotulo: "Cancelar (Esc)", acao: () => F.colar.cancelar() }],
+    // trecho do doador (retângulo ``origem``; com ``selecao``, só o formato copiado). ``pre`` = os pixels, para a
+    // prévia na hora; ``emLugar`` = nas mesmas coordenadas (se couber), senão no meio da vista
+    iniciar(doador, origem, { selecao = null, pre = null, emLugar = false } = {}) {
+      Object.assign(C, { doador, origem, selecao, pre });
       const w = origem.x1 - origem.x0, h = origem.y1 - origem.y0;
-      const v = app.visor, r = v.el.getBoundingClientRect();
-      const c = v.telaParaImg(r.width / 2, r.height / 2);
-      C.quad = new Quad(c.x - w / 2, c.y - h / 2, c.x + w / 2, c.y + h / 2);
+      if (emLugar && app.sessao && origem.x1 <= app.sessao.largura && origem.y1 <= app.sessao.altura) {
+        C.quad = new Quad(origem.x0, origem.y0, origem.x1, origem.y1);
+      } else {
+        const v = app.visor, r = v.el.getBoundingClientRect();
+        const c = v.telaParaImg(r.width / 2, r.height / 2);
+        C.quad = new Quad(c.x - w / 2, c.y - h / 2, c.x + w / 2, c.y + h / 2);
+      }
       previaC();
     },
-    async aplicar() {
-      if (!C.quad) { app.escolherDoador(); return; }
-      if (await app.aplicar("colar", { ...op("colar"), doador: C.doador, origem: C.origem, destino: C.quad.destino() })) {
-        C.quad = null; app.visor.redesenhar();
-      }
+    pendente: () => Boolean(C.quad && !C.aplicando),
+    solto: () => (C.quad ? { modo: "colar", doador: C.doador, arrastando: C.arrastando } : null),
+    ancora() {
+      if (!C.quad) return null;
+      const c = C.quad.cantos();
+      return [Math.min(...c.map((p) => p.x)), Math.min(...c.map((p) => p.y)), Math.max(...c.map((p) => p.x)), Math.max(...c.map((p) => p.y))];
     },
-    down(p, ev) { if (!C.quad) { app.escolherDoador(); return; } quadC.down(p, ev); },
+    async confirmar(explicito = false) {
+      if (C.aplicando) return false;
+      if (!C.quad) { if (explicito) app.escolherDoador(); return false; }
+      app.ajustarCategoria(C.doador === app.sessao?.id ? "copiar e colar" : "pegar de outro documento");
+      C.aplicando = true;
+      try {
+        const ok = await app.aplicar("colar", paramsC(), { msg: "colando…" });
+        if (ok) { C.quad = null; C.pre = null; app.visor.redesenhar(); }
+        return ok;
+      } finally { C.aplicando = false; }
+    },
+    cancelar() { C.quad = null; C.pre = null; app.limparPrevia(); app.visor.redesenhar(); },
+    down(p, ev) { if (!C.quad) { app.escolherDoador(); return; } C.arrastando = true; quadC.down(p, ev); },
     move(p, ev) { quadC.move(p, ev); },
-    up() { quadC.up(); },
+    up() { C.arrastando = false; quadC.up(); app.visor.redesenhar(); },
     cursorEm: (p) => quadC.cursor(p),
     tecla(ev) {
-      if (ev.key === "Enter") { F.colar.aplicar(); return true; }
-      if (ev.key === "Escape") { C.quad = null; app.limparPrevia(); return true; }
+      if (ev.key === "Enter") { F.colar.confirmar(true); return true; }
+      if (ev.key === "Escape" && C.quad) { F.colar.cancelar(); return true; }
       return quadC.tecla(ev);
     },
-    desenhar(ctx, v) { if (C.quad) desenharQuad(ctx, v, C.quad); },
+    desenhar(ctx, v) {
+      if (!C.quad) return;
+      if (C.pre && !v.previa && !C.quad.livre) {  // os pixels copiados seguem o mouse; a prévia do servidor vem depois
+        const e = v.escala, q = C.quad, w0 = C.pre.width, h0 = C.pre.height;
+        ctx.save();
+        ctx.transform(e, 0, 0, e, -v.ox * e, -v.oy * e);
+        ctx.imageSmoothingEnabled = e < 1.5;
+        ctx.translate(q.cx, q.cy); ctx.rotate(q.ang); ctx.scale(q.w / w0, q.h / h0);
+        ctx.drawImage(C.pre, -w0 / 2, -h0 / 2);
+        ctx.restore();
+      }
+      desenharQuad(ctx, v, C.quad);
+    },
     mudouOpcao: previaC,
     ativar(origem) { if (C.quad) previaC(); else if (origem === "usuario") app.escolherDoador(); },
-    desativar() { C.quad = null; app.limparPrevia(); },
+    desativar() { C.quad = null; C.pre = null; app.limparPrevia(); },
   };
 
   return F;
 }
 
-export const ORDEM = [
-  "mao", "zoom", "|", "ret", "elipse", "laco", "varinha", "pincelsel", "|", "pincel", "borracha", "balde", "contagotas", "forma", "|",
-  "carimbo", "recuperacao", "corretivo", "remendo", "retoque", "|", "texto", "substituir", "transformar", "colar",
+// a caixa de ferramentas em grupos, como no Photoshop: o botão mostra a última usada do grupo; clique com o botão
+// direito (ou segure) para ver as outras
+export const GRUPOS = [
+  ["transformar", "colar"], ["ret", "elipse"], ["laco"], ["varinha", "pincelsel"], ["contagotas"], "|",
+  ["corretivo", "recuperacao", "remendo"], ["pincel"], ["carimbo"], ["borracha"], ["balde"], ["retoque"], "|",
+  ["texto", "substituir"], ["forma"], "|", ["mao"], ["zoom"],
 ];
+export const ICONES = {
+  transformar: "mover", colar: "colar_doc", ret: "ret", elipse: "elipse", laco: "laco", varinha: "varinha",
+  pincelsel: "pincelsel", contagotas: "contagotas", corretivo: "corretivo", recuperacao: "recuperacao", remendo: "remendo",
+  pincel: "pincel", carimbo: "carimbo", borracha: "borracha", balde: "balde", retoque: "retoque", texto: "texto",
+  substituir: "substituir", forma: "forma", mao: "mao", zoom: "zoom",
+};
+export const NOMES = {
+  transformar: "Mover / puxar", colar: "Colar de outro documento", ret: "Seleção retangular", elipse: "Seleção elíptica",
+  laco: "Laço", varinha: "Varinha mágica", pincelsel: "Pincel de seleção", contagotas: "Conta-gotas",
+  corretivo: "Pincel corretivo", recuperacao: "Pincel de recuperação", remendo: "Remendo", pincel: "Pincel",
+  carimbo: "Carimbo de clonagem", borracha: "Borracha", balde: "Balde de tinta", retoque: "Retoque", texto: "Texto",
+  substituir: "Substituir texto", forma: "Formas", mao: "Mão", zoom: "Zoom",
+};
+
+// dicas da barra de status (como no Graphite): tecla (k), gesto do mouse (m) e o que acontece (t)
+const h = (k, m, t) => ({ k, m, t });
+const DICA_SEL = [h("", "arrastar", "selecionar"), h("Shift", "arrastar", "somar"), h("Alt", "arrastar", "subtrair")];
+const DICA_TAM = h("[ ]", "", "tamanho");
+const DICA_FONTE = [h("Alt", "clique", "origem"), h("", "arrastar", "pintar a cópia"), DICA_TAM];
+export const DICAS = {
+  mao: [h("", "arrastar", "mover a vista"), h("", "roda", "zoom")],
+  zoom: [h("", "clique", "aproximar"), h("Alt", "clique", "afastar"), h("0", "", "caber na tela"), h("1", "", "100%")],
+  ret: DICA_SEL, elipse: DICA_SEL,
+  laco: [h("", "arrastar", "contornar"), h("Shift", "", "somar"), h("Alt", "", "subtrair")],
+  varinha: [h("", "clique", "cor parecida"), h("Shift", "clique", "somar"), h("Alt", "clique", "subtrair")],
+  pincelsel: [h("", "arrastar", "pintar a seleção"), h("Alt", "arrastar", "tirar"), DICA_TAM],
+  pincel: [h("", "arrastar", "pintar"), h("Alt", "clique", "pegar a cor"), DICA_TAM],
+  borracha: [h("", "arrastar", "devolver o original"), DICA_TAM],
+  corretivo: [h("", "arrastar", "sumir com o que pintar"), DICA_TAM],
+  carimbo: DICA_FONTE, recuperacao: DICA_FONTE,
+  remendo: [h("", "arrastar", "leve a seleção até papel limpo")],
+  retoque: [h("", "arrastar", "retocar"), DICA_TAM],
+  balde: [h("", "clique", "preencher")],
+  contagotas: [h("", "clique", "pegar a cor")],
+  forma: [h("", "arrastar", "desenhar"), h("Shift", "arrastar", "quadrado / linha reta")],
+  texto: [h("", "clique", "linha de base"), h("Enter", "", "aplicar"), h("Esc", "", "cancelar"), h("setas", "", "ajuste fino")],
+  substituir: [h("", "arrastar", "sobre o texto antigo"), h("Enter", "", "aplicar"), h("Esc", "", "cancelar")],
+  transformar: [h("", "arrastar", "puxar"), h("Alt", "arrastar", "duplicar"), h("", "arrastar canto", "escala"),
+    h("", "arrastar fora", "girar"), h("setas", "", "1 px"), h("Enter", "", "aplicar"), h("Esc", "", "cancelar")],
+  transformar_sem: [h("", "arrastar", "mover a camada ativa"), h("setas", "", "empurrar 1 px (Shift 10)")],
+  colar: [h("", "arrastar", "posicionar"), h("", "arrastar canto", "escala"), h("", "arrastar fora", "girar"),
+    h("Enter", "", "aplicar"), h("Esc", "", "cancelar")],
+  com_selecao: [h("Ctrl", "arrastar", "puxar"), h("Del", "", "apagar com preenchimento"),
+    h("Ctrl+C · Ctrl+X · Ctrl+V", "", "copiar · recortar · colar")],
+  sempre: [h("Espaço", "arrastar", "mover a vista")],
+};

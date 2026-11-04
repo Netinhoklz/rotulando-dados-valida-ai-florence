@@ -358,7 +358,7 @@ body.pagina-gerador { display: grid; grid-template-rows: auto 1fr; height: 100%;
 .uc-chip b { font-variant-numeric: tabular-nums; }
 .uc-chip-pend { font-size: 11px; color: var(--texto-2); }
 .uc-link { background: none; border: 0; padding: 0; color: var(--destaque); text-decoration: underline; cursor: pointer; font-size: 13px; }
-.uc-oque { gap: 2px; }
+.uc-oque, .uc-metodo { gap: 2px; }
 .uc-opcao { display: flex; align-items: baseline; gap: 8px; white-space: normal; color: var(--texto); cursor: pointer;
   padding: 5px 8px; border-radius: 6px; width: 100%; font-size: 13.5px; }
 .uc-opcao:hover { background: var(--fundo-3); }

@@ -39,7 +39,7 @@ class TestCatalogo(unittest.TestCase):
         self.assertIn("papel", [v for v, _ in catalogo.COLAGEM["valores"]])
         self.assertIn("forma", catalogo.TECNICAS["campo.corretivo"].opcoes)
         self.assertIn("tinta", catalogo.TECNICAS["caractere.acrescentar_tracos"].opcoes)
-        self.assertEqual(len([t for t in catalogo.TECNICAS.values() if t.automatica]), 31)  # + campo.letras_do_documento, campo.photocraft
+        self.assertEqual(len([t for t in catalogo.TECNICAS.values() if t.automatica]), 30)  # + campo.letras_do_documento
 
 
 class TestTecnicas(unittest.TestCase):

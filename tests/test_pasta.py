@@ -1,5 +1,5 @@
-"""A pasta das imagens escolhida na tela (subpastas treino, teste e validação, com ou sem acento) e o "Apagar a última
-edição" do estúdio (a versão sai do dataset; a imagem de entrada fica)."""
+"""A pasta das imagens (subpastas treino, teste e validação, com ou sem acento), a troca de pasta pelo servidor e o
+que já foi feito em cada imagem (os tipos de edição e os campos, na lista de documentos)."""
 
 import shutil
 import tempfile
@@ -11,10 +11,8 @@ from PIL import Image
 
 import app as app_mod
 from app import RAIZ
-from rotulador import exportar
 from rotulador.registro import SPLITS, Registro
-from rotulador.sessao import ErroOperacao
-from tests.test_estudio import NOMES, BaseEstudio, png_bytes
+from tests.test_planilha import NOMES, BaseApp
 from tests.test_tecnicas import documento
 
 
@@ -37,11 +35,6 @@ class TestSubpastas(unittest.TestCase):
         self.assertEqual(reg.por_split["validacao"][0].rel, "conta_2.png")
         self.assertFalse((self.dados / "validacao").exists())  # nenhuma pasta nova sem acento
         self.assertEqual(reg.avisos, [])  # a saida/ dentro da pasta de dados não é aviso
-        img, _ = documento(nome="RITA DE CASSIA", semente=9)
-        novo = reg.adicionar("nova.png", png_bytes(img))[0]  # o "Abrir" do estúdio: vai para a subpasta que existe
-        self.assertTrue(novo.caminho.is_relative_to(reg.pastas[novo.split]))
-        reg2 = Registro(self.dados, self.dados / "saida", log=lambda *_: None)  # e na partida seguinte continua lá
-        self.assertIn(novo.doc, reg2.itens)
 
     def test_split_repetido_vira_aviso(self):
         (self.dados / "validacao").mkdir()
@@ -50,49 +43,21 @@ class TestSubpastas(unittest.TestCase):
         self.assertTrue(any("validação" in a and "repete" in a for a in reg.avisos), reg.avisos)
 
 
-class TestApagarUltimaEdicao(BaseEstudio):
-    def test_apaga_a_ultima_e_a_entrada_fica(self):
-        t, v = self.doc("teste"), self.doc("treino")
-        entrada = v.caminho.read_bytes()
-        a = self.est.abrir(t.doc)
-        r1 = self.est.salvar(a["arquivo"], png_bytes(self.apagar_trecho(t)[1]))
-        b = self.est.abrir(v.doc)
-        r2 = self.est.salvar(b["arquivo"], png_bytes(self.apagar_trecho(v)[1]))
-        u = self.est.ultima()
-        self.assertEqual((u["nome"], u["doc"], u["split"], u["versao"]), (r2["nome"], v.doc, "treino", 1))
-        d = self.est.desfazer(u["nome"])
-        self.assertEqual((d["doc"], d["documento"]), (v.doc, v.nome))  # a página pode voltar a essa imagem
-        for rel in r2["arquivos"].values():  # editada, máscaras, anotação (e a cópia da original, que ficou sem versão)
-            self.assertFalse((self.saida / "treino" / rel).exists(), rel)
-        self.assertEqual(v.caminho.read_bytes(), entrada)  # a imagem de entrada, na pasta de dados, intacta
-        self.assertTrue((self.saida / "teste" / r1["arquivos"]["mascara"]).is_file())  # a anterior fica
-        self.assertEqual((d["ultima"]["nome"], self.est.ultima()["nome"]), (r1["nome"], r1["nome"]))
-        nomes = {l["nome"] for l in exportar.ler_catalogo(self.saida)}
-        self.assertEqual((r1["nome"] in nomes, r2["nome"] in nomes), (True, False))
-        with self.assertRaises(ErroOperacao):  # já saiu
-            self.est.desfazer(r2["nome"])
-        r3 = self.est.salvar(b["arquivo"], png_bytes(self.apagar_trecho(v)[1]))  # a mesma abertura, salva de novo
-        self.assertIsNone(r3["substituiu"])
-        self.assertEqual(self.est.ultima()["nome"], r3["nome"])
-
-    def test_rotas_e_o_que_ja_foi_feito_em_cada_imagem(self):
+class TestFeitoEmCadaImagem(BaseApp):
+    def test_tipos_e_campos_na_lista_de_documentos(self):
         it = self.doc("validacao")
-        a = self.est.abrir(it.doc)
-        r = self.est.salvar(a["arquivo"], png_bytes(self.apagar_trecho(it)[1]))
+        r = self.salvar_manual(it)
         docs = self.c.get("/api/gerador/documentos").get_json()
         d = next(x for x in docs["validacao"] if x["id"] == it.doc)
         self.assertEqual((d["versoes"], d["tipos"], d["campos"]), (1, ["Manual (editor)"], ["nome"]))
         self.assertEqual((docs["teste"][0]["tipos"], docs["teste"][0]["campos"]), ([], []))
-        self.assertEqual(self.c.get("/api/estudio/ultima").get_json()["ultima"]["nome"], r["nome"])
-        self.assertEqual(self.c.post("/api/estudio/desfazer", json={"nome": "0123456789abcdef__v01"}).status_code, 400)
-        x = self.c.post("/api/estudio/desfazer", json={"nome": r["nome"]})
+        x = self.c.post("/api/catalogo/excluir", json={"split": "validacao", "nome": f"{it.doc}__v{r['versao']:02d}"})
         self.assertEqual(x.status_code, 200, x.get_json())
-        self.assertIsNone(x.get_json()["ultima"])
         d = next(x for x in self.c.get("/api/gerador/documentos").get_json()["validacao"] if x["id"] == it.doc)
         self.assertEqual((d["versoes"], d["tipos"]), (0, []))
 
 
-class TestEscolherPasta(BaseEstudio):
+class TestEscolherPasta(BaseApp):
     def test_listar_e_usar(self):
         p = self.c.get("/api/pasta").get_json()
         self.assertEqual((p["dados"], p["pode_trocar"]), (str(self.dados.resolve()), False))  # criar_app sozinho

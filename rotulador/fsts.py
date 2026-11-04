@@ -19,9 +19,8 @@ tabelas da população, e é delas que se sorteia aqui.
 - ``configurar``: a configuração de UMA região (tipo, operações principais, pós-processamento, parâmetros);
 - ``habito_humano``: as escolhas do processamento principal que o operador humano (``rotulador.humano``) executa
   (ferramenta de apagar, suavização do texto, conta-gotas ou cor segura, escala ±5%, rotação);
-- ``pos_processar``: o pós-processamento no PhotoCraft (o artigo roda um roteiro em JavaScript no Photoshop): os estilos
-  de camada (Traçado, Sombra projetada, Brilho externo) numa camada com a tinta nova (Ctrl+J) e os filtros e ajustes na
-  área editada.
+- o pós-processamento das tabelas (a fase "pos": filtros e estilos de camada depois da edição) NÃO é aplicado: as
+  regiões saem só com o processamento principal, e o rótulo diz "Pós-processamento: nenhum".
 
 O que o artigo diz e não dá para reproduzir à risca está anotado em ``docs/falsificadores.md`` (seção 4d)."""
 
@@ -29,19 +28,15 @@ from __future__ import annotations
 
 import random
 
-import cv2
 import numpy as np
 
-from . import gesto, photocraft
-from .selecao import mascara_tinta
-from .sessao import Resultado
+from . import gesto
 
 ARTIGO = ("FSTS — Yu et al., Toward Real-world Text Image Forgery Localization: Structured and Interpretable Data "
           "Synthesis, NeurIPS 2025 (Datasets and Benchmarks)")
 ESCALA_POS = 0.3  # nota 2 do apêndice B (as tabelas já trazem as frequências multiplicadas por ela)
 REGIOES = (1, 12)  # "Region Quantity: 1–12 zones"
 COMPRIMENTO = (1, 20)  # "Text Length: 1–20 characters"
-MARGEM_POS = 40  # px em volta da edição que o pós-processamento pode tocar (sombra até 7 + 17 px, traçado, brilho)
 
 TIPOS = {
     "copy_move": {"rotulo": "Cópia interna (copy-move)", "tabela": 8},
@@ -150,7 +145,6 @@ TABELAS = {
                 ("5.6", [("sombra", 8.81, _SOMBRA)])]},
 }
 REMOCAO = tuple(op for op, _ in _REMOVER)
-ESTILOS_DE_CAMADA = ("traco", "sombra", "brilho")  # vão numa camada com a tinta nova; o resto, na área editada
 # a ferramenta de apagar do artigo → a do operador humano (``humano.APAGAR``)
 DO_ARTIGO = {"preenchimento": "patchmatch", "cor_solida": "chapado", "fundo_clonado": "fundo_clonado",
              "carimbo": "carimbo", "recuperacao": "recuperar"}
@@ -224,8 +218,9 @@ def _sortear(ops: list, rng: random.Random) -> tuple | None:
 
 
 def configurar(tipo: str, rng: random.Random) -> dict:
-    """A configuração de UMA região (eq. 8): em cada passo do processamento principal e do pós-processamento, a operação
-    pela frequência da tabela e os parâmetros dela sorteados dentro das faixas; e a ferramenta de apagar (a da remoção
+    """A configuração de UMA região (eq. 8): em cada passo do processamento principal, a operação pela frequência da
+    tabela e os parâmetros dela sorteados dentro das faixas (o pós-processamento não é aplicado: ``pos`` fica vazio); e
+    a ferramenta de apagar (a da remoção
     ou da substituição, quando o tipo tem; senão, pela frequência da substituição: a cópia e a colagem também apagam o
     texto que fica embaixo, e o artigo não diz com quê)."""
     g = np.random.default_rng(rng.randrange(2 ** 32))
@@ -234,10 +229,6 @@ def configurar(tipo: str, rng: random.Random) -> dict:
         o = _sortear(ops, rng)
         if o:
             cfg["principal"][o[0]] = {k: _valor(v, g) for k, v in o[2].items()}
-    for passo, ops in TABELAS[tipo]["pos"]:
-        o = _sortear(ops, rng)
-        if o:
-            cfg["pos"].append({"op": o[0], "passo": passo, **{k: _valor(v, g) for k, v in o[2].items()}})
     op = next((o for o in cfg["principal"] if o in REMOCAO), None)
     if op is None:
         op = (_sortear(TABELAS["replacement"]["principal"][0][1], rng) or ("preenchimento",))[0]
@@ -310,113 +301,3 @@ def descrever(cfg: dict) -> str:
         s += ": " + "; ".join(pr)
     s += ". Pós-processamento: " + ("; ".join(pos) if pos else "nenhum") + "."
     return s
-
-
-# ------------------------------------------------------------------------------- o pós-processamento no PhotoCraft
-def _curva(o: dict) -> list:
-    d = int(o.get("intensidade", 15))
-    if o.get("curva") == "baixar_escuros":
-        return [[0, 0], [64, max(0, 64 - d)], [255, 255]]
-    return [[0, 0], [192, min(255, 192 + d)], [255, 255]]
-
-
-def passos_op(o: dict, centro: tuple[float, float], semente: int) -> list:
-    """Os comandos do PhotoCraft de uma operação do pós-processamento."""
-    op = o["op"]
-    if op == "agucar":
-        return [("filter.sharpen.unsharpMask", {"amount": int(o["quantidade"]), "radius": float(o["raio"]),
-                                                "threshold": int(o["limiar"])})] * int(o.get("iteracoes", 1))
-    simples = {"desfoque": ("filter.blur.blur", {}), "desfoque_mais": ("filter.blur.blurMore", {}),
-               "media": ("filter.blur.boxBlur", {"radius": 1})}
-    if op in simples:
-        return [simples[op]]
-    if op == "gaussiano":
-        return [("filter.blur.gaussianBlur", {"radius": float(o["raio"])})]
-    if op == "movimento":
-        return [("filter.blur.motionBlur", {"angle": int(o["angulo"]), "distance": int(o["distancia"])})]
-    if op == "radial":  # a tabela não traz a quantidade: a padrão do Photoshop (10), no centro da área editada
-        return [("filter.blur.radialBlur", {"amount": 10, "method": o["metodo"], "quality": o["qualidade"],
-                                            "centerX": round(centro[0], 4), "centerY": round(centro[1], 4)})]
-    if op == "inteligente":
-        return [("filter.blur.smartBlur", {"radius": float(o["raio"]), "threshold": float(o["limiar"]),
-                                           "quality": o["qualidade"], "mode": o["modo"]})]
-    if op == "convolucao":
-        return [("filter.other.custom", {"kernel": o["nucleo"]["valores"], "scale": o["nucleo"]["escala"],
-                                         "offset": int(o["deslocamento"])})]
-    if op == "lente":
-        return [("filter.blur.lensBlur", {"radius": float(o["raio"]), "shape": o["forma"],
-                                          "bladeCurvature": int(round(100 * float(o["curvatura"]))),
-                                          "rotation": float(o["rotacao"]), "depthMap": "none", "invert": False,
-                                          "brightness": int(o["brilho"]), "threshold": int(round(2.55 * float(o["limiar"]))),
-                                          "noise": float(o["ruido"]), "distribution": o["distribuicao"],
-                                          "seed": int(semente % 2 ** 31)})]
-    if op == "equilibrio_cor":
-        return [("image.adjustments.colorBalance", {"midtones": list(o["meios_tons"]), "preserveLuminosity": True})]
-    if op == "curvas":
-        return [("image.adjustments.curves", {"points": _curva(o)})]
-    if op == "matiz":
-        return [("image.adjustments.hueSaturation", {"hue": int(o["matiz"]), "saturation": int(o["saturacao"]),
-                                                      "lightness": int(o["luminosidade"])})]
-    if op == "superficie":
-        return [("filter.blur.surfaceBlur", {"radius": int(o["raio"]), "threshold": int(o["limiar"])})]
-    if op == "ruido":
-        return [("filter.noise.addNoise", {"amount": float(o["quantidade"]), "distribution": o["distribuicao"],
-                                           "monochromatic": bool(o["monocromatico"]), "seed": int(semente % 2 ** 31)})]
-    if op == "traco":
-        return [("layer.layerStyle.stroke", {"size": int(o["tamanho"]), "position": o["posicao"], "color": o["cor"],
-                                             "opacity": int(o["opacidade"]), "blend": o["mistura"]})]
-    if op == "sombra":
-        return [("layer.layerStyle.dropShadow", {"color": o["cor"], "opacity": int(o["opacidade"]), "blend": o["mistura"],
-                                                 "angle": int(o["angulo"]), "useGlobalLight": False,
-                                                 "distance": int(o["distancia"]), "spread": int(o["espalhar"]),
-                                                 "size": int(o["tamanho"]), "noise": int(o["ruido"])})]
-    if op == "brilho":
-        return [("layer.layerStyle.outerGlow", {"color": o["cor"], "opacity": int(o["opacidade"]), "blend": "screen",
-                                                "size": int(o["tamanho"]), "noise": int(o["ruido"])})]
-    raise ValueError(f"operação do FSTS desconhecida: {op}")
-
-
-def pos_processar(img: np.ndarray, res: Resultado, cfg: dict, semente: int) -> tuple[Resultado, list[str]]:
-    """O pós-processamento da região (``cfg["pos"]``) no PhotoCraft, sobre a imagem com a edição: os estilos de camada
-    numa camada com a tinta nova (seleção da tinta + Ctrl+J, como numa camada de texto ou colada), achatada depois; os
-    filtros e ajustes, um a um, na área editada (a seleção da edição com 2 px de folga). Devolve o Resultado com tudo
-    que mudou (a pegada cresce para a sombra, o traçado e o brilho) e o que foi feito, para o rótulo."""
-    ops = cfg.get("pos") or []
-    if not ops:
-        return res, []
-    H, W = img.shape[:2]
-    m = MARGEM_POS
-    X0, Y0, X1, Y1 = max(0, res.x0 - m), max(0, res.y0 - m), min(W, res.x1 + m), min(H, res.y1 + m)
-    antes = np.ascontiguousarray(img[Y0:Y1, X0:X1])
-    rec = antes.copy()
-    peg = np.zeros(rec.shape[:2], bool)
-    sl = (slice(res.y0 - Y0, res.y1 - Y0), slice(res.x0 - X0, res.x1 - X0))
-    peg[sl] = res.pegada
-    rec[sl] = np.where(res.pegada[..., None], res.recorte, rec[sl])
-    nova = peg & mascara_tinta(rec).astype(bool)
-    regiao = cv2.dilate(peg.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
-    ys, xs = np.nonzero(regiao)
-    centro = ((float(xs.mean()) + 0.5) / rec.shape[1], (float(ys.mean()) + 0.5) / rec.shape[0])
-    estilos = [o for o in ops if o["op"] in ESTILOS_DE_CAMADA]
-    passos, feitos = [], []
-    if estilos and nova.any():
-        passos += photocraft.passos_selecao(nova) + [("layer.new.layerViaCopy", {})]
-        for o in estilos:
-            passos += passos_op(o, centro, semente)
-            feitos.append(_diz_op(o["op"], o))
-        passos.append(("layer.flattenImage", {}))
-    for o in ops:
-        if o["op"] in ESTILOS_DE_CAMADA:
-            continue
-        passos += photocraft.passos_selecao(regiao) + passos_op(o, centro, semente) + [("select.deselect", {})]
-        feitos.append(_diz_op(o["op"], o))
-    if not passos:
-        return res, []
-    with photocraft.Documento(rec) as d:
-        d.rodar(passos)
-        out = d.imagem()
-    pegada = (np.abs(out.astype(np.int16) - antes.astype(np.int16)).max(2) > 0) | peg
-    ys, xs = np.nonzero(pegada)
-    y0, y1, x0, x1 = int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
-    return Resultado(Y0 + y0, Y0 + y1, X0 + x0, X0 + x1, np.ascontiguousarray(out[y0:y1, x0:x1]),
-                     pegada[y0:y1, x0:x1].copy(), meta=res.meta), feitos

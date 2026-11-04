@@ -225,10 +225,10 @@ def caso(nome):
     return deco
 
 
-d.get(URL + "/classico")
+d.get(URL)
 # este teste usa o editor completo: entra direto no modo avançado, tutorial já visto
 d.execute_script("localStorage.setItem('rotulador.modoSimples','false');localStorage.setItem('rotulador.tutorialVisto','true');localStorage.setItem('rotulador.operador', JSON.stringify('Teste UI'))")
-d.get(URL + "/classico")
+d.get(URL)
 espera("window.rotulador && window.rotulador.sessao && document.getElementById('vazio').hidden", 120)
 d.find_element(By.CSS_SELECTOR, '[data-sp="treino"]').click()
 ocioso()

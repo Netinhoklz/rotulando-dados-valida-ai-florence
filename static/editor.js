@@ -1,15 +1,17 @@
 // Editor principal: estado, eventos, painéis e diálogos.
 import { bitmap, bitmapUrl, get, post } from "./api.js";
-import { criarFerramentas, ORDEM } from "./ferramentas.js";
+import { instalarBarras } from "./barras.js";
+import { criarFerramentas, GRUPOS, ICONES, NOMES } from "./ferramentas.js";
+import { abrirGlossario, instalarGlossario, ligarTermos } from "./glossario.js";
+import { icone } from "./icones.js";
+import { menuAberto, montarMenus } from "./menus.js";
 import { definirOperador, exigirOperador, nomeOperador, notificar } from "./operador.js";
-import { instalarSimples } from "./simples.js";
-import { instalarGlossario, ligarTermos } from "./glossario.js";
 import { Visor } from "./visor.js";
 
 const $ = (id) => document.getElementById(id);
 const SPLITS = [["treino", "Treino"], ["teste", "Teste"], ["validacao", "Validação"]];
 const LENTAS = new Set(["preencher", "corretivo", "substituir_texto", "transformar", "ia", "recuperacao", "remendo",
-  "trocar_campo_ia"]);
+  "trocar_campo_ia", "colar"]);
 const AJUSTES = {
   brilho_contraste: ["Brilho/contraste", [["brilho", -100, 100, 1, 0], ["contraste", -100, 100, 1, 0]]],
   niveis: ["Níveis", [["preto", 0, 254, 1, 0], ["branco", 1, 255, 1, 255], ["gama", 0.1, 5, 0.05, 1]]],
@@ -46,6 +48,8 @@ const app = {
   selecao: { formas: [], inverter: false, expandir: 0, suavizar: 0 }, selInfo: null,
   corFrente: lembrar("corFrente", "#000000"), corFundo: lembrar("corFundo", "#ffffff"),
   categoria: "", descricao: "", ocupado: false, espaco: false, _opcoes: lembrar("opcoes", {}),
+  clip: null,  // o que o Ctrl+C / Ctrl+X guardou: {doc, split, nome, selecao, bbox, pixels}
+  apertado: false,  // botão do mouse apertado na tela (a barra de tarefas some durante o arraste)
   visor: new Visor($("visor"), $("tela")),
 };
 window.rotulador = app; // facilita depurar no console
@@ -66,6 +70,7 @@ function ocupar(msg) {
   $("ocupado-ia").textContent = "";
   $("ocupado-cancelar").hidden = true;
   if (msg) vigiaIA = setTimeout(acompanharIA, 2000);  // operação longa: pode ser a IA
+  app.visor.redesenhar();  // a barra de tarefas some enquanto o servidor trabalha e volta depois
 }
 // enquanto a página espera, pergunta à IA em que pé está (etapa, passo da difusão, tempo que falta)
 async function acompanharIA() {
@@ -173,8 +178,8 @@ const PARA_QUE = {
   retoque: "Pincel de retoque: desfoca, aguça, clareia ou escurece só onde passa (acabamento da edição).",
   texto: "Escreve um texto novo onde você clicar, na fonte, tamanho e cor escolhidos (🔍 descobre a fonte do documento).",
   substituir: "Arraste sobre o texto antigo, digite o novo e Enter: o antigo é apagado e o novo sai na fonte, cor e posição estimadas.",
-  transformar: "Move, escala, gira ou distorce a seleção (alças nos cantos; Enter aplica).",
-  colar: "Cola um trecho de outro documento do MESMO split (uma letra, um carimbo, uma assinatura).",
+  transformar: "Arraste a seleção e os pixels vão junto; o buraco é preenchido com o papel em volta (Alt = duplicar). Enter aplica.",
+  colar: "Cola um trecho de outro documento do MESMO split: copie lá (Ctrl+C) e cole aqui (Ctrl+V), ou escolha o trecho.",
 };
 
 app.renderOpcoes = () => {
@@ -200,56 +205,89 @@ app.renderOpcoes = () => {
 };
 
 // ------------------------------------------------------------------ ferramentas
+// caixa de ferramentas em grupos (como no Photoshop): cada botão mostra a última ferramenta usada do grupo; o
+// triângulo, o clique direito ou segurar o botão abrem as outras do grupo
+const textoAtalho = (f) => (!f.atalho ? "" : f.atalho === f.atalho.toUpperCase() && f.atalho !== f.atalho.toLowerCase()
+  ? `Shift+${f.atalho}` : f.atalho.toUpperCase());
+const dicaFerramenta = (id) => `${NOMES[id]}${textoAtalho(app.F[id]) ? ` (${textoAtalho(app.F[id])})` : ""}${PARA_QUE[id] ? ` — ${PARA_QUE[id]}` : ""}`;
+let gaveta = null;
+function fecharGaveta() { if (gaveta) { gaveta.remove(); gaveta = null; } }
+function abrirGaveta(botao, grupo) {
+  fecharGaveta();
+  const r = botao.getBoundingClientRect();
+  gaveta = el("div", { class: "gaveta", role: "menu", style: `left:${r.right + 4}px;top:${r.top}px` },
+    ...grupo.map((id) => el("button", { type: "button", role: "menuitem", class: id === app.idFerramenta ? "ativa" : "",
+      title: PARA_QUE[id] || "", onclick: () => { fecharGaveta(); app.usar(id); } },
+    icone(ICONES[id], 18), el("span", { class: "g-nome" }, NOMES[id]), el("span", { class: "g-atalho" }, textoAtalho(app.F[id])))));
+  document.body.append(gaveta);
+  const alto = gaveta.getBoundingClientRect();
+  if (alto.bottom > innerHeight - 8) gaveta.style.top = `${Math.max(8, innerHeight - alto.height - 8)}px`;
+}
 function montarFerramentas() {
   const box = $("ferramentas");
-  for (const id of ORDEM) {
-    if (id === "|") { box.append(el("hr")); continue; }
-    const f = app.F[id];
-    const atalho = f.atalho ? (f.atalho === f.atalho.toUpperCase() && f.atalho !== f.atalho.toLowerCase() ? "⇧" + f.atalho : f.atalho.toUpperCase()) : "";
-    box.append(el("button", { type: "button", "data-f": id, title: PARA_QUE[id] ? `${f.nome} — ${PARA_QUE[id]}` : f.nome,
-      "aria-label": f.nome, onclick: () => app.usar(id) },
-      f.icone, atalho ? el("small", {}, atalho) : null));
+  app.ultimaDoGrupo = lembrar("ultimaDoGrupo", {});
+  for (const g of GRUPOS) {
+    if (g === "|") { box.append(el("hr")); continue; }
+    const chave = g[0];
+    const id = g.includes(app.ultimaDoGrupo[chave]) ? app.ultimaDoGrupo[chave] : g[0];
+    let segurar = null;
+    const b = el("button", { type: "button", class: `ferr${g.length > 1 ? " grupo" : ""}`, "data-f": id, "data-g": chave,
+      title: dicaFerramenta(id), "aria-label": NOMES[id],
+      onclick: () => { if (b._gavetaAberta) { b._gavetaAberta = false; return; } app.usar(b.dataset.f); },
+      oncontextmenu: (e) => { e.preventDefault(); if (g.length > 1) abrirGaveta(b, g); },
+      onpointerdown: () => { if (g.length > 1) segurar = setTimeout(() => { b._gavetaAberta = true; abrirGaveta(b, g); }, 380); },
+      onpointerup: () => clearTimeout(segurar), onpointerleave: () => clearTimeout(segurar) },
+    icone(ICONES[id], 20));
+    box.append(b);
   }
-  box.append(el("hr"));
-  const acoes = [
-    ["▣", "Preencher seleção com preenchimento inteligente (Shift+F5)", () => app.preencherSelecao()],
-    ["◐", "Ajustes na seleção (brilho, níveis, desfoque, ruído, JPEG…)", () => abrirAjustes()],
-    ["▮▯", "Código de barras ITF-25 / linha digitável", () => abrirCodigoBarras()],
-    ["▦", "QR code / PIX", () => abrirQR()],
-    ["🤖", "Editar a seleção com IA (Qwen-Image-Edit)", () => abrirIA()],
-  ];
-  for (const [ic, nome, acao] of acoes) box.append(el("button", { type: "button", title: nome, onclick: acao }, ic));
-  const cores = el("div", { class: "cores", title: "Cor de frente / fundo (X troca, D padrão)" },
-    el("input", { type: "color", id: "cor-frente", value: app.corFrente, oninput: (e) => app.definirCorFrente(e.target.value) }),
-    el("input", { type: "color", id: "cor-fundo", value: app.corFundo, oninput: (e) => { app.corFundo = e.target.value; armazenar("corFundo", app.corFundo); } }));
-  box.append(cores);
+  const cores = el("div", { class: "cores", title: "Cor de frente / fundo (X troca, D volta ao preto e branco)" },
+    el("input", { type: "color", id: "cor-frente", value: app.corFrente, "aria-label": "cor de frente", oninput: (e) => app.definirCorFrente(e.target.value) }),
+    el("input", { type: "color", id: "cor-fundo", value: app.corFundo, "aria-label": "cor de fundo", oninput: (e) => { app.corFundo = e.target.value; armazenar("corFundo", app.corFundo); } }));
+  box.append(el("div", { class: "estica" }), cores);
+  document.addEventListener("pointerdown", (e) => { if (gaveta && !gaveta.contains(e.target) && !e.target.closest?.("#ferramentas")) fecharGaveta(); }, true);
+  document.addEventListener("keydown", (e) => { if (gaveta && e.key === "Escape") fecharGaveta(); });
 }
 
+// troca de ferramenta: o que estava solto (trecho puxado ou colado) é aplicado antes, como no Photoshop
 app.usar = (id) => {
   if (!app.F[id]) return;
+  fecharGaveta();
   if (id === app.idFerramenta && app.ferramenta) { app.renderOpcoes(); return; }
+  if (app.ferramenta?.pendente?.()) app.ferramenta.confirmar();
   if (app.ferramenta?.desativar) app.ferramenta.desativar();
   app.limparPrevia();
   app.idFerramenta = id;
   app.ferramenta = app.F[id];
-  document.querySelectorAll("#ferramentas button[data-f]").forEach((b) => b.classList.toggle("ativa", b.dataset.f === id));
+  for (const b of document.querySelectorAll("#ferramentas button[data-g]")) {
+    const g = GRUPOS.find((x) => x !== "|" && x[0] === b.dataset.g);
+    if (g.includes(id)) {
+      b.dataset.f = id; b.title = dicaFerramenta(id); b.setAttribute("aria-label", NOMES[id]);
+      b.replaceChildren(icone(ICONES[id], 20));
+      app.ultimaDoGrupo[g[0]] = id; armazenar("ultimaDoGrupo", app.ultimaDoGrupo);
+    }
+    b.classList.toggle("ativa", g.includes(id));
+  }
+  $("ferr-atual").replaceChildren(icone(ICONES[id], 16), el("b", {}, NOMES[id]));
   app.renderOpcoes();
   $("tela").style.cursor = app.ferramenta.cursor || "default";
   if (app.ferramenta.ativar && app.sessao) app.ferramenta.ativar("usuario");
   app.visor.redesenhar();
 };
+// o que está solto é aplicado (antes de salvar, trocar de imagem, desmarcar…)
+app.confirmarSolto = async () => (app.ferramenta?.pendente?.() ? app.ferramenta.confirmar() : true);
 
 // ------------------------------------------------------------------ categorias
+// só as 3 do editor (copiar e colar, pegar de outro documento, apagar e substituir): a pessoa escolhe antes de editar,
+// e a escolhida fica lembrada para a próxima imagem
+const categorias = () => app.estado.categorias_editor;
 function montarCategorias() {
-  const sel = $("categoria");
-  sel.replaceChildren(el("option", { value: "" }, "— escolha o que vai editar —"),
-    ...app.estado.categorias.map((c, i) => el("option", { value: c.chave, title: c.dica }, `${c.rotulo}${i < 10 ? `  (Alt+${(i + 1) % 10})` : ""}`)));
-  sel.addEventListener("change", () => escolherCategoria(sel.value));
-  $("descricao").addEventListener("input", (e) => { app.descricao = e.target.value; });
-  const ul = $("lista-categorias");
-  ul.replaceChildren(...app.estado.categorias.map((c) =>
-    el("li", { "data-c": c.chave, title: c.dica || c.rotulo, onclick: () => escolherCategoria(c.chave) },
-      el("span", { class: "marca-cat" }), c.rotulo)));
+  $("lista-categorias").replaceChildren(...categorias().map((c, i) =>
+    el("li", { "data-c": c.chave, role: "radio", tabindex: "0", title: `${c.dica} (Alt+${i + 1})`,
+      onclick: () => escolherCategoria(c.chave),
+      onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); escolherCategoria(c.chave); } } },
+    el("span", { class: "chip", style: `background:${corCategoria(c.chave)}` }),
+    el("span", { class: "rot-cat" }, c.rotulo, el("small", {}, c.dica)),
+    el("span", { class: "marca-cat" }))));
 }
 // escolha do USUÁRIO: a camada ativa passa a ser a dessa categoria (ou uma nova é criada na 1ª edição)
 function escolherCategoria(chave) {
@@ -264,44 +302,43 @@ function escolherCategoria(chave) {
   app.status(`a próxima edição cria a camada '${chave}'`);
 }
 function definirCategoria(chave) {
+  if (chave && !categorias().some((c) => c.chave === chave)) chave = "";  // camada antiga, de uma classe de campo
   app.categoria = chave;
-  $("categoria").value = chave;
-  $("categoria").classList.remove("faltando");
-  $("descricao").hidden = chave !== "outro";
-  document.querySelectorAll("#lista-categorias li").forEach((li) => li.classList.toggle("ativa", li.dataset.c === chave));
+  if (chave) armazenar("categoria", chave);
+  $("sec-tipo").classList.remove("faltando");
+  document.querySelectorAll("#lista-categorias li").forEach((li) => {
+    li.classList.toggle("ativa", li.dataset.c === chave);
+    li.setAttribute("aria-checked", String(li.dataset.c === chave));
+  });
   document.querySelectorAll(".sel-cat-modal").forEach((s) => { s.value = chave; });
 }
-// campo do OCR (lido pelo modo simples) sob a seleção ou o último clique
-function sugerirCategoria() {
-  const bb = app.selBbox(), p = app.ultimoPonto;
-  const toca = ([x0, y0, x1, y1]) => (bb ? !(bb[2] < x0 || bb[0] > x1 || bb[3] < y0 || bb[1] > y1)
-    : p && p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1);
-  return (app.campos || []).find((c) => c.categoria && c.caixa && toca(c.caixa))?.categoria || null;
-}
 function exigirCategoria() {
-  if (!app.categoria) {
-    const sug = sugerirCategoria();
-    $("categoria").classList.add("faltando"); $("categoria").focus();
-    if (sug) {  // preenche, mas não aplica sozinho: a pessoa confere e aplica de novo
-      escolherCategoria(sug);
-      const rot = app.estado.categorias.find((c) => c.chave === sug)?.rotulo || sug;
-      app.aviso(`Sugestão: '${rot}' (o campo onde você mexeu). Confira a categoria e aplique de novo.`, "erro");
-      return false;
-    }
-    app.aviso("Escolha a CATEGORIA do que está editando (valor, data, nome…) antes de aplicar.", "erro");
-    return false;
-  }
-  if (app.categoria === "outro" && !app.descricao.trim()) {
-    $("descricao").focus(); app.aviso("Descreva o que é 'outro'.", "erro"); return false;
-  }
-  return true;
+  if (app.categoria) return true;
+  $("sec-tipo").classList.add("faltando");
+  $("lista-categorias").querySelector("li")?.focus();
+  app.aviso("Escolha o TIPO da edição (copiar e colar, pegar de outro documento ou apagar e substituir) antes de editar.", "erro");
+  return false;
 }
-function seletorCategoria(sugestao) {
-  if (!app.categoria && sugestao) escolherCategoria(sugestao);
+// a ação já diz o tipo em dois casos sem dúvida: colar de OUTRA imagem é "pegar de outro documento", e copiar/puxar
+// dentro da mesma imagem não é. Escolhido o tipo errado, ele é corrigido (com aviso); sem tipo, vale a regra de
+// sempre (o aplicar pede que a pessoa escolha)
+app.escolherCategoria = (chave) => escolherCategoria(chave);
+app.ajustarCategoria = (implicita) => {
+  const atual = app.categoria;
+  if (!atual || atual === implicita) return;
+  const errado = implicita === "pegar de outro documento" || atual === "pegar de outro documento";
+  if (!errado) return;
+  escolherCategoria(implicita);
+  const rot = categorias().find((c) => c.chave === implicita)?.rotulo || implicita;
+  app.aviso(implicita === "pegar de outro documento"
+    ? `Tipo da edição: '${rot}' (o trecho veio de outra imagem).`
+    : `Tipo da edição: '${rot}' (o trecho é desta mesma imagem).`, "ok");
+};
+function seletorCategoria() {
   const s = el("select", { class: "sel-cat-modal", onchange: (e) => escolherCategoria(e.target.value) },
-    el("option", { value: "" }, "— escolha —"), ...app.estado.categorias.map((c) => el("option", { value: c.chave }, c.rotulo)));
+    el("option", { value: "" }, "— escolha —"), ...categorias().map((c) => el("option", { value: c.chave }, c.rotulo)));
   s.value = app.categoria;
-  return el("div", { class: "linha" }, el("label", {}, "Categoria desta edição"), s);
+  return el("div", { class: "linha" }, el("label", {}, "Tipo da edição"), s);
 }
 
 // ------------------------------------------------------------------ documentos
@@ -326,29 +363,15 @@ async function trocarSplit(sp) {
 }
 async function carregarDocs() {
   app.docs = await get(`/api/documentos?split=${app.split}`);
-  desenharDocs();
+  desenharPosicao();
 }
-const LOTE_DOCS = 150;  // milhares de documentos: a lista desenha aos poucos
-let docsVisiveis = LOTE_DOCS;
-function desenharDocs() {
-  const so = $("so-pendentes").checked, meus = $("so-meus").checked, eu = nomeOperador();
-  const busca = $("busca-docs").value.trim().toLowerCase();
-  const lista = app.docs.filter((d) => d.id === app.sessao?.id || ((!so || !d.versoes) && (!meus || d.responsavel === eu)
-    && (!busca || d.nome.toLowerCase().includes(busca))));
-  const vis = lista.slice(0, docsVisiveis);
-  const atual = lista.find((d) => d.id === app.sessao?.id);
-  if (atual && !vis.includes(atual)) vis.push(atual);
-  $("lista-docs").replaceChildren(...vis.map((d) =>
-    el("li", { class: d.id === app.sessao?.id ? "ativo" : "", title: d.nome, onclick: () => abrirDoc(d.id) },
-      el("span", { class: "nome" }, d.nome),
-      d.em_edicao_por ? el("span", { class: "st trava", title: `em edição por ${d.em_edicao_por}` }, "🔒") : null,
-      d.responsavel ? el("span", { class: `st resp${d.responsavel === eu ? " meu" : ""}`,
-        title: d.responsavel === eu ? "atribuído a você" : `atribuído a ${d.responsavel}` }, d.responsavel === eu ? "★" : "→") : null,
-      d.rascunho ? el("span", { class: "st rasc", title: "tem edições não salvas (rascunho)" }, "✎") : null,
-      el("span", { class: "st" + (d.versoes ? " feito" : "") }, d.versoes ? `✓ ${d.versoes}` : "—"))));
-  const resto = lista.length - vis.length;
-  $("docs-mais").hidden = resto <= 0;
-  $("docs-mais").textContent = `mostrar mais (${resto})`;
+// sem a lista de documentos: o topo diz em qual imagem a pessoa está (◀ ▶ e PageUp/PageDown passam de uma para outra)
+function desenharPosicao() {
+  const s = app.sessao;
+  const i = app.docs.findIndex((d) => d.id === s?.id);
+  const pend = app.docs.filter((d) => !d.versoes).length;
+  $("doc-versoes").textContent = s ? `${i + 1} de ${app.docs.length} · ${s.versoes} salva(s)` : "";
+  $("doc-versoes").title = s ? `${pend} imagem(ns) deste split ainda sem versão salva` : "";
 }
 function limparDoc() {
   app.sessao = null; app.visor.img = null; app.visor.redesenhar();
@@ -358,6 +381,7 @@ function limparDoc() {
 
 async function abrirDoc(id, { forcar = false } = {}) {
   if (app.ocupado) return;
+  if (app.sessao && app.sessao.id !== id) await app.confirmarSolto();  // o trecho solto fica nesta imagem
   await app.fila;  // edições ainda na fila terminam no documento certo
   try {
     ocupar("abrindo…");
@@ -369,13 +393,12 @@ async function abrirDoc(id, { forcar = false } = {}) {
     const bmp = await bitmapUrl(`/api/img/${id}/atual.png?t=${Date.now()}`);
     app.visor.definirImagem(bmp);
     app.selecao = { formas: [], inverter: false, expandir: 0, suavizar: 0 }; app.selInfo = null;
+    $("st-sel").textContent = "";
     $("vazio").hidden = true;
     armazenar("ultimo." + s.split, id);
     atualizarSessao(s);
-    desenharDocs();
     if (app.ferramenta?.ativar) app.ferramenta.ativar("documento");
     app.renderOpcoes();
-    app.aoAbrirDoc?.(s);
     prelerProximos();
   } catch (e) { app.aviso(e.message, "erro"); } finally { ocupar(null); }
 }
@@ -417,7 +440,7 @@ async function sinalDeVida() {
     if (app.somenteLeitura && r.ok) { app.aviso("O documento ficou livre: agora você pode editar.", "ok"); abrirDoc(app.sessao.id); }
     else if (!app.somenteLeitura && !r.ok) mostrarTrava(r.travado_por);
     app.docs = await get(`/api/documentos?split=${app.split}`);  // quem está editando o quê
-    desenharDocs();
+    desenharPosicao();
   } catch { /* servidor ocupado: tenta no próximo */ }
 }
 function proximoPendente() {
@@ -434,6 +457,18 @@ function navegar(passo) {
   if (alvo) abrirDoc(alvo.id);
 }
 
+// o passo no Histórico com o nome que a pessoa conhece (o servidor guarda o nome técnico da operação)
+const PASSOS = {
+  preencher: "Apagar com preenchimento", pincel: "Pincel", borracha: "Borracha", corretivo: "Pincel corretivo",
+  carimbo: "Carimbo", recuperacao: "Pincel de recuperação", remendo: "Remendo", retoque: "Retoque", balde: "Balde de tinta",
+  forma: "Forma", texto: "Texto", substituir_texto: "Substituir texto", ajuste: "Ajuste", codigo_barras: "Código de barras",
+  qrcode: "QR code", ia: "Edição com IA",
+};
+function nomeDoPasso(h, s) {
+  if (h.rotulo === "transformar") return h.params?.modo === "duplicar" ? "Duplicar" : "Puxar";
+  if (h.rotulo === "colar") return h.params?.doador === s?.id ? "Colar (desta imagem)" : "Colar de outro documento";
+  return PASSOS[h.rotulo] || h.rotulo;
+}
 function atualizarSessao(s) {
   app.sessao = s;
   const ed = new Set(s?.categorias || []);
@@ -443,7 +478,6 @@ function atualizarSessao(s) {
   });
   $("doc-nome").textContent = s ? s.nome : "nenhum documento";
   $("doc-nome").title = s ? `${s.split}/${s.nome} — ${s.largura}x${s.altura}` : "";
-  $("doc-versoes").textContent = s ? `${s.versoes} salva(s)` : "";
   $("btn-salvar").disabled = !s?.pode_salvar;
   $("btn-salvar").title = s?.pode_salvar ? "Salvar original + editada + máscaras" : (s?.motivo || "");
   $("motivo-salvar").textContent = s && !s.pode_salvar ? `Salvar bloqueado: ${s.motivo}.` : (s ? "Pronto para salvar." : "");
@@ -451,23 +485,23 @@ function atualizarSessao(s) {
   $("btn-refazer").disabled = !s?.pode_refazer;
   $("historico").replaceChildren(...(s?.historico || []).map((h) =>
     el("li", { class: h.restaura ? "restaura" : "", title: JSON.stringify(h.params || {}).slice(0, 400) },
-      `${h.rotulo} `, h.nome_camada ? el("span", { class: "cat" }, `· ${h.nome_camada}`) : null,
+      `${nomeDoPasso(h, s)} `, h.nome_camada ? el("span", { class: "cat" }, `· ${h.nome_camada}`) : null,
       h.pixels_alterados ? ` · ${h.pixels_alterados} px` : "")));
   desenharCamadas(s);
   const at = s?.camadas?.find((c) => c.ativa);
   if (at && !app._catPendente && at.categoria !== app.categoria) definirCategoria(at.categoria);
   const d = app.docs.find((x) => x.id === s?.id);
   if (d && s) { d.rascunho = s.historico.length > 0; d.versoes = s.versoes; }
+  desenharPosicao();
   if (app.visor.mostrarMascara) carregarMascara();
-  app.aoAtualizarSessao?.(s);
 }
 
 // ------------------------------------------------------------------ camadas
 const PALETA = ["#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6",
   "#bfef45", "#fabed4", "#469990", "#dcbeff", "#9a6324", "#fffac8", "#800000", "#aaffc3"];
 function corCategoria(chave) {
-  const c = app.estado.categorias.find((x) => x.chave === chave);
-  return c ? PALETA[(c.id - 1) % PALETA.length] : "#666";
+  const i = categorias().findIndex((x) => x.chave === chave);
+  return i >= 0 ? PALETA[i % PALETA.length] : "#666";
 }
 app.camadaAtiva = () => app.sessao?.camadas?.find((c) => c.ativa) || null;
 app.acaoCamada = (acao, extra = {}) => (app._acaoPendente = executarAcaoCamada(acao, extra));
@@ -522,16 +556,19 @@ function desenharCamadas(s) {
   const ul = $("lista-camadas");
   const cams = s?.camadas || [];
   const linhas = cams.map((c) => {
-    const sel = el("select", { title: "Categoria desta camada (é o que vai para a máscara)", onclick: (e) => e.stopPropagation(),
+    const sel = el("select", { title: "Tipo da edição desta camada (é o que vai para a máscara)", onclick: (e) => e.stopPropagation(),
       onchange: (e) => app.acaoCamada("props", { camada: c.id, categoria: e.target.value }) },
-      app.estado.categorias.map((k) => el("option", { value: k.chave }, k.rotulo)));
+      categorias().some((k) => k.chave === c.categoria) ? null : el("option", { value: c.categoria || "" }, c.categoria || "—"),
+      categorias().map((k) => el("option", { value: k.chave }, k.rotulo)));
     sel.value = c.categoria || "";
     const nome = el("span", { class: "nome-cam", title: "duplo clique para renomear" }, c.nome);
     const li = el("li", { class: `${c.ativa ? "ativa" : ""} ${c.visivel ? "" : "oculta"}`, draggable: true, "data-cam": c.id,
       title: c.vazia ? "camada vazia" : `${c.pixels} px nesta camada`, onclick: () => ativarCamada(c) },
       el("span", { class: "chip", style: `background:${corCategoria(c.categoria)}` }),
       el("button", { type: "button", class: "olho", title: c.visivel ? "Ocultar (camada oculta não é salva)" : "Mostrar",
-        onclick: (e) => { e.stopPropagation(); app.acaoCamada("props", { camada: c.id, visivel: !c.visivel }); } }, c.visivel ? "👁" : "◌"),
+        "aria-label": c.visivel ? "ocultar a camada" : "mostrar a camada",
+        onclick: (e) => { e.stopPropagation(); app.acaoCamada("props", { camada: c.id, visivel: !c.visivel }); } },
+      icone(c.visivel ? "olho" : "olho_fechado", 15)),
       el("span", { class: "mini" }, c.vazia ? null : el("img", { src: `/api/camada_mini/${s.id}/${c.id}.png?v=${c.versao}`, alt: "" })),
       el("span", { class: "info" }, nome, sel));
     li.addEventListener("dragstart", (e) => { arrastoCamada = c.id; li.classList.add("arrastando"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", c.id); });
@@ -552,18 +589,21 @@ function desenharCamadas(s) {
     });
     return li;
   });
-  linhas.push(el("li", { class: "fundo", title: "Imagem original: não é editável e não muda" },
-    el("span", { class: "olho" }, "🔒"), el("span", { class: "mini" }, "📄"),
-    el("span", { class: "info" }, el("span", { class: "nome-cam" }, "Fundo (original)"))));
+  if (s) {
+    linhas.push(el("li", { class: "fundo", title: "Imagem original: não é editável e não muda" },
+      el("span", { class: "olho" }, icone("cadeado", 14)),
+      el("span", { class: "mini" }, el("img", { src: `/api/miniatura/${s.id}.jpg`, alt: "" })),
+      el("span", { class: "info" }, el("span", { class: "nome-cam" }, "Fundo (original)"))));
+  }
   ul.replaceChildren(...linhas);
   const at = cams.find((c) => c.ativa);
   $("cam-opacidade").hidden = !at;
   if (at) { $("cam-opac").value = Math.round(at.opacidade * 100); $("cam-opac-val").textContent = `${Math.round(at.opacidade * 100)}%`; }
   ["cam-dup", "cam-mesclar", "cam-excluir"].forEach((id) => { $(id).disabled = !at; });
   $("cam-dica").textContent = !s ? "" : !cams.length
-    ? "Escolha a categoria e edite: cada categoria ganha a sua camada automaticamente."
+    ? "Escolha o tipo da edição e edite: cada tipo ganha a sua camada automaticamente."
     : (s.ocultas?.length ? `⚠ Ocultas NÃO entram no salvamento: ${s.ocultas.join(", ")}`
-      : "Arraste para reordenar · duplo clique renomeia · 👁 oculta");
+      : "Arraste para reordenar · duplo clique renomeia · o olho oculta");
 }
 
 // ------------------------------------------------------------------ seleção
@@ -593,7 +633,24 @@ app.atualizarSelecao = async () => {
   }
   if (app.ferramenta?.aoMudarSelecao) app.ferramenta.aoMudarSelecao();
 };
-app.desmarcar = () => { app.selecao = { formas: [], inverter: false, expandir: 0, suavizar: 0 }; app.atualizarSelecao(); app.renderOpcoes(); };
+function limparSelecao() { app.selecao = { formas: [], inverter: false, expandir: 0, suavizar: 0 }; app.atualizarSelecao(); app.renderOpcoes(); }
+// desmarcar com um trecho solto aplica o trecho antes (como o Ctrl+D do Photoshop)
+app.desmarcar = () => {
+  if (app.ferramenta?.pendente?.()) {
+    app.ferramenta.confirmar().then((ok) => { if (ok && app.temSelecao()) limparSelecao(); });
+    return;
+  }
+  limparSelecao();
+};
+app.dentroDaSelecao = (p) => {
+  const bb = app.selBbox(), s = app.visor.selecao;
+  if (!bb || p.x < bb[0] || p.y < bb[1] || p.x >= bb[2] || p.y >= bb[3]) return false;
+  if (!s?.alfa) return true;
+  try {  // pixel da máscara: dentro do laço, não só da caixa
+    const g = s.alfa.getContext("2d", { willReadFrequently: true });
+    return g.getImageData(Math.floor(p.x - s.x0), Math.floor(p.y - s.y0), 1, 1).data[3] > 0;
+  } catch { return true; }
+};
 app.selecionarTudo = () => {
   if (!app.sessao) return;
   app.selecao = { formas: [{ tipo: "ret", x0: 0, y0: 0, x1: app.sessao.largura, y1: app.sessao.altura, modo: "novo" }], inverter: false, expandir: 0, suavizar: 0 };
@@ -609,6 +666,85 @@ app.carregarOriginal = async () => {
   try { app.visor.orig = await bitmapUrl(`/api/img/${app.sessao.id}/original.png`); } catch { /* só prévia */ }
 };
 app.inverterSelecao = () => { if (app.selecao.formas.length) { app.selecao.inverter = !app.selecao.inverter; app.atualizarSelecao(); } };
+
+// ------------------------------------------------------------------ copiar, recortar, colar, puxar, apagar
+// Ctrl+C guarda a seleção (e os pixels, para a prévia); Ctrl+V cola nesta imagem (duplicando, um pouco ao lado) ou em
+// outra imagem do MESMO split (o trecho vem do original dela, só no formato copiado). Nunca entre splits.
+const NOME_SPLIT = Object.fromEntries(SPLITS);
+function exigirSelecao(acao) {
+  if (app.temSelecao()) return true;
+  app.aviso(`Selecione antes o trecho a ${acao} (M = retângulo, L = laço, W = varinha).`, "erro");
+  return false;
+}
+function semNadaSolto() {
+  if (!app.ferramenta?.pendente?.()) return true;
+  app.aviso("Há um trecho solto: aplique (Enter) ou cancele (Esc) antes.", "erro");
+  return false;
+}
+function guardarClip(recorte = false) {
+  const s = app.sessao;
+  app.clip = { doc: s.id, split: s.split, nome: s.nome, selecao: JSON.parse(JSON.stringify(app.selecao)),
+    bbox: [...app.selBbox()], pixels: app.visor.recortarSelecao(), recorte };
+}
+app.copiar = () => {
+  if (!app.sessao || !exigirSelecao("copiar") || !semNadaSolto()) return;
+  guardarClip();
+  const [x0, y0, x1, y1] = app.clip.bbox;
+  app.aviso(`Copiado (${x1 - x0}×${y1 - y0} px). Ctrl+V cola nesta imagem ou em outra do split ${NOME_SPLIT[app.clip.split]}.`, "ok");
+  app.visor.redesenhar();
+};
+app.recortar = () => {
+  if (!app.sessao || !exigirSelecao("recortar") || !semNadaSolto() || !podeEditar()) return;
+  guardarClip(true);
+  app.usar("transformar");
+  app.F.transformar.soltar({ recorte: true, modo: "mover" });
+  app.status("recortado: arraste o trecho para onde quer · Enter aplica · Esc cancela");
+};
+app.puxar = () => {
+  if (!app.sessao || !exigirSelecao("puxar") || !semNadaSolto()) return;
+  app.usar("transformar");
+  app.F.transformar.soltar({ modo: "mover" });
+  app.status("arraste a seleção: os pixels vão junto e o buraco é preenchido (Alt = duplicar)");
+};
+app.colar = async () => {
+  if (!app.sessao || !podeEditar() || !semNadaSolto()) return;
+  const c = app.clip;
+  if (!c) { app.aviso("Nada copiado ainda: selecione um trecho e use Ctrl+C (ou Editar › Colar de outro documento…).", "erro"); return; }
+  if (c.split !== app.sessao.split) {
+    app.aviso(`O trecho copiado é de uma imagem de ${NOME_SPLIT[c.split]} e esta é de ${NOME_SPLIT[app.sessao.split]}: colar `
+      + "misturaria os splits (vazamento de dados). Copie de uma imagem deste split.", "erro");
+    return;
+  }
+  if (c.doc === app.sessao.id && !c.recorte) {  // mesma imagem: os pixels de agora, duplicados um pouco ao lado
+    app.selecao = JSON.parse(JSON.stringify(c.selecao));
+    await app.atualizarSelecao();
+    if (!app.temSelecao()) return;
+    app.usar("transformar");
+    app.F.transformar.soltar({ modo: "duplicar", deslocar: Math.max(4, Math.round(16 / app.visor.escala)) });
+    app.status("colado: arraste para o lugar · Enter aplica · Esc cancela");
+    return;
+  }
+  const [x0, y0, x1, y1] = c.bbox;
+  app.F.colar.iniciar(c.doc, { x0, y0, x1, y1 }, { selecao: c.selecao, pre: c.pixels, emLugar: c.doc !== app.sessao.id });
+  app.usar("colar");
+  app.status(`colado de ${c.nome}: arraste para o lugar · Enter aplica · Esc cancela`);
+};
+// apagar com preenchimento: o selecionado some, refeito com o papel em volta (sem diálogo; Shift+F5 abre as opções)
+app.apagarComPreenchimento = async () => {
+  if (!app.sessao || !exigirSelecao("apagar")) return false;
+  const p = { ...lembrar("preencher", { amostragem: "auto", margem: 150, patch: 7 }), semente: Math.floor(Math.random() * 1e6) };
+  const ok = await app.aplicar("preencher", p, { msg: "apagando com preenchimento…" });
+  if (ok) app.status("apagado com preenchimento · o dado na barra refaz com outra variação");
+  return ok;
+};
+app.podeVariar = () => Boolean(app.temSelecao() && app.sessao?.historico?.at(-1)?.tipo === "preencher" && !app.sessao?.pode_refazer);
+app.outraVariacao = async () => {
+  if (!app.podeVariar()) return;
+  const tipo = app.categoria;  // o desfazer marca o tipo da camada que fica ativa; a variação volta para o de antes
+  await app.desfazer();
+  if (tipo && app.categoria !== tipo) escolherCategoria(tipo);
+  await app.apagarComPreenchimento();
+};
 
 // ------------------------------------------------------------------ operações
 let seqPrevia = 0;
@@ -741,6 +877,7 @@ function mostrarFontes(r) {
 
 async function salvar() {
   if (!app.sessao || app.ocupado || !podeEditar()) return;
+  await app.confirmarSolto();  // o trecho solto (puxado ou colado) entra na versão
   await app.fila;
   if (!app.sessao?.pode_salvar) return;
   try {
@@ -749,15 +886,15 @@ async function salvar() {
       id: app.sessao.id, formato: $("formato").value, qualidade: Number($("qualidade").value), operador: $("operador").value,
     });
     const s = r.salvo;
-    app.aviso(`Versão v${String(s.versao).padStart(2, "0")} salva em saida/${s.split}/ (${s.categorias.join(", ")}). ` +
-      (app.modoSimples ? "Indo para o próximo documento…" : "PageDown = próximo documento."), "ok");
+    // a imagem editada, as máscaras e a anotação vão para saida/<split>/ (o mesmo split da imagem de origem)
+    app.aviso(`Versão v${String(s.versao).padStart(2, "0")} salva em saida/${s.split}/ (${s.categorias.join(", ")}). `
+      + "Indo para a próxima imagem…", "ok");
     app.visor.definirImagem(await bitmapUrl(`/api/img/${app.sessao.id}/atual.png?t=${Date.now()}`));
     app.selecao.formas = []; app.selInfo = null;
     atualizarSessao(r.estado);
     app.estado.splits = (await get("/api/estado")).splits;
-    atualizarAbas(); desenharDocs();
-    if (!lembrar("guiaRecolhido", false)) { armazenar("guiaRecolhido", true); $("guia")?.removeAttribute("open"); }  // já aprendeu
-    if (app.modoSimples) setTimeout(proximoPendente, 50);
+    atualizarAbas();
+    setTimeout(proximoPendente, 50);
   } catch (e) { app.aviso(e.message, "erro"); } finally { ocupar(null); }
 }
 async function descartar() {
@@ -766,7 +903,7 @@ async function descartar() {
   try {
     const s = await post("/api/descartar", { id: app.sessao.id });
     app.visor.definirImagem(await bitmapUrl(`/api/img/${app.sessao.id}/atual.png?t=${Date.now()}`));
-    atualizarSessao(s); desenharDocs();
+    atualizarSessao(s);
   } catch (e) { app.aviso(e.message, "erro"); }
 }
 
@@ -808,8 +945,9 @@ function abrirModal({ titulo, corpo, botoes, flutuante = true, aoFechar = null }
   dlg.classList.toggle("flutuante", flutuante);
   if (flutuante) {
     const estreito = innerWidth < 900;  // celular: o painel lateral não está à direita
+    const painel = $("painel").getBoundingClientRect(), visor = $("visor").getBoundingClientRect();
     Object.assign(dlg.style, estreito ? { position: "fixed", top: "56px", left: "8px", right: "8px", margin: "0" }
-      : { position: "fixed", top: "96px", right: "316px", left: "auto", margin: "0" });
+      : { position: "fixed", top: `${Math.round(visor.top + 8)}px`, right: `${Math.round(innerWidth - painel.left + 8)}px`, left: "auto", margin: "0" });
     dlg.show();
   } else { dlg.removeAttribute("style"); dlg.showModal(); }
 }
@@ -897,7 +1035,7 @@ function abrirCodigoBarras() {
   };
   abrirModal({
     titulo: "Código de barras ITF-25",
-    corpo: [seletorCategoria("codigo barras"),
+    corpo: [seletorCategoria(),
       el("div", { class: "linha" }, dig, el("button", { type: "button", onclick: gerar, title: "Gerar código válido" }, "🎲")),
       info,
       el("div", { class: "linha" },
@@ -925,7 +1063,7 @@ function abrirQR() {
   corr.value = "M";
   abrirModal({
     titulo: "QR code",
-    corpo: [seletorCategoria("qr code/pix"), txt,
+    corpo: [seletorCategoria(), txt,
       el("div", { class: "linha" }, el("button", { type: "button", onclick: gerar }, "🎲 PIX aleatório"),
         el("label", {}, "Correção"), corr,
         el("label", {}, "Cor"), el("input", { type: "color", value: p.cor, oninput: (e) => { p.cor = e.target.value; prever(); } }),
@@ -1020,7 +1158,9 @@ async function escolherTrecho(d) {
     botoes: [{ rotulo: "Voltar", acao: () => { app.escolherDoador(); return false; } },
       { rotulo: "Usar trecho", primario: true, acao: () => {
         if (!ret || ret.x1 - ret.x0 < 2 || ret.y1 - ret.y0 < 2) { app.aviso("arraste um retângulo sobre o trecho", "erro"); return false; }
-        fecharModal(); app.F.colar.iniciar(d.id, ret); app.usar("colar"); return true;
+        const pre = el("canvas", { width: ret.x1 - ret.x0, height: ret.y1 - ret.y0 });
+        pre.getContext("2d").drawImage(bmp, -ret.x0, -ret.y0);  // os pixels seguem o mouse até a prévia chegar
+        fecharModal(); app.F.colar.iniciar(d.id, ret, { pre }); app.usar("colar"); return true;
       } }],
   });
 }
@@ -1029,14 +1169,20 @@ async function escolherTrecho(d) {
 function montarMouse() {
   const tela = $("tela");
   let pan = null;
+  // Ctrl+arrastar dentro da seleção puxa os pixels com qualquer ferramenta (como o Mover temporário do Photoshop)
+  const puxaComCtrl = (ev, p) => ev.ctrlKey && app.temSelecao() && !["transformar", "colar", "mao", "zoom"].includes(app.idFerramenta)
+    && app.dentroDaSelecao(p);
   tela.addEventListener("pointerdown", (ev) => {
     if (!app.sessao || app.ocupado) return;
-    $("visor").focus();
+    $("visor").focus({ preventScroll: true });
     tela.setPointerCapture(ev.pointerId);
     if (ev.button === 1 || app.espaco || app.idFerramenta === "mao") { pan = app.visor.telaDoEvento(ev); tela.style.cursor = "grabbing"; return; }
     if (ev.button !== 0) return;
     app.ultimoPonto = app.visor.doEvento(ev);
+    if (puxaComCtrl(ev, app.ultimoPonto)) app.usar("transformar");
+    app.apertado = true;
     app.ferramenta?.down?.(app.ultimoPonto, ev);
+    app.visor.redesenhar();
   });
   tela.addEventListener("pointermove", (ev) => {
     if (!app.visor.img) return;
@@ -1045,12 +1191,18 @@ function montarMouse() {
     if (pan) { const s = app.visor.telaDoEvento(ev); app.visor.mover(s.x - pan.x, s.y - pan.y); pan = s; return; }
     if (app.ocupado) return;
     app.ferramenta?.move?.(p, ev);
-    if (!app.espaco) tela.style.cursor = app.ferramenta?.cursorEm?.(p) || app.ferramenta?.cursor || "default";
+    if (!app.espaco) {
+      tela.style.cursor = !app.apertado && puxaComCtrl(ev, p) ? "move"
+        : app.ferramenta?.cursorEm?.(p) || app.ferramenta?.cursor || "default";
+    }
   });
   const soltar = (ev) => {
     if (pan) { pan = null; tela.style.cursor = app.espaco ? "grab" : (app.ferramenta?.cursor || "default"); return; }
-    if (!app.sessao || app.ocupado) return;
-    app.ferramenta?.up?.(app.visor.doEvento(ev), ev);
+    const estava = app.apertado;
+    app.apertado = false;
+    if (!app.sessao || app.ocupado) { app.visor.redesenhar(); return; }
+    if (estava) app.ferramenta?.up?.(app.visor.doEvento(ev), ev);
+    app.visor.redesenhar();
   };
   tela.addEventListener("pointerup", soltar);
   tela.addEventListener("pointercancel", soltar);
@@ -1063,8 +1215,11 @@ function montarMouse() {
     else app.visor.zoomEm(Math.exp(-ev.deltaY * 0.0015), s.x, s.y);
   }, { passive: false });
   tela.addEventListener("contextmenu", (ev) => ev.preventDefault());
-  app.visor.extra = (ctx, v) => app.ferramenta?.desenhar?.(ctx, v);
-  app.visor.aoMudar = () => { $("st-zoom").textContent = `${Math.round(app.visor.escala * 100)}%`; };
+  app.visor.extra = (ctx, v) => { app.ferramenta?.desenhar?.(ctx, v); app.atualizarBarras?.(); };
+  app.visor.aoMudar = () => {
+    const z = `${Math.round(app.visor.escala * 100)}%`;
+    $("st-zoom").textContent = z; $("zoom-val").textContent = z;
+  };
 }
 
 // ------------------------------------------------------------------ teclado
@@ -1074,6 +1229,7 @@ function montarTeclado() {
     const digitando = alvo instanceof HTMLInputElement && !["checkbox", "range", "color"].includes(alvo.type) ||
       alvo instanceof HTMLTextAreaElement || alvo instanceof HTMLSelectElement;
     if (dlg.open && dlg.classList.contains("flutuante") === false) return; // diálogo modal cuida de si
+    if (menuAberto() || document.querySelector("dialog[open]:not(#modal)")) return;  // menu ou glossário abertos
     if (digitando) {
       if (ev.key === "Enter" && alvo.dataset?.dado && app.ferramenta?.tecla) { ev.preventDefault(); app.ferramenta.tecla(ev); }
       if (ev.key === "Escape") alvo.blur();
@@ -1081,16 +1237,17 @@ function montarTeclado() {
     }
     const k = ev.key, ctrl = ev.ctrlKey || ev.metaKey;
     if (k === "?") { ev.preventDefault(); abrirAtalhos(); return; }
-    if (ctrl && k === "Enter" && app.modoSimples) { ev.preventDefault(); salvar(); return; }
-    if (ev.altKey && (k === "ArrowDown" || k === "ArrowUp") && app.modoSimples) {
-      ev.preventDefault(); app.campoSeguinte?.(k === "ArrowDown" ? 1 : -1); return;
-    }
     if (ctrl) {
       const l = k.toLowerCase();
       if (l === "z" && ev.shiftKey || l === "y") { ev.preventDefault(); app.refazer(); return; }
       if (l === "z") { ev.preventDefault(); app.desfazer(); return; }
       if (l === "s") { ev.preventDefault(); salvar(); return; }
       if (l === "d") { ev.preventDefault(); app.desmarcar(); return; }
+      if (l === "c" && !ev.shiftKey) { ev.preventDefault(); app.copiar(); return; }
+      if (l === "x") { ev.preventDefault(); app.recortar(); return; }
+      if (l === "v" && ev.shiftKey) { ev.preventDefault(); app.escolherDoador(); return; }
+      if (l === "v") { ev.preventDefault(); app.colar(); return; }
+      if (l === "t") { ev.preventDefault(); app.puxar(); return; }
       if (l === "a") { ev.preventDefault(); app.selecionarTudo(); return; }
       if (l === "i" && ev.shiftKey) { ev.preventDefault(); app.inverterSelecao(); return; }
       if (l === "n" && ev.shiftKey) { ev.preventDefault(); novaCamada(); return; }
@@ -1103,20 +1260,24 @@ function montarTeclado() {
       if (k === "-") { ev.preventDefault(); app.visor.zoomEm(0.8); return; }
       return;
     }
-    if (ev.altKey && /^[0-9]$/.test(k)) {
+    if (ev.altKey && /^[1-9]$/.test(k)) {  // Alt+1, Alt+2, Alt+3: o tipo da edição
       ev.preventDefault();
-      const i = (Number(k) + 9) % 10;
-      const c = app.estado.categorias[i];
-      if (c) definirCategoria(c.chave);
+      const c = categorias()[Number(k) - 1];
+      if (c) escolherCategoria(c.chave);
       return;
     }
     if (app.ferramenta?.tecla?.(ev)) { ev.preventDefault(); return; }
     if (k === " ") { ev.preventDefault(); if (!app.espaco) { app.espaco = true; $("tela").style.cursor = "grab"; } return; }
     if (k === "\\") { ev.preventDefault(); if (!ev.repeat) mostrarOriginal(true); return; }
     if ((k === "F5" || k === "Backspace") && ev.shiftKey) { ev.preventDefault(); app.preencherSelecao(); return; }
+    if ((k === "Delete" || k === "Backspace") && app.temSelecao()) {  // apagar com preenchimento, sem diálogo
+      ev.preventDefault();
+      if (!app.ferramenta?.pendente?.()) app.apagarComPreenchimento();
+      return;
+    }
     if (k === "PageDown") { ev.preventDefault(); navegar(1); return; }
     if (k === "PageUp") { ev.preventDefault(); navegar(-1); return; }
-    if (k === "Escape") { if (dlg.open) fecharModal(); app.limparPrevia(); return; }
+    if (k === "Escape") { if (dlg.open) fecharModal(); else if (app.temSelecao()) app.desmarcar(); app.limparPrevia(); return; }
     if (k === "k" || k === "K") { alternarMascara(); return; }
     if (k === "x" || k === "X") { const f = app.corFrente; app.definirCorFrente(app.corFundo); app.corFundo = f; $("cor-fundo").value = f; armazenar("corFundo", f); return; }
     if (k === "d" || k === "D") { app.definirCorFrente("#000000"); app.corFundo = "#ffffff"; $("cor-fundo").value = "#ffffff"; return; }
@@ -1124,8 +1285,7 @@ function montarTeclado() {
     if (k === "1") { app.visor.zoom100(); return; }
     if (k === "+" || k === "=") { app.visor.zoomEm(1.25); return; }
     if (k === "-") { app.visor.zoomEm(0.8); return; }
-    if (app.modoSimples) return;
-    const id = Object.keys(app.F).find((f) => app.F[f].atalho && app.F[f].atalho === k) ||
+    const id =Object.keys(app.F).find((f) => app.F[f].atalho && app.F[f].atalho === k) ||
       Object.keys(app.F).find((f) => app.F[f].atalho && app.F[f].atalho === k.toLowerCase());
     if (id) { ev.preventDefault(); app.usar(id); }
   });
@@ -1139,35 +1299,164 @@ function montarTeclado() {
 function abrirAtalhos() {
   const grupo = (titulo, itens) => el("section", { class: "atalhos-grupo" }, el("h4", {}, titulo),
     el("table", {}, ...itens.map(([k, o]) => el("tr", {}, el("td", {}, el("kbd", {}, k)), el("td", {}, o)))));
-  const ferr = Object.values(app.F).filter((f) => f.atalho).map((f) => [f.atalho.toUpperCase(), f.nome.split(/[:(]/)[0].trim()]);
+  const ferr = Object.entries(app.F).filter(([, f]) => f.atalho).map(([id, f]) => [textoAtalho(f), NOMES[id]]);
   abrirModal({
     titulo: "Atalhos de teclado", flutuante: false,
     corpo: el("div", { class: "atalhos" },
-      grupo("Geral", [["Ctrl+S", "salvar"], ["Ctrl+Z / Ctrl+Y", "desfazer / refazer"], ["PageDown / PageUp", "próximo / anterior documento"],
+      grupo("Geral", [["Ctrl+S", "salvar e ir para a próxima imagem"], ["Ctrl+Z / Ctrl+Y", "desfazer / refazer"],
+        ["PageDown / PageUp", "próxima / anterior imagem"],
         ["\\ (segurar)", "ver o original"], ["K", "mostrar a máscara do que mudou"], ["0 · 1 · + · −", "caber na tela, 100%, zoom"],
         ["Espaço + arrastar", "mover a imagem"], ["?", "esta lista"]]),
-      grupo("Modo simples", [["Ctrl+Enter", "salvar e ir para o próximo"], ["Alt+↓ / Alt+↑", "próximo / anterior campo"],
-        ["Enter (no valor novo)", "trocar o campo"]]),
-      grupo("Modo avançado", [["Alt+1 … Alt+0", "categoria da edição"], ["Ctrl+D · Ctrl+A · Ctrl+Shift+I", "desmarcar · tudo · inverter seleção"],
-        ["Shift+F5", "preencher a seleção"], ["Ctrl+Shift+N · Ctrl+J · Ctrl+E", "camada nova · duplicar · mesclar abaixo"],
-        ["X · D", "trocar as cores · preto e branco"], ...ferr])),
+      grupo("Recortar, puxar, apagar", [["Ctrl+X", "recortar: o trecho fica solto para arrastar"], ["Ctrl+C · Ctrl+V", "copiar · colar (aqui ou em outra imagem do split)"],
+        ["Ctrl+Shift+V", "colar de outro documento (escolher o trecho)"], ["Ctrl+arrastar", "puxar a seleção com qualquer ferramenta"],
+        ["Alt+arrastar (Mover)", "duplicar em vez de puxar"], ["Ctrl+T", "puxar / transformar a seleção"],
+        ["Enter · Esc", "aplicar · cancelar o trecho solto"], ["Delete", "apagar com preenchimento"], ["Shift+F5", "preencher com opções"]]),
+      grupo("Edição", [["Alt+1 · Alt+2 · Alt+3", "tipo da edição"], ["Ctrl+D · Ctrl+A · Ctrl+Shift+I", "desmarcar · tudo · inverter seleção"],
+        ["Ctrl+Shift+N · Ctrl+J · Ctrl+E", "camada nova · duplicar · mesclar abaixo"],
+        ["X · D", "trocar as cores · preto e branco"]]),
+      grupo("Ferramentas", ferr)),
     botoes: [{ rotulo: "Fechar", primario: true, acao: () => {} }],
   });
 }
 
-// ------------------------------------------------------------------ início
-// embutido na aba "Ferramentas antigas" do estúdio (/classico?embutido=1&doc=…): não pergunta o nome (como o estúdio) e
-// abre o documento pedido, no split dele
-const PEDIDO = new URLSearchParams(location.search);
+// ------------------------------------------------------------------ lote do gerador e tutorial
+function indicarLote(st) {
+  const pill = $("lote-pill");
+  pill.hidden = !st.rodando;
+  if (st.rodando) pill.textContent = `gerador: ${st.feitas}/${st.total}`;
+  if (app._loteRodava && !st.rodando && st.total) notificar("Lote do gerador terminou", `${st.feitas} imagens salvas, ${st.falhas} falharam.`);
+  app._loteRodava = Boolean(st.rodando);
+}
+function tutorial() {
+  const passo = (n, t) => `<p><span class="passo-n">${n}</span>${t}</p>`;
+  abrirModal({
+    titulo: "Como editar", flutuante: false,
+    corpo: el("div", { class: "tutorial", innerHTML: [
+      passo(1, "À direita, escolha o <b>tipo da edição</b>: copiar e colar, pegar de outro documento ou apagar e substituir. "
+        + "Sem ele, nada é aplicado; na próxima imagem, o último escolhido já vem marcado."),
+      passo(2, "Selecione o trecho (<b>M</b> retângulo, <b>L</b> laço, <b>W</b> varinha). Na barra que aparece embaixo dele: "
+        + "<b>Recortar</b> (Ctrl+X) ou <b>Puxar</b> (Ctrl+arrastar) leva os pixels para outro lugar e preenche o buraco; "
+        + "<b>Copiar</b>/<b>Colar</b> (Ctrl+C / Ctrl+V) duplicam, inclusive para outra imagem do mesmo split; "
+        + "<b>Apagar</b> (Delete) some com o trecho usando o papel em volta. Enter aplica, Esc cancela."),
+      passo(3, "As outras ferramentas ficam à esquerda (clique direito num botão mostra as do mesmo grupo) e tudo está nos "
+        + "<b>menus</b> do alto. Cada tipo ganha a sua <b>camada</b>: o olho oculta, arrastar reordena, duplo clique renomeia."),
+      passo(4, "Clique em <b>Salvar</b> (Ctrl+S): a imagem editada, as máscaras e a anotação vão para <code>saida/</code>, "
+        + "no mesmo split da imagem de origem, e a próxima imagem abre. Errou? <b>↶</b> no Histórico (Ctrl+Z)."),
+      "<p class='dica'>◀ ▶ (PageUp/PageDown) passam de imagem. O split (Treino, Teste, Validação) é o das abas no alto: "
+        + "nada sai do split da imagem, nem a colagem de outro documento.</p>",
+    ].join("") }),
+    botoes: [{ rotulo: "Entendi", primario: true, acao: () => true }],
+    aoFechar: () => armazenar("tutorialEditorVisto", true),
+  });
+}
 
+// ------------------------------------------------------------------ menus
+function abrirModificarSelecao() {
+  if (!app.temSelecao()) { exigirSelecao("modificar"); return; }
+  const p = { expandir: app.selecao.expandir || 0, suavizar: app.selecao.suavizar || 0 };
+  abrirModal({
+    titulo: "Modificar a seleção",
+    corpo: [deslizante("Expandir (−contrair) px", -50, 50, 1, p.expandir, (v) => { p.expandir = v; }),
+      deslizante("Suavizar a borda px", 0, 30, 0.5, p.suavizar, (v) => { p.suavizar = v; })],
+    botoes: [{ rotulo: "Cancelar", acao: () => true },
+      { rotulo: "Aplicar", primario: true, acao: () => { Object.assign(app.selecao, p); app.atualizarSelecao(); app.renderOpcoes(); } }],
+  });
+}
+function montarMenusEditor() {
+  const doc = () => Boolean(app.sessao);
+  const sel = () => app.temSelecao();
+  const cam = () => Boolean(app.camadaAtiva());
+  const comCamada = (acao) => () => { const at = app.camadaAtiva(); if (at) app.acaoCamada(acao, { camada: at.id }); };
+  montarMenus($("menus"), [
+    { rotulo: "Arquivo", itens: [
+      { rotulo: "Salvar e ir para a próxima", atalho: "Ctrl+S", icone: "salvar", acao: salvar, ativo: () => Boolean(app.sessao?.pode_salvar) },
+      { rotulo: "Descartar as edições desta imagem", acao: descartar, ativo: () => Boolean(app.sessao?.historico?.length) },
+      "-",
+      { rotulo: "Próxima imagem", atalho: "PageDown", icone: "proximo", acao: () => navegar(1), ativo: doc },
+      { rotulo: "Imagem anterior", atalho: "PageUp", icone: "anterior", acao: () => navegar(-1), ativo: doc },
+      { rotulo: "Próxima ainda sem versão", acao: proximoPendente, ativo: doc },
+      "-", { titulo: "Split" },
+      ...SPLITS.map(([sp, nome]) => ({ rotulo: nome, marcado: () => app.split === sp, acao: () => trocarSplit(sp) })),
+      "-",
+      { rotulo: "Gerador automático (em lote)…", icone: "fabrica", acao: () => window.open("/gerador", "gerador") },
+    ] },
+    { rotulo: "Editar", itens: [
+      { rotulo: "Desfazer", atalho: "Ctrl+Z", icone: "desfazer", acao: app.desfazer, ativo: () => Boolean(app.sessao?.historico?.length) },
+      { rotulo: "Refazer", atalho: "Ctrl+Shift+Z", icone: "refazer", acao: app.refazer, ativo: () => Boolean(app.sessao?.pode_refazer) },
+      "-",
+      { rotulo: "Recortar", atalho: "Ctrl+X", icone: "recortar", acao: app.recortar, ativo: sel },
+      { rotulo: "Copiar", atalho: "Ctrl+C", icone: "copiar", acao: app.copiar, ativo: sel },
+      { rotulo: "Colar", atalho: "Ctrl+V", icone: "colar", acao: app.colar, ativo: () => Boolean(app.clip && app.sessao) },
+      { rotulo: "Colar de outro documento…", atalho: "Ctrl+Shift+V", icone: "colar_doc", acao: app.escolherDoador, ativo: doc },
+      "-",
+      { rotulo: "Apagar com preenchimento", atalho: "Delete", icone: "apagar", acao: () => app.apagarComPreenchimento(), ativo: sel },
+      { rotulo: "Preencher com opções…", atalho: "Shift+F5", acao: abrirPreencher, ativo: sel },
+      { rotulo: "Puxar / transformar", atalho: "Ctrl+T", icone: "mover", acao: app.puxar, ativo: sel },
+      "-", { titulo: "Tipo da edição" },
+      ...categorias().map((c, i) => ({ rotulo: c.rotulo, atalho: `Alt+${i + 1}`, marcado: () => app.categoria === c.chave,
+        acao: () => escolherCategoria(c.chave) })),
+    ] },
+    { rotulo: "Selecionar", itens: [
+      { rotulo: "Tudo", atalho: "Ctrl+A", acao: app.selecionarTudo, ativo: doc },
+      { rotulo: "Desmarcar", atalho: "Ctrl+D", acao: app.desmarcar, ativo: sel },
+      { rotulo: "Inverter", atalho: "Ctrl+Shift+I", icone: "inverter", acao: app.inverterSelecao, ativo: sel },
+      "-",
+      { rotulo: "Só a tinta (os traços do texto)", acao: app.soTinta, ativo: sel },
+      { rotulo: "Expandir, contrair ou suavizar…", acao: abrirModificarSelecao, ativo: sel },
+    ] },
+    { rotulo: "Camada", itens: [
+      { rotulo: "Nova camada", atalho: "Ctrl+Shift+N", icone: "mais", acao: novaCamada, ativo: doc },
+      { rotulo: "Duplicar camada", atalho: "Ctrl+J", icone: "duplicar", acao: comCamada("duplicar"), ativo: cam },
+      { rotulo: "Mesclar com a de baixo", atalho: "Ctrl+E", icone: "mesclar", acao: comCamada("mesclar_abaixo"), ativo: cam },
+      { rotulo: "Excluir camada", icone: "lixeira", acao: () => $("cam-excluir").click(), ativo: cam },
+      "-",
+      { rotulo: "Subir", atalho: "Ctrl+]", acao: () => moverCamadaNaPilha(1), ativo: cam },
+      { rotulo: "Descer", atalho: "Ctrl+[", acao: () => moverCamadaNaPilha(-1), ativo: cam },
+      { rotulo: "Mostrar / ocultar", icone: "olho", acao: () => { const at = app.camadaAtiva(); if (at) app.acaoCamada("props", { camada: at.id, visivel: !at.visivel }); }, ativo: cam },
+    ] },
+    { rotulo: "Imagem", itens: [
+      { rotulo: "Ajustes na seleção…", icone: "ajustes", acao: abrirAjustes, ativo: sel },
+      "-",
+      { rotulo: "Código de barras ITF-25…", icone: "barras", acao: abrirCodigoBarras, ativo: sel },
+      { rotulo: "QR code / PIX…", icone: "qr", acao: abrirQR, ativo: sel },
+      "-",
+      { rotulo: "Qual é a fonte do texto selecionado?", icone: "fonte", acao: () => app.identificarFonte(), ativo: sel },
+      { rotulo: "Editar a seleção com IA…", icone: "ia", acao: abrirIA, ativo: sel },
+    ] },
+    { rotulo: "Exibir", itens: [
+      { rotulo: "Aproximar", atalho: "Ctrl++", acao: () => app.visor.zoomEm(1.25), ativo: doc },
+      { rotulo: "Afastar", atalho: "Ctrl+−", acao: () => app.visor.zoomEm(0.8), ativo: doc },
+      { rotulo: "Caber na tela", atalho: "Ctrl+0", acao: () => app.visor.ajustar(), ativo: doc },
+      { rotulo: "Tamanho real (100%)", atalho: "1", acao: () => app.visor.zoom100(), ativo: doc },
+      "-",
+      { rotulo: "Ver o original", atalho: "\\", marcado: () => app.visor.mostrarOriginal, acao: () => mostrarOriginal(!app.visor.mostrarOriginal), ativo: doc },
+      { rotulo: "Máscara do que mudou", atalho: "K", marcado: () => app.visor.mostrarMascara, acao: alternarMascara, ativo: doc },
+    ] },
+    { rotulo: "Ajuda", itens: [
+      { rotulo: "Como editar", icone: "ajuda", acao: tutorial },
+      { rotulo: "Atalhos de teclado", atalho: "?", icone: "teclado", acao: abrirAtalhos },
+      { rotulo: "O que é cada coisa (glossário)", icone: "livro", acao: () => abrirGlossario() },
+    ] },
+  ]);
+}
+
+// ------------------------------------------------------------------ início
 async function iniciar() {
   try { app.estado = await get("/api/estado"); } catch (e) { app.aviso("servidor indisponível: " + e.message, "erro"); return; }
-  if (PEDIDO.get("embutido") !== "1") await exigirOperador();  // o nome vai nas travas, nas versões salvas e nas revisões
+  await exigirOperador();  // o nome vai nas travas, nas versões salvas e nas revisões
   app.F = criarFerramentas(app);
+  app.abrirAjustes = abrirAjustes;
   montarFerramentas();
+  for (const b of document.querySelectorAll("[data-ico]")) b.prepend(icone(b.dataset.ico, Number(b.dataset.tam) || 16));
   instalarGlossario($("btn-glossario"));
   ligarTermos(document);
   montarCategorias();
+  montarMenusEditor();
+  instalarBarras(app);
+  $("zoom-menos").addEventListener("click", () => app.visor.zoomEm(0.8));
+  $("zoom-mais").addEventListener("click", () => app.visor.zoomEm(1.25));
+  $("zoom-val").addEventListener("click", () => app.visor.zoom100());
+  $("zoom-ajustar").addEventListener("click", () => app.visor.ajustar());
   montarAbas();
   montarMouse();
   montarTeclado();
@@ -1195,7 +1484,7 @@ async function iniciar() {
       });
     }
   });
-  window.addEventListener("operador", (e) => { $("operador").value = e.detail; desenharDocs(); });
+  window.addEventListener("operador", (e) => { $("operador").value = e.detail; });
   window.addEventListener("trava", (e) => mostrarTrava(e.detail));
   $("btn-assumir").addEventListener("click", assumir);
   $("ocupado-cancelar").addEventListener("click", async () => {
@@ -1209,9 +1498,6 @@ async function iniciar() {
     }
   });
   $("btn-atalhos").addEventListener("click", abrirAtalhos);
-  $("so-meus").addEventListener("change", desenharDocs);
-  $("busca-docs").addEventListener("input", debounce(desenharDocs, 120));
-  $("docs-mais").addEventListener("click", () => { docsVisiveis += LOTE_DOCS; desenharDocs(); });
   app.descartar = descartar;
   $("modal-form").addEventListener("submit", (e) => e.preventDefault());
   $("cam-nova").addEventListener("click", novaCamada);
@@ -1241,17 +1527,14 @@ async function iniciar() {
   $("btn-refazer").addEventListener("click", app.refazer);
   $("doc-ant").addEventListener("click", () => navegar(-1));
   $("doc-prox").addEventListener("click", () => navegar(1));
-  $("so-pendentes").addEventListener("change", desenharDocs);
   $("btn-original").addEventListener("click", () => mostrarOriginal(!app.visor.mostrarOriginal));
   $("btn-mascara").addEventListener("click", alternarMascara);
 
-  const ia = app.estado.ia;
-  $("ia-status").textContent = ia.online ? "online" : "offline";
-  $("ia-status").className = "pilula " + (ia.online ? "ok" : "ruim");
-  $("ia-dica").textContent = ia.online ? (ia.modelo || "") : "Para usar a IA: .venv-ia\\Scripts\\python.exe ia_servidor.py";
   for (const a of app.estado.avisos) app.aviso(a);
 
-  app.usar(lembrar("ferramenta", "ret"));
+  const ferramenta = lembrar("ferramenta", "ret");
+  app.usar(app.F[ferramenta] ? ferramenta : "ret");  // a lembrada pode ser de um modo que não existe mais
+  definirCategoria(lembrar("categoria", ""));  // o tipo da edição: o da última vez já vem marcado
   window.addEventListener("beforeunload", () => armazenar("ferramenta", app.idFerramenta));
   app.enfileirar = enfileirar;
   app.receber = async (r) => {  // resposta padrão do servidor: trecho da imagem + estado
@@ -1259,23 +1542,13 @@ async function iniciar() {
     app.limparPrevia();
     atualizarSessao(r.estado);
   };
-  instalarSimples(app, {
-    el, $, debounce, ocupar, definirCategoria, corCategoria, abrirModal, fecharModal, lembrar, armazenar,
-    indicarLote: (st) => {
-      const pill = $("lote-pill");
-      pill.hidden = !st.rodando;
-      if (st.rodando) pill.textContent = `gerador: ${st.feitas}/${st.total}`;
-      if (app._loteRodava && !st.rodando && st.total) notificar("Lote do gerador terminou", `${st.feitas} imagens salvas, ${st.falhas} falharam.`);
-      app._loteRodava = Boolean(st.rodando);
-    },
-  });
+  $("btn-lote").addEventListener("click", () => window.open("/gerador", "gerador"));
+  $("btn-ajuda").addEventListener("click", tutorial);
+  const statusGerador = () => get("/api/gerador/status").then(indicarLote).catch(() => {});
+  statusGerador();
+  setInterval(statusGerador, 15000);
+  if (!lembrar("tutorialEditorVisto", false)) setTimeout(tutorial, 400);
   if (!SPLITS.some(([s]) => s === app.split)) app.split = "treino";
-  const pedido = PEDIDO.get("doc");
-  if (pedido) {  // o split do documento pedido, e ele como o último aberto no split (o trocarSplit abre esse)
-    const todos = await get("/api/gerador/documentos").catch(() => ({}));
-    const sp = SPLITS.map(([s]) => s).find((s) => (todos[s] || []).some((d) => d.id === pedido));
-    if (sp) { app.split = sp; armazenar("split", sp); armazenar("ultimo." + sp, pedido); }
-  }
   await trocarSplit(app.split);
 }
 

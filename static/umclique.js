@@ -1,11 +1,16 @@
 // Tela "Gerar fraudes" (o que aparece ao abrir o gerador): um clique. Documentos, versões por documento e o que
 // mudar; só edições PROFISSIONAIS (perfil "profissional" do motor: a mesma fonte, letras do próprio documento,
-// trocar só um pedaço). "Ver um exemplo" roda a prévia num documento sorteado (nada é salvo) e mostra ANTES |
+// trocar só um pedaço) ou, no método "fsts", o do artigo FSTS (rotulador/fsts.py: campos de texto, tipos e operações
+// sorteados das tabelas dele). "Ver um exemplo" roda a prévia num documento sorteado (nada é salvo) e mostra ANTES |
 // DEPOIS com o que mudou; durante o lote, barra, tempo e uma galeria ao vivo. A receita completa (modos Exato,
 // Fácil e Avançado) continua em "Opções avançadas" (gerador.js e assistente.js).
 import { CLASSES, GRUPOS } from "./assistente.js";
 
 const OQUE = ["extras", "base", "escolher"];
+const METODOS = ["profissional", "fsts"];
+// o tipo do artigo de cada edição do método FSTS (rotulador.fsts.TIPOS), na lista de mudanças do exemplo
+const TIPO_FSTS = { copy_move: "cópia interna", splicing: "colagem", removal: "remoção", insertion: "inserção",
+  replacement: "substituição" };
 const EXTRAS = ["cpf/cnpj", "cep", "data", "valor"];  // "às vezes também" (só no motor sem o perfil: receitaAntiga)
 const SEG_VERSAO = 9;     // medido sem IA: ~9 s por versão salva (nome, endereço e às vezes outros campos)
 const SEG_LEITURA = 12;   // 1ª leitura (OCR) de um documento que ainda não foi lido
@@ -18,6 +23,7 @@ const versaoN = (v) => Number(String(v.nome).split("__v")[1]) || "";
 
 // erros do servidor em linguagem simples (o texto original fica no title, para quem precisar)
 const EXPLICA = [
+  [/texto claro sobre fundo escuro/i, "o texto deste documento é claro sobre fundo escuro: as edições só funcionam em tinta escura sobre papel claro"],
   [/nenhuma técnica coube|nenhum campo|não achei|nada para editar/i, "não achei nome ou endereço legível que desse para trocar"],
   [/cannot identify image|não consegui (abrir|carregar|ler o arquivo)|arquivo .*(corrompido|inválido)/i, "não consegui abrir o arquivo"],
   [/tesseract|\bocr\b|leitor/i, "o leitor de texto falhou neste documento"],
@@ -57,6 +63,7 @@ export function instalarUmClique(g) {
       splits: Array.isArray(s.splits) ? s.splits.filter((sp) => nomesSplit.includes(sp)) : pendentes.length ? pendentes : ["treino"],
       fora: Array.isArray(s.fora) ? s.fora.map(String) : [],  // documentos desmarcados em "escolher documentos…"
       variacoes: limitar(s.variacoes ?? 3),
+      metodo: METODOS.includes(s.metodo) ? s.metodo : "profissional",
       oque: OQUE.includes(s.oque) ? s.oque : "extras",
       campos: (Array.isArray(s.campos) ? s.campos : ["nome", "endereço"]).filter(existe),
       estilo: typeof s.estilo === "string" ? s.estilo : "recomendado",  // estilo pronto (o servidor diz quais existem)
@@ -144,10 +151,14 @@ export function instalarUmClique(g) {
 
   // ------------------------------------------------------------------ o que mudar
   function desenharOque() {
+    for (const r of document.querySelectorAll('input[name="uc-metodo"]')) r.checked = r.value === U.metodo;
+    const fsts = U.metodo === "fsts";  // o método do artigo escolhe sozinho os campos e as técnicas
+    document.querySelector("#um-clique .uc-oque").hidden = fsts;
+    document.querySelector("#um-clique .uc-estilo").hidden = fsts;
     for (const r of document.querySelectorAll('input[name="uc-oque"]')) r.checked = r.value === U.oque;
     $("uc-variacoes").value = U.variacoes;
     const c = $("uc-campos");
-    c.hidden = U.oque !== "escolher";
+    c.hidden = fsts || U.oque !== "escolher";
     if (c.hidden) return;
     const marc = new Set(U.campos);
     por(c, el("p", { class: "dica" }, "Cada versão troca os campos marcados, em todo lugar onde eles aparecem no documento:"),
@@ -168,9 +179,11 @@ export function instalarUmClique(g) {
     const splits = U.splits.filter((sp) => docs.some((d) => d.split === sp));
     const todos = splits.flatMap(doSplit);
     const quem = g.nomeOperador();
-    const r = { nome: "gerar fraudes (um clique)", perfil: "profissional", extras: U.oque === "extras", variacoes: U.variacoes,
+    const comum = { variacoes: U.variacoes,
       documentos: { splits, ids: docs.length === todos.length ? null : docs.map((d) => d.id), so_pendentes: false },
       operador: quem ? `gerador automático (${quem})` : "gerador automático" };
+    if (U.metodo === "fsts") return { nome: "gerar fraudes (um clique, método FSTS)", perfil: "fsts", ...comum };
+    const r = { nome: "gerar fraudes (um clique)", perfil: "profissional", extras: U.oque === "extras", ...comum };
     if (U.oque === "escolher") r.categorias_base = [...U.campos];
     if (L.estilos) r.estilo = U.estilo;
     return r;
@@ -205,6 +218,7 @@ export function instalarUmClique(g) {
   // a receita expandida do motor ou, sem ela, se o motor tem o perfil
   async function conhecerMotor() {
     if (!$("uc-detalhes").open) return;
+    if (U.metodo === "fsts") { desenharDetalhes(); return; }
     if (L.rota) {
       const q = new URLSearchParams({ extras: U.oque === "extras" ? "1" : "0", ...(U.oque === "escolher" ? { base: U.campos.join(",") } : {}),
         ...(L.estilos ? { estilo: U.estilo } : {}) });
@@ -235,6 +249,13 @@ export function instalarUmClique(g) {
       return el("ul", {}, ...Object.entries(obj).sort((a, b) => b[1] - a[1]).map(([k, p]) =>
         el("li", {}, nomeDe(k), el("span", { class: "dica" }, ` ${Math.round(100 * (Number(p) || 0) / tot)}%`))));
     };
+    if (U.metodo === "fsts") {
+      por(corpo, el("p", {}, "Método do artigo FSTS (Yu et al., NeurIPS 2025): em cada versão, de 1 a 12 campos de texto; "
+        + "em cada um, o tipo de adulteração (cópia interna, colagem de outro documento, remoção, inserção ou substituição) "
+        + "e as operações com os parâmetros, sorteados das tabelas 8–12 do artigo."),
+      el("p", { class: "dica" }, "O pós-processamento das tabelas não é aplicado. O rótulo de cada edição traz o tipo e as operações."));
+      return;
+    }
     if (L.motor === "antigo") {
       const ra = receitaAntiga(receita());
       por(corpo, el("p", {}, "Este servidor ainda não tem o perfil profissional; até ele chegar, a tela usa a receita ",
@@ -279,7 +300,7 @@ export function instalarUmClique(g) {
     const docs = escolhidos();
     const n = docs.length * U.variacoes;
     const falta = !docs.length ? "Marque pelo menos um grupo de documentos."
-      : U.oque === "escolher" && !U.campos.length ? "Marque pelo menos um campo para trocar." : "";
+      : U.metodo !== "fsts" && U.oque === "escolher" && !U.campos.length ? "Marque pelo menos um campo para trocar." : "";
     const b = $("uc-gerar");
     if (!L.iniciando) b.textContent = `▶ Gerar ${plural(n, "fraude", "fraudes")}`;
     b.disabled = Boolean(falta) || Boolean(G.rodando) || L.iniciando;
@@ -363,6 +384,7 @@ export function instalarUmClique(g) {
         onclick: () => comp.ampliar(i) },
       el("span", { class: "uc-num", style: { background: corCategoria(e.categoria) } }, String(i + 1)),
       el("span", { class: "uc-mud-txt" }, el("b", {}, rotuloCat(e.categoria)), " ",
+        TIPO_FSTS[e.fsts] ? el("span", { class: "pilula" }, TIPO_FSTS[e.fsts]) : null, " ",
         antigo ? [el("s", { class: "antigo" }, antigo), " → ", el("span", { class: "novo" }, novo === "" ? "(apagado)" : novo)]
           : el("span", { class: "dica" }, e.descricao || "")),
       rec ? el("span", { class: "uc-recorte" },
@@ -399,8 +421,8 @@ export function instalarUmClique(g) {
   // ------------------------------------------------------------------ estilos prontos
   function desenharEstilos() {
     const f = $("uc-estilos-f");
-    f.hidden = !L.estilos;
-    if (!L.estilos) return;
+    f.hidden = !L.estilos || U.metodo === "fsts";
+    if (f.hidden) return;
     if (!L.estilos.some((e) => e.id === U.estilo)) U.estilo = (L.estilos.find((e) => e.padrao) || L.estilos[0]).id;
     por($("uc-estilos"), ...L.estilos.map((e) => el("label", { class: "uc-estilo-card", title: e.bom_para ? `Bom para: ${e.bom_para}` : "" },
       el("input", { type: "radio", name: "uc-estilo", value: e.id, checked: e.id === U.estilo, "data-foco": `estilo:${e.id}`,
@@ -610,6 +632,7 @@ export function instalarUmClique(g) {
   $("uc-mais").onclick = () => { U.variacoes = limitar(U.variacoes + 1); mudou(); };
   $("uc-variacoes").onchange = (e) => { U.variacoes = limitar(e.target.value); mudou(); };
   for (const r of document.querySelectorAll('input[name="uc-oque"]')) r.onchange = () => { U.oque = r.value; mudou(); conhecerMotor(); };
+  for (const r of document.querySelectorAll('input[name="uc-metodo"]')) r.onchange = () => { U.metodo = r.value; mudou(); conhecerMotor(); };
   $("uc-escolher-docs").onclick = abrirDocs;
   $("uc-gerar").onclick = gerar;
   $("uc-exemplo-btn").onclick = verExemplo;

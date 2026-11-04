@@ -214,10 +214,10 @@ try:
     checa(len(list((PASTA / "saida" / "treino" / "anotacoes").glob("*.json"))) == 7, "anotação excluída do disco")
 
     # ------------------------------------------------------------------ editor: "como editar" num campo
-    d.get(URL + "/classico")
+    d.get(URL + "/")
     espera("window.rotulador && window.rotulador.estado", 30)
     js("localStorage.setItem('rotulador.tutorialVisto','true'); localStorage.setItem('rotulador.modoSimples','true')")
-    d.get(URL + "/classico")
+    d.get(URL + "/")
     checa(espera("document.querySelectorAll('#lista-campos li.campo').length >= 8", 120), "modo simples lê os campos")
     js("[...document.querySelectorAll('#lista-campos li.campo')].find(li => li.textContent.includes('R$')).click()")
     checa(espera("document.querySelector('#lista-campos li.ativo select.tec-campo')", 20), "seletor 'Como editar' no campo")

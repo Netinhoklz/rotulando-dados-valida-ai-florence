@@ -15,7 +15,8 @@ export class Visor {
     this.mascara = null;      // bitmap RGBA
     this.mostrarOriginal = false;
     this.mostrarMascara = false;
-    this.extra = null;        // (ctx, visor) => desenho da ferramenta, em px de tela
+    this.esconderSelecao = false;
+    this.extra = null;       // (ctx, visor) => desenho da ferramenta, em px de tela
     this.aoMudar = null;      // callback de zoom
     this._pendente = false;
     new ResizeObserver(() => this._redimensionar()).observe(el);
@@ -110,6 +111,14 @@ export class Visor {
     const px = d.data;
     const a = new Uint8Array(w * h);
     for (let i = 0; i < w * h; i++) a[i] = px[i * 4];
+    // a mesma máscara como transparência (branco com alfa = seleção): recorta os pixels que a ferramenta Mover
+    // levanta e desenha o buraco que fica para trás
+    const alfa = document.createElement("canvas");
+    alfa.width = w; alfa.height = h;
+    const ca = alfa.getContext("2d");
+    const da = ca.createImageData(w, h);
+    for (let i = 0; i < w * h; i++) { const k = i * 4; da.data[k] = da.data[k + 1] = da.data[k + 2] = 255; da.data[k + 3] = a[i]; }
+    ca.putImageData(da, 0, 0);
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const i = y * w + x, k = i * 4, v = a[i];
@@ -121,8 +130,21 @@ export class Visor {
       }
     }
     ctx.putImageData(d, 0, 0);
-    this.selecao = { canvas: c, x0, y0 };
+    this.selecao = { canvas: c, alfa, x0, y0 };
     this.redesenhar();
+  }
+
+  // os pixels da imagem atual dentro da seleção (o resto transparente), em resolução cheia
+  recortarSelecao() {
+    const s = this.selecao;
+    if (!s || !this.img) return null;
+    const c = document.createElement("canvas");
+    c.width = s.alfa.width; c.height = s.alfa.height;
+    const g = c.getContext("2d");
+    g.drawImage(this.img, -s.x0, -s.y0);
+    g.globalCompositeOperation = "destination-in";
+    g.drawImage(s.alfa, 0, 0);
+    return c;
   }
 
   definirMascara(bitmap) { this.mascara = bitmap; this.redesenhar(); }
@@ -149,14 +171,20 @@ export class Visor {
       if (this.previa) ctx.drawImage(this.previa.bitmap, this.previa.x0, this.previa.y0);
       if (this.mostrarMascara && this.mascara) ctx.drawImage(this.mascara, 0, 0);
     }
-    if (this.selecao) {
+    if (this.selecao && !this.esconderSelecao) {  // escondida enquanto o trecho é puxado (o contorno vai com ele)
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(this.selecao.canvas, this.selecao.x0, this.selecao.y0);
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // contorno da imagem
+    // contorno da imagem (a "prancheta": sombra discreta em volta, como num editor de desktop)
     const a = this.imgParaTela(0, 0), b = this.imgParaTela(this.img.width, this.img.height);
-    ctx.strokeStyle = "#555"; ctx.lineWidth = 1;
+    ctx.save();
+    ctx.shadowColor = "#0009"; ctx.shadowBlur = 14; ctx.shadowOffsetY = 2;
+    ctx.globalCompositeOperation = "destination-over";
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    ctx.restore();
+    ctx.strokeStyle = "#0006"; ctx.lineWidth = 1;
     ctx.strokeRect(Math.round(a.x) - 0.5, Math.round(a.y) - 0.5, Math.round(b.x - a.x) + 1, Math.round(b.y - a.y) + 1);
     if (this.mostrarOriginal) {
       ctx.fillStyle = "#000a"; ctx.fillRect(8, 8, 92, 22);

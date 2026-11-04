@@ -11,65 +11,6 @@ de endereço (contas de luz, água, gás, telefone, boletos). A cada documento e
 A separação **treino / teste / validação** é garantida pelo servidor. Nada que nasce de um
 documento do treino vai para o teste.
 
-## O estúdio (a página principal)
-
-`http://127.0.0.1:5000/` é a interface do **PhotoCraft** (a versão web dele, em português, servida pelo app em
-`/photocraft/`) com uma aba a mais, **⚡ Gerar**, no alto à direita. O editor antigo continua em `/classico`, e o
-gerador em lote em `/gerador`.
-
-- **Abrir:** pela lista da aba (documentos de cada split), pelo **Arquivo › Abrir** do PhotoCraft ou arrastando o
-  arquivo para a tela. O arquivo sempre abre num documento novo. Um arquivo que ainda não está no dataset entra em
-  `dados/<split>/photocraft/`, no split que está mais abaixo da proporção 70/15/15. Se os mesmos pixels já foram
-  rotulados em um split, vai para esse split.
-- **⚡ Gerar e abrir para revisar:** uma versão feita pelas ferramentas do PhotoCraft, aberta para revisar. É o perfil
-  profissional com `motor="photocraft"`: troca nome e endereço e, às vezes, CPF, CEP/bairro/cidade, datas ou valores,
-  coerentes entre si. O valor novo é escolhido sozinho. **Gerar e salvar direto** grava N versões sem abrir.
-- **Método "Artigo FSTS (NeurIPS 2025)":** a mesma aba gera pelo método do artigo *Toward Real-world Text Image
-  Forgery Localization* (`rotulador/fsts.py`): de 1 a 12 adulterações em campos de texto (cópia interna, colagem de
-  outro documento, remoção, inserção ou substituição), com as operações e o disfarce (desfoques, nitidez, ruído,
-  curvas, cor, traçado, sombra, brilho) sorteados da população, como na geração do artigo: cada operação pela
-  frequência e cada parâmetro dentro da faixa das tabelas 8–12. Alguns disfarces aparecem a olho, como no artigo.
-  Detalhes em
-  [docs/falsificadores.md](docs/falsificadores.md#4d-o-método-de-geração-do-fsts-inteiro-29102026).
-- **Salvar (Ctrl+S no PhotoCraft):** o arquivo salvo (PSD) vem para o servidor em vez de virar download e é gravado
-  no split do documento. A **máscara marca 1 onde houve edição** (0 no resto) e é a diferença exata entre o salvo e o
-  que foi aberto: o PNG que o estúdio dá ao PhotoCraft volta sem mudar nenhum pixel. Nada é perguntado:
-  - a classe de cada pedaço editado vem do campo lido no documento;
-  - o texto antigo é o do campo e o novo é lido no salvo;
-  - fora dos campos, a edição vira "outro".
-
-  Depois de salvar, o documento fecha no PhotoCraft e o **próximo da lista** (o mesmo split, na ordem e com a busca
-  da tela) abre para editar; no último, só fecha. Enquanto salva, a tela do PhotoCraft não recebe clique. Se o
-  salvamento é recusado, o documento continua aberto para corrigir. São recusados:
-  - arquivo com perda (JPEG);
-  - tamanho diferente do original;
-  - mais de 25% da página mudada.
-- **Imagem aberta (no alto do painel, sempre à vista):**
-  - **💾 Salvar e ir para a próxima:** o mesmo que o Ctrl+S.
-  - **⏭ Pular:** fecha a imagem sem salvar e abre a próxima. Se a pessoa já mexeu nela, pergunta antes.
-  - **↩ Apagar a última edição salva:** tira do dataset a versão salva por último no estúdio (imagem editada,
-    máscaras, anotação e linha da planilha). A imagem original, na pasta das imagens, nunca é tocada. Depois a pessoa
-    escolhe **Voltar a essa imagem** (reabre para refazer) ou **Continuar aqui**. Repetindo, sai a anterior.
-  - Na lista, cada imagem mostra o tipo de edição que já tem (família da técnica ou tipo do FSTS) e, ao passar o
-    mouse, os campos editados.
-- **Pasta das imagens:** **📁 Escolher outra pasta** navega pelas pastas do computador e passa a usar qualquer pasta com
-  as subpastas `treino`, `teste` e `validação` (com ou sem acento, maiúsculas valem). O servidor monta tudo de novo
-  nela, sem reiniciar. As edições e máscaras ficam na `saida/` dentro da pasta escolhida (a `dados/` do projeto
-  continua usando a `saida/` do projeto). A escolha fica em `config/pasta_escolhida.json` e vale na próxima partida
-  sem `--dados`. Só funciona no próprio computador do servidor; não troca com um lote rodando, e com o mesmo
-  documento em dois splits fica na pasta de antes.
-- **Dataset:** `saida/dataset.xlsx` é refeita a cada versão salva (no estúdio, no editor clássico e no fim de cada
-  lote) e pode ser baixada pela aba. Tem cinco abas:
-  - **Resumo:** contagens por split e o que tem em cada pasta;
-  - **Versões:** uma linha por imagem editada, com links para a original, a editada, as máscaras e a anotação;
-  - **Edições:** campo, texto antigo e novo, técnica e ferramentas (e, no método FSTS, o tipo);
-  - **Documentos;**
-  - **Legenda:** o valor de cada pixel nas máscaras.
-
-Para instalar a interface, baixe `photocraft-web-<versão>.zip` na página de versões do PhotoCraft e aponte a pasta
-(a que tem o `index.html`) em `config/photocraft.json`, na chave `"web"`. O `photocraft-cli` do motor (abaixo) é
-necessário para salvar PSD e para gerar.
-
 ## Instalação
 
 ```powershell
@@ -77,16 +18,6 @@ python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 .venv\Scripts\python.exe -m pip install --no-deps rapidocr_onnxruntime==1.2.3   # OCR, sem o OpenCV que conflita
 ```
-
-### Motor de edição (PhotoCraft)
-
-O gerador edita com as ferramentas do [PhotoCraft](https://github.com/storytold/photocraft) (o Photoshop refeito em
-Rust, Apache-2.0/MIT), rodando escondido (`photocraft-cli serve`). Baixe a versão portátil para Windows da página de
-versões do projeto, descompacte fora do repositório e aponte para o `photocraft-cli.exe` em
-`config/photocraft.json` (`"cli"`) ou na variável `PHOTOCRAFT_CLI`. Com ele, o campo inteiro sai da técnica
-**Reescrever no PhotoCraft** e, em 60% das versões do perfil profissional, as técnicas parciais (trocar um dígito,
-inverter, apagar, copiar letra) apagam com as ferramentas dele. Sem ele, a técnica sai do sorteio e o gerador apaga com
-o Python (ver `docs/tecnicas.md`, "O motor PhotoCraft").
 
 ### OCR
 
@@ -121,64 +52,51 @@ O PaddleOCR-VL-1.6 (0,9B, transformers) foi testado como segunda opinião e fico
 4060 (o reconhecedor acima: ~0,06 s em CPU), "corrige" o que está impresso ("Local de pagemento" → "pagamento",
 número sublinhado vira LaTeX) e o *spotting* de uma página inteira passou de 13 GB de RAM.
 
-## Modo simples (padrão, para quem não conhece editor de imagem)
+## O editor (a página principal)
 
-O rotulador abre no modo simples. Na primeira vez, um tutorial de 4 passos explica o uso.
+Usa-se como o Photoshop; o visual (cinzas neutros, painéis com aba, dicas na barra de status) segue o
+[Graphite](https://github.com/GraphiteEditor/Graphite). No alto, os **menus** (Arquivo, Editar, Selecionar, Camada,
+Imagem, Exibir, Ajuda), com os atalhos ao lado de cada item. Embaixo deles, a **barra de opções** da ferramenta ativa
+e o zoom. À esquerda, as **ferramentas em grupos**: o botão mostra a última usada do grupo, e o clique direito (ou
+segurar o botão) abre as outras. No centro, o documento. À direita, só três painéis. Na **barra de status**, o que
+cada gesto do mouse e cada tecla fazem agora (muda com a ferramenta e com a seleção).
 
-1. Abra um documento. Ele é **lido sozinho** (OCR, ~5 s na primeira vez, depois fica em cache) e
-   cada campo aparece **destacado** com a cor do seu tipo: nome, CPF, endereço, CEP, datas, valor,
-   consumo, nº de instalação, linha digitável, código de barras, QR…
-2. Clique num campo (na imagem ou na lista) e **escreva o valor falso**, ou clique em 🎲 para
-   sortear um no mesmo formato. A prévia aparece na hora.
-3. Clique em **✔ Trocar** (ou Enter). O resto é automático:
-   - apaga o texto antigo;
-   - **identifica a fonte** entre as 10 mais usadas em documentos (Arial, Helvetica, Times New Roman,
-     Calibri, Verdana, Tahoma, Segoe UI, Courier New, Georgia, Arial Narrow; regular ou negrito),
-     comparando o desenho das letras com o original;
-   - escreve no mesmo tamanho, cor e posição;
-   - **iguala o grão do papel**;
-   - grava na camada da categoria certa.
-4. **✔ Salvar e próximo** salva e já abre o próximo documento pendente. **↶ Desfazer** volta um passo.
+**Recortar, puxar e apagar.** Com uma seleção feita (`M` retângulo, `L` laço, `W` varinha…), aparece embaixo dela
+uma barra de tarefas (como a barra contextual do Photoshop):
 
-**🤖 Trocar com IA** (aparece quando o servidor de IA está rodando): em vez de apagar e
-desenhar o texto com uma fonte do Windows, a IA **reescreve o campo na própria imagem**,
-imitando fonte, tinta e fundo. É o fluxo "OCR acha o nome/endereço → IA gera o texto novo
-naquela região" usado na literatura de geração de fraudes (ver `docs/pesquisa_geracao_dados.md`).
-Escreva o valor novo (ou 🎲), clique em 🤖 e espere de 1 a 3 minutos. Só a região do campo
-muda. O modelo é escolhido no seletor "🤖 IA" acima da lista. A caixa "edição automática com IA"
-e a opção do lote fazem o mesmo nos campos de texto sorteados.
+- **Recortar** (`Ctrl+X`): o trecho fica solto; arraste-o para onde quer, e o lugar de onde saiu é preenchido com
+  o papel em volta. Sem arrastar, `Enter` só apaga o trecho.
+- **Puxar** (`Ctrl+arrastar` dentro da seleção, com qualquer ferramenta, ou `V`/`Ctrl+T`): os pixels seguem o mouse
+  na hora e, ao soltar, aparece a prévia de verdade, com o buraco já preenchido. `Alt+arrastar` duplica em vez de
+  puxar. Os cantos escalam (`Shift` mantém a proporção, `Ctrl` faz perspectiva); fora da caixa, gira. `Enter` (ou
+  ✓ Aplicar) aplica e `Esc` devolve o trecho ao lugar. Trocar de ferramenta, desmarcar (`Ctrl+D`), salvar ou trocar
+  de imagem também aplicam o que está solto.
+- **Copiar** / **Colar** (`Ctrl+C` / `Ctrl+V`): na mesma imagem, o trecho é duplicado um pouco ao lado, para
+  arrastar. Em **outra imagem do mesmo split**, ele vem do original daquela imagem, só no formato da seleção
+  (laço, elipse, varinha), nas mesmas coordenadas. Colar numa imagem de outro split é recusado: misturaria os
+  splits. `Ctrl+Shift+V` escolhe o trecho de outro documento numa lista.
+- **Apagar** (`Delete`): o selecionado some, refeito com o papel em volta (preenchimento por similaridade), sem
+  diálogo. O botão do dado refaz o mesmo Apagar com outra variação. `Shift+F5` abre o preenchimento com opções.
+- **Substituir texto** (`R`) e **Ajustes** também estão na barra; **Inverter** e **Desmarcar** no fim dela.
 
-**Como editar** (abaixo do botão Trocar): qualquer técnica do catálogo que serve para o campo.
-Exemplos: trocar só um dígito copiando a letra de outro ponto do documento, só o dia da data, só
-os centavos, apagar um caractere fechando o vão, acrescentar traços (3→8), corretivo ou estilo
-amador. A prévia aparece no documento, 🎲 sorteia outra variação e ▶ Aplicar grava a edição com o
-nome da técnica.
+O tipo da edição segue a ação quando não há dúvida: colar de outra imagem é sempre *pegar de outro documento*, e
+copiar ou puxar dentro da mesma imagem nunca é. Se o tipo marcado for o errado, ele é trocado, com um aviso. Sem
+tipo marcado, a regra continua: nada é aplicado antes de escolher.
 
-**Atalhos automáticos:**
-- **✨ Editar os marcados** troca EXATAMENTE os campos marcados na lista (a caixinha à esquerda de cada
-  campo). Ao abrir um documento, **nome e endereço já vêm marcados**; os botões "Marcar: nome e endereço ·
-  endereço completo · todos · nenhum" mudam a seleção (a escolha fica lembrada).
-  - Cada campo é reescrito na **mesma fonte** do documento, identificada só entre as 10 mais usadas em
-    documentos (técnica `campo.mesma_fonte`, abaixo), no mesmo tamanho, cor e posição.
-  - O mesmo dado repetido (o nome no envelope e no boleto) recebe o **mesmo valor novo**, na caixa de cada
-    lugar; trocando a cidade, UF e CEP saem da mesma cidade.
-  - Os valores falsos saem no formato e no tamanho do original (um nome com iniciais continua com iniciais).
-  - Um aviso diz o que foi feito e o que não deu; o que ficou ruim se desfaz.
-- **＋ Marcar outro texto**: arraste em volta de um texto que o leitor não achou. Ele lê o trecho e
-  sugere o tipo.
-- **🏭 Gerador automático** abre a página de geração em lote (próxima seção).
-- **🔍 Pistas**: o perito (`rotulador/perito.py`) mede, na edição que você acabou de fazer, as pistas que um
-  detector de resíduo usa (grão, espectro do grão, nitidez, tom do papel, grade do JPEG dentro contra fora
-  da região) e pinta no documento onde a edição destoa do papel. A nota vai de 0 (invisível) a 100 (óbvia).
-  É o **desafio**: edite até a nota cair; o que passar vai para o treino como exemplo difícil.
+- **Tipo da edição:** *copiar e colar* (um pedaço do próprio documento colado em outro lugar dele), *pegar de outro
+  documento* (um pedaço de outro documento do MESMO split) ou *apagar e substituir* (o texto apagado e, no lugar,
+  outro escrito ou nada). Escolha um antes de editar (clique, ou `Alt+1`, `Alt+2`, `Alt+3`): sem ele, nada é
+  aplicado e o painel avisa. O escolhido fica lembrado e já vem marcado na próxima imagem. Ele vai para a máscara de
+  classes da edição (`catalogo.CATEGORIAS_EDITOR`: ids 201, 202 e 203, fora dos das classes de campo, que o gerador
+  continua usando) e para o `categorias.csv` do split.
+- **Camadas:** ver "Camadas".
+- **Histórico:** os passos (Puxar, Apagar com preenchimento, Colar de outro documento…), com desfazer e refazer.
 
-Atalhos: `Ctrl+Enter` salva e vai para o próximo documento, `Alt+↓`/`Alt+↑` passam de campo e `?`
-lista todos. O guia de 4 passos recolhe sozinho depois do primeiro documento salvo. **↺ Recomeçar**
-(longe do Salvar) descarta as edições do documento. Ao abrir um documento, os dois seguintes já
-são lidos (OCR) em segundo plano.
-
-O **🛠 Modo avançado** abre o editor completo descrito abaixo. A lista de campos e a fraude
-automática também ficam lá.
+**Salvar** (`Ctrl+S`) grava a imagem editada, as máscaras e a anotação em `saida/<split>/`, no MESMO split da imagem
+de origem, e abre a próxima imagem ainda sem versão. Nada passa de um split para outro: a colagem de outro
+documento só aceita doador do mesmo split (o servidor recusa os outros), e a auditoria da partida recusa o mesmo
+documento em dois splits. ◀ ▶ (`PageUp`/`PageDown`) passam de imagem, e o topo diz em qual está ("3 de 40 · 1
+salva(s)"). **Gerador** (no alto, ou Arquivo › Gerador automático) abre a geração em lote (próxima seção). Na primeira vez, um tutorial curto explica o fluxo.
 
 ## Gerador automático (técnicas × classes, em lote)
 
@@ -187,6 +105,7 @@ completa (modos exato, fácil e avançado, abaixo) fica em **▸ Opções avanç
 
 ### ▶ Gerar fraudes (um clique, padrão)
 
+- **Método**: "Edições profissionais" (padrão, abaixo) ou "Artigo FSTS (NeurIPS 2025)" (no fim desta seção).
 - **Documentos**: um chip por split (vêm marcados os que têm documento sem versão); "escolher documentos…" abre
   a lista. **Versões por documento**: − / +. **O que mudar**: "Nome e endereço — às vezes também CPF, CEP, datas
   ou valores" (padrão), "Só nome e endereço" ou "Escolher campos…".
@@ -216,15 +135,20 @@ completa (modos exato, fácil e avançado, abaixo) fica em **▸ Opções avanç
   que sobra, fonte mal identificada numa troca parcial) e refazem o campo inteiro.
 - **Campos**: sempre nome e/ou endereço; em ~45% das versões também 1 ou 2 grupos extras, coerentes entre si: o CPF
   do cliente, o CEP com o bairro (e às vezes a cidade), a data com o mês de referência, o valor com o consumo. O
-  mesmo dado repetido sai igual em todo lugar. O "✨ Editar os marcados" do modo simples usa a mesma mistura de
-  técnicas, só nos campos marcados.
+  mesmo dado repetido sai igual em todo lugar.
 - Datas e mês de referência são trocados só pelo campo inteiro, que segue o ciclo de datas da versão (vencimento,
   emissão e leitura andando juntos); a troca de um dígito escolhia a data sozinha.
 - Na API: `{"receita": {"perfil": "profissional", "estilo": "recomendado", "extras": true, "variacoes": 3,
   "documentos": {...}}}` em `/api/gerador/iniciar` e `/api/gerador/previa`; `GET /api/gerador/estilos` lista os
   estilos; `GET /api/gerador/receita_profissional?estilo=...` mostra a mistura.
   A anotação traz `gerador.estilo` (classes, extras, técnica e granularidade de cada campo).
-- O método do artigo FSTS é outro perfil: `{"receita": {"perfil": "fsts", "variacoes": 3, "documentos": {...}}}`.
+- **Método "Artigo FSTS (NeurIPS 2025)"**: gera pelo método do artigo *Toward Real-world Text Image Forgery
+  Localization* (`rotulador/fsts.py`). Em cada versão, de 1 a 12 campos de texto; em cada um, o tipo (cópia interna,
+  colagem de outro documento, remoção, inserção ou substituição) e as operações do processamento principal com os
+  parâmetros, sorteados da população das tabelas 8–12. O pós-processamento das tabelas não é aplicado (o rótulo diz
+  "Pós-processamento: nenhum"). Com ele, "O que mudar" e o estilo somem da tela: o método escolhe os campos sozinho.
+  Detalhes em [docs/falsificadores.md](docs/falsificadores.md#4d-o-método-de-geração-do-fsts-inteiro-29102026).
+  Na API é outro perfil: `{"receita": {"perfil": "fsts", "variacoes": 3, "documentos": {...}}}`.
   `"fsts": {"tipos": {"replacement": 2, "removal": 1}}` muda o peso dos tipos (o tipo que não vem fica de fora), e
   `"categorias": ["nome", ...]` restringe os campos. A anotação traz `gerador.fsts` (regiões pedidas e feitas); cada
   edição traz `fsts` (tipo, operações e parâmetros).
@@ -392,7 +316,7 @@ valendo. **Usar estas técnicas e classes no lugar dos tipos** volta à lista co
 
    O padrão da página segue o estado da arte em dados para generalizar: canal misturado em 70% das
    versões e marcas em 30% das que têm captura física (≈ 18% de todas). Uma receita enviada pela API
-   sem `canal` não usa canal, e a fraude automática do modo simples também não. Evidências e números: [docs/tecnicas.md](docs/tecnicas.md#qualidade-e-generalização).
+   sem `canal` não usa canal. Evidências e números: [docs/tecnicas.md](docs/tecnicas.md#qualidade-e-generalização).
 
 **👁 Prévia** roda a receita num documento **sem salvar**:
 - mostra a imagem com cada edição marcada e a máscara de técnicas;
@@ -476,7 +400,7 @@ num editor e testar em outro derruba o F de 85 para 0). O gerador combate isso e
   (`rotulador/perito.py`) mede o contrário, as pistas que sobraram, por edição (grão, espectro,
   nitidez, tom, grade do JPEG, nota de 0 a 1). O datasheet traz a mediana das pistas por técnica e
   nível, `GET /api/perito/<split>/<nome>` as de uma versão, `POST /api/perito/sessao` as da edição
-  manual aberta (o botão 🔍 Pistas) e a receita `dificuldade` usa a nota para ficar com a variante
+  manual aberta e a receita `dificuldade` usa a nota para ficar com a variante
   mais difícil. Um detector seu entra no lugar do perito por `dificuldade.detector.url`.
 - **Coerência do texto.** CEP na faixa da cidade, código de barras com o total e a empresa do
   documento, consumo na proporção do valor, datas relativas à data de envio e coerentes por rótulo
@@ -556,21 +480,20 @@ threads) quando ele está instalado (`requirements.txt`).
 ## Uso
 
 1. Coloque os documentos em `dados/treino`, `dados/teste` e `dados/validacao` (subpastas
-   valem; `validação`, com acento, também), ou escolha outra pasta com essas subpastas no estúdio.
+   valem; `validação`, com acento, também), ou use outra pasta com essas subpastas (`--dados`).
    Formatos aceitos: JPG, PNG, TIFF (inclusive multipágina), BMP, WEBP, HEIC e PDF.
    Cada página vira um item; PDF é rasterizado a 200 DPI (`--dpi`).
 2. `.venv\Scripts\python.exe app.py` abre o navegador em http://127.0.0.1:5000.
    Opções: `--dados`, `--saida`, `--porta`, `--dpi`, `--sem-navegador`. Sem `--dados` nem `--saida`, vale a
-   pasta escolhida na tela (`config/pasta_escolhida.json`), se houver.
+   última pasta trocada por `POST /api/pasta/usar` (`config/pasta_escolhida.json`), se houver.
 3. Para cada documento:
-   1. Escolha a **categoria** do que vai editar (barra amarela, `Alt+1..0`, ou clique na lista
-      "O que foi editado").
-   2. Edite. A primeira edição de cada categoria cria **uma camada só dela** (ver "Camadas").
-   3. Repita para outras categorias.
-   4. Salve com **Salvar** (`Ctrl+S`).
+   1. Escolha o **tipo da edição** à direita: copiar e colar, pegar de outro documento ou apagar e
+      substituir (`Alt+1..3`). Na próxima imagem, o último já vem marcado.
+   2. Edite. A primeira edição de cada tipo cria **uma camada só dela** (ver "Camadas").
+   3. Salve com **Salvar** (`Ctrl+S`): a próxima imagem abre.
 
-   O botão só libera quando há edição e toda camada visível tem categoria. Depois de salvar, o
-   documento volta ao original e você pode criar outra variação (v02, v03…).
+   O botão só libera quando há edição e toda camada visível tem tipo. Para fazer outra variação
+   (v02, v03…) da mesma imagem, volte a ela com ◀.
 4. Antes de treinar, rode `.venv\Scripts\python.exe auditar_vazamento.py`.
 
 **Rodar em segundo plano, sem janela** (rotulador na porta 5010 e IA na 5051):
@@ -592,12 +515,12 @@ trabalho volta quando você reabre o documento.
 
 Funciona como no Photoshop. O original é o **Fundo** (travado) e cada edição vai para uma camada.
 
-- **Cada categoria tem a sua camada.** Escolher "valor" e editar cria a camada "valor 1"; escolher
-  "data" cria outra. Escolher de novo uma categoria que já tem camada volta a editar nela. Clicar
-  numa camada a ativa e põe a categoria dela na barra amarela.
-- **Painel:** 👁 oculta/mostra, duplo clique renomeia, a caixa de categoria de cada camada define o
-  que vai para a máscara, arrastar reordena, e há controle de opacidade. Botões: ＋ nova camada,
-  ⧉ duplicar, ⤓ mesclar com a de baixo, 🗑 excluir.
+- **Cada tipo tem a sua camada.** Escolher "copiar e colar" e editar cria a camada "copiar e colar 1";
+  escolher "apagar e substituir" cria outra. Escolher de novo um tipo que já tem camada volta a editar
+  nela. Clicar numa camada a ativa e marca o tipo dela no painel.
+- **Painel:** a opacidade da camada ativa no alto; em cada camada, o olho oculta/mostra, a miniatura, o nome
+  (duplo clique renomeia) e a caixa do tipo, que define o que vai para a máscara; arrastar reordena. No pé do
+  painel: nova camada, duplicar, mesclar com a de baixo e excluir (também no menu Camada).
 - **Atalhos:** `Ctrl+Shift+N` nova, `Ctrl+J` duplicar, `Ctrl+E` mesclar, `Ctrl+[` e `Ctrl+]` mudam a
   posição na pilha.
 - **Como as ferramentas usam as camadas:** elas enxergam a imagem composta (todas as camadas
@@ -633,13 +556,16 @@ Funciona como no Photoshop. O original é o **Fundo** (travado) e cada edição 
 | | "Só a tinta" (nas ferramentas de seleção) reduz a seleção aos traços de texto/tinta dentro dela |
 | `T` | texto: clique na linha de base, digite e dê `Enter`. Ajustes: fonte do sistema ou da pasta `fontes/`, tamanho, espaçamento, largura, negrito, rotação, desfoque, suavização |
 | `R` | **substituir texto**: arraste sobre o texto antigo. O servidor estima posição, tamanho e cor, apaga o antigo com preenchimento inteligente e escreve o novo. 🎲 sorteia um valor plausível da categoria |
-| `V` | com seleção: mover/duplicar. Arrastar move; o canto escala (`Shift` mantém a proporção, `Ctrl` faz perspectiva); fora do contorno gira. Sem seleção: move a **camada** ativa |
-| ⧉ | colar um trecho de **outro documento do mesmo split** (splicing) |
+| `V` | **mover / puxar**: com seleção, arrastar puxa os pixels (o buraco é preenchido); `Alt+arrastar` duplica; o canto escala (`Shift` mantém a proporção, `Ctrl` faz perspectiva); fora do contorno gira; `Enter` aplica, `Esc` cancela. Sem seleção: move a **camada** ativa |
+| `Ctrl+arrastar` | puxar a seleção com qualquer ferramenta |
+| `Ctrl+X` / `Ctrl+C` / `Ctrl+V` | recortar (o trecho fica solto para arrastar) / copiar / colar, nesta imagem ou em outra do mesmo split |
+| `Ctrl+Shift+V` | colar um trecho de **outro documento do mesmo split** escolhido numa lista (splicing; no grupo do Mover) |
+| `Delete` | **apagar com preenchimento**: o selecionado some, refeito com o papel em volta |
 | `Shift+F5` | **preenchimento por similaridade** (PatchMatch), com prévia ao vivo. Escolha de onde amostrar (automático, documento inteiro ou faixa em px), tamanho do patch e 🎲 outra variação |
-| ◐ | ajustes na seleção: brilho/contraste, níveis, matiz/saturação, desfoque, nitidez, ruído, recompressão JPEG local, cinza e **igualar ruído ao papel** (deixa a área editada com o mesmo grão do entorno; testado: a razão de ruído dentro/fora fica em 1 ± 0,12) |
-| ▮▯ | código de barras ITF-25. 🎲 gera um código válido de arrecadação (contas, começa com 8) ou de boleto, junto com a linha digitável |
-| ▦ | QR code. 🎲 gera um PIX "copia e cola" válido (CRC conferido) |
-| 🤖 | edição por IA da seleção (ver abaixo) |
+| Imagem › Ajustes | ajustes na seleção: brilho/contraste, níveis, matiz/saturação, desfoque, nitidez, ruído, recompressão JPEG local, cinza e **igualar ruído ao papel** (deixa a área editada com o mesmo grão do entorno; testado: a razão de ruído dentro/fora fica em 1 ± 0,12) |
+| Imagem › Código de barras | código de barras ITF-25. 🎲 gera um código válido de arrecadação (contas, começa com 8) ou de boleto, junto com a linha digitável |
+| Imagem › QR code | QR code. 🎲 gera um PIX "copia e cola" válido (CRC conferido) |
+| Imagem › Editar com IA | edição por IA da seleção (ver abaixo) |
 | `Ctrl+Z` / `Ctrl+Y` | desfazer / refazer |
 | `\` (segurar) | ver o original |
 | `K` | sobrepor a máscara de pixels alterados |
@@ -647,7 +573,7 @@ Funciona como no Photoshop. O original é o **Fundo** (travado) e cada edição 
 | Roda, `Espaço`+arrastar, `0`, `1` | zoom, mover a vista, ajustar à tela, 100% |
 | `PageUp` / `PageDown` | documento anterior / próximo |
 
-`?` mostra todos os atalhos (gerais, do modo simples e do avançado).
+`?` mostra todos os atalhos.
 
 **🔍 Qual é a fonte?** (nas ferramentas `T` e `R`) descobre a fonte de um texto selecionado.
 
@@ -708,10 +634,14 @@ saida/<split>/
   manifesto.csv                    uma linha por variação (com fracao_alterada e dificuldade)
   catalogo.csv                     uma linha por EDIÇÃO (técnica, família, nível, classe, textos,
                                    fornecedores)
-saida/catalogo.json                legenda dos números das máscaras de técnica e de classe
+  categorias.csv                   uma linha por IMAGEM salva: versão, documento, categoria (copiar e
+                                   colar, pegar de outro documento ou apagar e substituir; as do gerador
+                                   pela família da técnica), editada, original, máscara, anotação e
+                                   origem (manual ou gerador). Caminhos relativos à pasta do split
+saida/catalogo.json                legenda dos números das máscaras de técnica e de classe (as classes de
+                                   campo e as 3 categorias do editor, ids 201–203)
 saida/dataset.xlsx                 a planilha do dataset (Resumo, Versões, Edições, Documentos, Legenda),
                                    refeita a cada versão salva; aberta no Excel: "dataset (nova).xlsx"
-saida/_estudio/                    as versões geradas pela aba ⚡ Gerar, à espera de revisão (rascunho)
 saida/relatorio_vazamento.txt/.json  resultado da última auditoria (auditar_vazamento.py)
 saida/DATASHEET.md, datasheet.json composição, técnicas, canais, marcas, auditoria, usos e limitações
                                    (refeitos a cada lote; ou: python -m rotulador.datasheet saida)
@@ -810,7 +740,7 @@ passar disso.
      Sem isso, todo falso do teste já teria aparecido no treino, e um modelo que lê o texto (OCR +
      layout, VLM) acertaria o teste decorando a lista; e sem o núcleo, "MARIA" só apareceria em
      originais no treino ("MARIA ⇒ genuíno").
-   - Vale para o 🎲, o modo simples, as técnicas e o gerador. Meses, UF e "RUA/AV" ficam inteiros.
+   - Vale para o 🎲, as técnicas e o gerador. Meses, UF e "RUA/AV" ficam inteiros.
    - **Bases de valores** (`config/vocabulario/`, refeitas por `ferramentas/construir_vocabulario_nomes.py` e
      `ferramentas/construir_vocabulario_lugares.py`; fontes, licenças e colunas nos `LEIA-ME_*.md`):
      - **nomes**: 100.787 prenomes do Censo 2010 (IBGE, via brasil.io) com a frequência por sexo e a grafia
@@ -872,8 +802,7 @@ passar disso.
 ## IA local (Qwen-Image-Edit-2511 e Qwen-Image-2.1 Uncensored)
 
 Selecione a área, clique em 🤖, escolha o modelo e descreva a troca, por exemplo
-`Troque o texto "R$ 151,37" por "R$ 987,65"…`. No modo simples, use **🤖 Trocar com IA**
-num campo detectado: o prompt é montado sozinho a partir do texto lido pelo OCR.
+`Troque o texto "R$ 151,37" por "R$ 987,65"…`.
 
 Enquanto a IA trabalha, a tela mostra a etapa (carregando o modelo, lendo o pedido, difusão passo N
 de M), o tempo e quanto falta. **Cancelar** para a edição no próximo passo; nada é aplicado. O
@@ -1097,8 +1026,7 @@ O trabalho em equipe tem `ui_equipe.py`, com dois navegadores, ou seja, duas pes
 - revisão por teclado, aprovação em lote e exportação;
 - metas e atribuição.
 
-O modo simples tem o seu próprio teste de interface, `ui_simples.py` (com os documentos realistas). O
-gerador também tem o seu, `ui_gerador.py` (51 checks). Ele usa os presets, a prévia e a geração de
+O gerador tem o seu teste de interface, `ui_gerador.py` (51 checks). Ele usa os presets, a prévia e a geração de
 8 imagens, e no catálogo a matriz, os filtros, o detalhe e a exclusão. No editor, aplica uma técnica
 pelo "Como editar" e a fraude automática. Falha com erro de JavaScript ou traceback no servidor.
 

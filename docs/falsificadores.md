@@ -264,7 +264,7 @@ sintéticas, olhadas uma a uma.
 
 Até aqui o FSTS entrava em pedaços: as frequências da **substituição** (tabela 12) no operador humano e as do disfarce
 em `_DISFARCES`. Agora o método do artigo está inteiro em `rotulador/fsts.py`, como um **perfil do gerador**
-(`{"perfil": "fsts"}`) e um **método da aba ⚡ Gerar** do estúdio ("Artigo FSTS (NeurIPS 2025)"). O perfil profissional
+(`{"perfil": "fsts"}`) e um **método da tela Gerar fraudes** ("Artigo FSTS (NeurIPS 2025)"). O perfil profissional
 continua sendo o padrão.
 
 | Peça do artigo | Onde está o quê |
@@ -274,13 +274,13 @@ continua sendo o padrão.
 | individual (eq. 3) e população (eq. 5): como o artigo chega às tabelas a partir dos dados das 67 pessoas | não se refaz aqui: as configurações das pessoas não foram publicadas (o repositório dos autores tem só o conjunto de dados e vídeos); o resultado delas são as tabelas |
 | geração (eq. 8): sorteio da POPULAÇÃO; 1–12 regiões de texto, 1–20 caracteres | `fsts.configurar`: em cada região, cada operação pela frequência da tabela e cada parâmetro dentro da faixa; `gerador.aplicar_fsts`: o comprimento escolhe a granularidade (1 = um caractere, o campo inteiro ou mais = o campo, o resto = um trecho) |
 | máscara B(Iˢ − Iᵒ): 1 onde mudou | a de sempre (a diferença exata) |
-| o roteiro no Photoshop | o PhotoCraft. Estilos de camada (Traçado, Sombra projetada, Brilho externo) numa camada com a tinta nova (Ctrl+J); filtros e ajustes na área editada |
+| o roteiro no Photoshop (o pós-processamento) | não é aplicado: desde 04/11/2026 as regiões saem só com o processamento principal, e o rótulo diz "Pós-processamento: nenhum" |
 
 Correção de 30/10: a primeira versão (29/10) sorteava 67 "falsários" inventados em volta das tabelas, cada um com
 parâmetros fixos. Isso não é o que o artigo faz para gerar (ele sorteia da população), tirava a variedade dos parâmetros
 (67 valores por parâmetro em vez da faixa) e a separação "pessoas do teste que o treino não viu" era só ruído de
 sorteio. Saiu. Também desde 30/10 uma região não cai sobre o que outra edição da versão tocou: a colagem do bloco de
-endereço cobre as linhas vizinhas, e a sombra e o traçado passam da caixa do campo.
+endereço cobre as linhas vizinhas.
 
 Cada edição leva `fsts` (tipo, operações, parâmetros, comprimento, granularidade, ferramenta de apagar) e o fornecedor
 `fsts=<tipo>`; a anotação da versão leva `gerador.fsts` (as regiões pedidas e as feitas); o Excel tem a coluna
@@ -294,7 +294,7 @@ Como cada tipo vira as técnicas daqui (`gerador.TECNICAS_FSTS`):
 | colagem | letra de outro documento | — | campo de outro documento, bloco de endereço |
 | remoção | apagar um caractere | apagar a parte final | apagar o campo |
 | inserção | um dígito a mais | complemento depois do campo | — |
-| substituição | redesenhar a letra | trocar o trecho | reescrever no PhotoCraft (ou na mesma fonte) |
+| substituição | redesenhar a letra | trocar o trecho | reescrever na mesma fonte |
 
 O processamento principal entra pelas técnicas:
 
@@ -304,27 +304,10 @@ O processamento principal entra pelas técnicas:
 - a ferramenta de apagar (preenchimento sensível ao conteúdo, cor sólida, fundo clonado, Carimbo, Pincel de
   Recuperação), a suavização do texto, o conta-gotas ou a cor segura e a escala ±5% vão pelo operador humano.
 
-O texto novo sai nítido: o desfoque, quando há, é o do pós-processamento. A conferência por OCR vale para o texto
-escrito, ANTES do pós-processamento: o disfarce do artigo é aplicado como foi sorteado, sem olhar o resultado.
-
-**O que se vê a olho, de propósito.** As tabelas são de pessoas editando capturas de tela, recibos e documentos; no
-papel creme dos nossos documentos, algumas operações deixam marca visível. No artigo também:
-
-- Aguçar a 400–500% com raio de 50–60 px, de 1 a 5 vezes (inserção, substituição): o papel da área fica branco;
-- Desfoque de Lente com brilho 100% (colagem): o papel da área fica branco;
-- Matiz/Saturação com luminosidade até −30 (colagem): a área fica cinza;
-- Desfoque Inteligente no modo "Somente Bordas" (cópia, colagem): a área fica preta com as bordas brancas;
-- Traçado com cor qualquer (colagem, inserção, substituição): contorno colorido;
-- Sombra projetada (colagem, inserção, substituição).
-
-Cada uma sai em poucos por cento das regiões do seu tipo.
+O texto novo sai nítido, como foi digitado. A conferência por OCR vale para o texto escrito.
 
 **Interpretações nossas** (o artigo não dá o número):
 
-- a quantidade do Desfoque Radial é a padrão do Photoshop, 10, centrada na área;
-- o "filtro de média" é o Desfoque de Caixa de 1 px (o "Média" do Photoshop pintaria a área de uma cor só);
-- o núcleo do filtro Personalizado fica nas faixas da tabela, com soma igual à escala;
-- a curva "realçar claros / baixar escuros" sobe ou desce um ponto da curva de 5 a 25 níveis;
 - a cor sólida da remoção é a do papel em volta;
 - a "escala da região" da remoção é a folga da seleção, que nunca fica menor que o texto;
 - as fontes do artigo (Times, SimSun, KaiTi, YaHei, SimHei, de documentos chineses) são a fonte identificada do campo;
@@ -333,6 +316,7 @@ Cada uma sai em poucos por cento das regiões do seu tipo.
 **Fora:**
 
 - a colagem "perto, numa das 9 posições em volta" da cópia interna: a cópia vai sempre por cima de outro texto;
+- o pós-processamento das tabelas (filtros e estilos de camada depois da edição);
 - a compressão (figura 2, 40,4% cru na substituição), que não está nas tabelas.
 
 ## 5. O que ainda não é humano

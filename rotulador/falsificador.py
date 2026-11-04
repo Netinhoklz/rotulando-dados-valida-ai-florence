@@ -42,7 +42,7 @@ JANELA_RECENTE = (6, 85)  # dias atrás: dentro da regra dos 90 dias, com folga 
 
 # técnicas que escrevem o VALOR INTEIRO pedido (p["texto"]); as outras escolhem o que mudar sozinhas
 ACEITAM_TEXTO = frozenset({"campo.reescrever", "campo.amador", "ia.reescrever", "campo.mesma_fonte",
-                           "campo.letras_do_documento", "campo.photocraft"})
+                           "campo.letras_do_documento"})
 
 MOTIVOS: dict[str, dict] = {
     "recencia": {"rotulo": "Deixar a conta recente", "icone": "📅", "peso": 0.35,

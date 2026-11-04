@@ -1,5 +1,0 @@
-{
-  "_leia": "Onde está o photocraft-cli (github.com/storytold/photocraft, versão portátil para Windows). A variável PHOTOCRAFT_CLI tem prioridade; sem nenhum dos dois, o rotulador procura no PATH e, sem o motor, a técnica campo.photocraft sai do sorteio. 'web' é a pasta da versão web (photocraft-web-<versão>, com o index.html): é a interface do estúdio, servida em /photocraft/ (PHOTOCRAFT_WEB tem prioridade).",
-  "cli": "E:/photocraft/app/photocraft-0.16.0-windows-x64-portable/photocraft-cli.exe",
-  "web": "E:/photocraft/web/photocraft-web-0.16.0"
-}

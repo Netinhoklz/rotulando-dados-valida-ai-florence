@@ -1,5 +1,5 @@
 """O dataset numa planilha do Excel: ``saida/dataset.xlsx``, refeita a partir dos índices de cada split (manifesto.csv
-e catalogo.csv, que vêm dos JSON de anotação) a cada versão salva no estúdio e no fim de cada lote do gerador.
+e catalogo.csv, que vêm dos JSON de anotação) a cada versão salva no editor e no fim de cada lote do gerador.
 
 Abas:
   - **Resumo**: por split (treino, teste, validação), os documentos de origem, as versões, as edições e a fração editada;
@@ -121,12 +121,12 @@ def _aba(wb, titulo: str, colunas: list[tuple[str, int]], linhas: list[list], sp
 
 
 def _legenda_categorias(raiz_saida: Path, ids_categoria: dict | None) -> dict:
-    if ids_categoria:
-        return dict(ids_categoria)
+    """As classes da legenda da saída (catalogo.json: as de campo e as 3 do editor) mais as pedidas."""
     try:
-        return json.loads((raiz_saida / "catalogo.json").read_text(encoding="utf-8")).get("categorias") or {}
+        gravadas = json.loads((raiz_saida / "catalogo.json").read_text(encoding="utf-8")).get("categorias") or {}
     except (OSError, ValueError):
-        return {}
+        gravadas = {}
+    return {**gravadas, **(ids_categoria or {})}
 
 
 def montar(raiz_saida: Path, registro=None, ids_categoria: dict | None = None) -> Workbook:

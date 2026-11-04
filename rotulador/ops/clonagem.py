@@ -10,7 +10,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from ..selecao import Selecao
+from ..selecao import Selecao, rasterizar
 from ..sessao import ErroOperacao, Resultado
 from .base import alpha_selecao, caixa, compor, cor, exigir_selecao, inteiro, num
 from .texto import apagar
@@ -103,8 +103,24 @@ def transformar(img: np.ndarray, p: dict, sel: Selecao, chave_cache=None, **_) -
                    meta={"origem": origem})
 
 
+def _forma_no_doador(spec, doador: np.ndarray, oy0: int, oy1: int, ox0: int, ox1: int) -> np.ndarray:
+    """O formato da seleção copiada (laço, elipse, varinha…), refeito no doador e recortado na caixa de origem.
+
+    É o Ctrl+C / Ctrl+V do editor: o que vai para o outro documento é só o que estava selecionado, não o retângulo
+    inteiro em volta."""
+    sd = rasterizar(spec, doador)
+    a = np.zeros((oy1 - oy0, ox1 - ox0), np.float32)
+    y0, y1, x0, x1 = max(oy0, sd.y0), min(oy1, sd.y1), max(ox0, sd.x0), min(ox1, sd.x1)
+    if not sd.vazia and y1 > y0 and x1 > x0:
+        a[y0 - oy0:y1 - oy0, x0 - ox0:x1 - ox0] = sd.alpha[y0 - sd.y0:y1 - sd.y0, x0 - sd.x0:x1 - sd.x0]
+    if not (a > 0).any():
+        raise ErroOperacao("a seleção copiada não pega nada no documento de origem")
+    return a
+
+
 def colar(img: np.ndarray, p: dict, sel: Selecao, carregar_doador=None, **_) -> Resultado:
-    """Splicing: recorte retangular de outro documento (do MESMO split) projetado no destino."""
+    """Splicing: trecho de outro documento (do MESMO split) projetado no destino. O trecho é o retângulo ``origem``
+    ou, com ``selecao_doador``, só a parte dele que estava selecionada no doador."""
     if carregar_doador is None:
         raise ErroOperacao("colagem indisponível")
     doador_id = str(p.get("doador", ""))
@@ -114,11 +130,13 @@ def colar(img: np.ndarray, p: dict, sel: Selecao, carregar_doador=None, **_) -> 
     oy0, oy1, ox0, ox1 = caixa(num(o, "y0", 0, 0, Hd), num(o, "y1", 0, 0, Hd), num(o, "x0", 0, 0, Wd),
                                num(o, "x1", 0, 0, Wd), Hd, Wd)
     conteudo = np.ascontiguousarray(doador[oy0:oy1, ox0:ox1])
-    alpha = np.ones(conteudo.shape[:2], np.float32)
+    spec = p.get("selecao_doador")
+    alpha = (_forma_no_doador(spec, doador, oy0, oy1, ox0, ox1) if spec and spec.get("formas")
+             else np.ones(conteudo.shape[:2], np.float32))
     borda = num(p, "suavizar_borda", 0, 0, 50)
     if borda > 0:  # suaviza só para dentro: a pegada não cresce
-        d = cv2.distanceTransform(np.pad(alpha.astype(np.uint8), 1), cv2.DIST_L2, 3)[1:-1, 1:-1]
-        alpha = np.clip(d / borda, 0, 1).astype(np.float32)
+        d = cv2.distanceTransform(np.pad((alpha > 0).astype(np.uint8), 1), cv2.DIST_L2, 3)[1:-1, 1:-1]
+        alpha = (alpha * np.clip(d / borda, 0, 1)).astype(np.float32)
     H, W = img.shape[:2]
     interp = _INTERP.get(p.get("interpolacao", "bicubica"), cv2.INTER_CUBIC)
     y0, y1, x0, x1, img_p, a_p = _transformar(conteudo, alpha, ox0, oy0, _destino(p), H, W, interp)
@@ -127,4 +145,5 @@ def colar(img: np.ndarray, p: dict, sel: Selecao, carregar_doador=None, **_) -> 
     if not (a_p > 0).any():
         raise ErroOperacao("o destino ficou fora da imagem")
     return _juntar(img, img, None, y0, y1, x0, x1, img_p, a_p,
-                   meta={"doador": doador_id, "origem_doador": [ox0, oy0, ox1, oy1]})
+                   meta={"doador": doador_id, "origem_doador": [ox0, oy0, ox1, oy1],
+                         "forma_da_selecao": bool(spec and spec.get("formas"))})

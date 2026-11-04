@@ -71,7 +71,7 @@ from PIL import Image
 
 from . import campos as mod_campos
 from . import (canal, catalogo, coerencia, datasheet, exportar, falsificador as mod_falsificador, fsts, gesto, humano,
-               identificar_fonte, marcas, photocraft, planilha)
+               identificar_fonte, marcas, planilha)
 from .contexto import Contexto
 from .ops import auto, executar, geradores, ia
 from .ops.tecnicas import _inicio_parte_final, _trechos, aplicavel
@@ -239,8 +239,6 @@ class Receita:
         self.extras = bool(d.get("extras")) and self.perfil == "profissional"
         self.categorias_base = [c for c in (d.get("categorias_base") or []) if c in self.categorias] or list(self.categorias)
         self.estilo = d.get("estilo") if d.get("estilo") in ESTILOS else None  # o estilo pronto da tela, se veio de um
-        # o editor das versões no perfil profissional ("photocraft": a aba Gerar do estúdio); None: sorteado por versão
-        self.motor = d.get("motor") if self.perfil == "profissional" and d.get("motor") in MOTOR_PROFISSIONAL else None
         try:  # os pesos dos cinco tipos do FSTS (o a_k da eq. 5)
             self.fsts = fsts.normalizar(d.get("fsts")) if self.perfil == "fsts" else None
         except (TypeError, ValueError) as e:
@@ -254,8 +252,7 @@ class Receita:
                 "edicoes": [self.minimo, self.maximo], "variacoes": self.variacoes,
                 "distribuicao": self.distribuicao, "acabamento": self.acabamento, "canal": self.canal,
                 "marcas": self.marcas, "falsificadores": self.falsificadores, "dificuldade": self.dificuldade,
-                "humano": self.humano, "estilo": self.estilo, **({"motor": self.motor} if self.motor else {}),
-                **({"fsts": self.fsts} if self.fsts else {})}
+                "humano": self.humano, "estilo": self.estilo, **({"fsts": self.fsts} if self.fsts else {})}
 
     def falsificador(self, rng: random.Random, ia_online: bool = False):
         """A pessoa que faz ESTA versão (ou None: sorteio clássico)."""
@@ -564,7 +561,7 @@ TECNICAS_FSTS = {
     "removal": {"caractere": ("caractere.apagar",), "trecho": ("campo.remover",), "campo": ("campo.remover",)},
     "insertion": {"caractere": ("caractere.inserir",), "trecho": ("campo.acrescentar",)},
     "replacement": {"caractere": ("caractere.redesenhar",), "trecho": ("trecho.trocar",),
-                    "campo": ("campo.photocraft", "campo.mesma_fonte")},
+                    "campo": ("campo.mesma_fonte",)},
 }
 _GRANULARIDADES = ("caractere", "trecho", "campo")
 _FSTS_COM_TEXTO_OU_APAGADOR = ("removal", "insertion", "replacement")  # o processamento principal vai pelo operador humano
@@ -605,9 +602,9 @@ def aplicar_fsts(sessao: Sessao, ctx, r: Receita, plano: Plano, rng: random.Rand
                  info: dict | None = None) -> list[dict]:
     """Uma versão pelo método do FSTS (eq. 8 do artigo, que sorteia da população): de 1 a 12 regiões; em cada uma, o
     tipo pelos pesos da receita (a_k), um campo de texto livre onde esse tipo cabe, o comprimento do texto adulterado
-    (1–20) e a configuração (``fsts.configurar``: processamento principal e pós-processamento, operações pelas
-    frequências das tabelas e parâmetros dentro das faixas). Tudo pelo PhotoCraft quando a técnica tem o motor. A
-    máscara é a de sempre (a diferença exata). O que uma edição tocou (a caixa do campo e a área que mudou: a colagem do
+    (1–20) e a configuração (``fsts.configurar``: o processamento principal, operações pelas frequências das tabelas
+    e parâmetros dentro das faixas; o pós-processamento não é aplicado). A máscara é a de sempre
+    (a diferença exata). O que uma edição tocou (a caixa do campo e a área que mudou: a colagem do
     bloco de endereço cobre as linhas vizinhas, a sombra e o traçado passam da caixa) não recebe outra edição por cima.
     ``info`` recebe ``fsts`` (as regiões pedidas e as feitas)."""
     campos = [f for f in ctx.campos if f.get("categoria") in r.categorias and f.get("tipo", "texto") == "texto"
@@ -632,7 +629,6 @@ def aplicar_fsts(sessao: Sessao, ctx, r: Receita, plano: Plano, rng: random.Rand
             p = _params(t, f, rng, r, None, None, hab)
             p["habitos"] = {**(p.get("habitos") or {}), "fsts": {**cfg, "granularidade": gr}}
             p["opcoes"] = {**p["opcoes"], **_opcoes_fsts(t, cfg, gr)}
-            p["motor"] = "photocraft"
             try:
                 res, ent = _executar_edicao(sessao, ctx, p, rng, r, editor)
             except ErroOperacao as e:
@@ -806,9 +802,8 @@ def _mesmo_valor(categoria: str, antigo: str, novo_ref: str, antigo_ref: str) ->
 PERFIL_PROFISSIONAL = {
     # o campo inteiro reescrito (PDF com texto; IA ligada e pedida). As letras do próprio documento com o mesmo peso
     # da mesma fonte: depois de limpar as marcas soltas (ponto, tique, letra grudada, espaço), 0 marcas em 100
-    # edições; quando faltam letras (~12%), a edição vai para a mesma fonte. O PhotoCraft (as ferramentas do
-    # Photoshop, rotulador.photocraft) é a base: o dobro do peso; sem o motor instalado, sai do sorteio
-    "campo": (0.55, {"campo.mesma_fonte": 1.0, "campo.photocraft": 2.0, "campo.letras_do_documento": 1.0,
+    # edições; quando faltam letras (~12%), a edição vai para a mesma fonte
+    "campo": (0.55, {"campo.mesma_fonte": 1.0, "campo.letras_do_documento": 1.0,
                      "campo.reescrever_pdf": 1.0, "ia.reescrever": 1.0}),
     "trecho": (0.25, {"trecho.trocar": 1.0}),  # só o número da casa, o sobrenome, o dia, os centavos
     "caractere": (0.15, {"caractere.copiar_glifo": 1.0, "caractere.redesenhar": 1.0, "caractere.inserir": 0.5,
@@ -821,9 +816,6 @@ GRUPO_DA_TECNICA = {tid: g for g, (_, ts) in PERFIL_PROFISSIONAL.items() for tid
 # granulado (o sobrenome apagado no lote de 04/10). O campo inteiro segue com o apagador dele (só a tinta, fundo local)
 APAGAR_PROFISSIONAL = {"patchmatch": 0.65, "carimbo": 0.35}
 COLAGEM_PROFISSIONAL = {"tinta": 0.7, "poisson": 0.3}  # a letra copiada: sem retângulo nem papel colado
-# o editor da versão nas técnicas parciais: as ferramentas de apagar do PhotoCraft ou as do Python (dois fornecedores,
-# para o detector não decorar a textura de um só); sem o motor instalado, sempre o Python
-MOTOR_PROFISSIONAL = {"photocraft": 0.6, "python": 0.4}
 # extras: grupos de classes que às vezes mudam junto com o nome/endereço, coerentes entre si (versões com 0, 1 e 2)
 EXTRAS_PROB = (0.55, 0.35, 0.10)
 GRUPOS_EXTRAS = {"documento": ("cpf/cnpj",), "local": ("cep", "bairro", "cidade/uf"),
@@ -887,8 +879,7 @@ def _servem_profissional(f: dict, r: Receita, vetorial: bool = False, ia_online:
         for tid in pesos:
             t = catalogo.TECNICAS.get(tid)
             if (t is None or tid not in r.tecnicas or (t.precisa_pdf and not vetorial) or (t.precisa_ia and not ia_online)
-                    or not aplicavel(t, f) or not catalogo.compativel(t, cat)
-                    or (tid == "campo.photocraft" and not photocraft.disponivel())):
+                    or not aplicavel(t, f) or not catalogo.compativel(t, cat)):
                 continue
             if tid == "trecho.trocar" and (not _trechos(cat, s) or (cat == "bairro" and len(s.split()) > 1)):
                 continue  # nada que se troque sozinho (nome de uma palavra só); bairro de várias palavras com uma
@@ -1054,9 +1045,6 @@ def editar_campos(sessao: Sessao, ctx, campos: list[dict], r: Receita, plano, rn
     ferramentas = {"apagar": rng.choices(list(APAGAR_PROFISSIONAL), weights=list(APAGAR_PROFISSIONAL.values()))[0],
                    "colagem": rng.choices(list(COLAGEM_PROFISSIONAL), weights=list(COLAGEM_PROFISSIONAL.values()))[0]
                    } if perfil else None
-    if perfil:
-        ferramentas["motor"] = ("python" if not photocraft.disponivel() else getattr(r, "motor", None)
-                                or rng.choices(list(MOTOR_PROFISSIONAL), weights=list(MOTOR_PROFISSIONAL.values()))[0])
     if perfil and humano_hab:  # a ferramenta de apagar é a do operador humano (FSTS: content-aware, cor, clone...)
         ferramentas["apagar"] = humano.APAGADOR.get(humano_hab.get("apagar"), ferramentas["apagar"])
     for n, f in enumerate(sorted(campos, key=lambda c: (bool(c.get("ocorrencia")), c["caixa"][1], c["caixa"][0]))):
@@ -1088,7 +1076,6 @@ def editar_campos(sessao: Sessao, ctx, campos: list[dict], r: Receita, plano, rn
             p = _params(t, f, rng, r, None, texto, humano_hab)
             if perfil:
                 p["opcoes"] = {**p["opcoes"], **_opcoes_profissionais(t, f, ferramentas)}
-                p["motor"] = ferramentas["motor"]
             try:
                 with geradores.usando(cidade=cidade_versao):
                     res, ent = _executar_edicao(sessao, ctx, p, rng, r, editor)
@@ -1172,6 +1159,13 @@ def _feito(ent, res) -> dict:
             "nivel": m.get("nivel"), "categoria": ent.info.get("categoria"), "antigo": m.get("texto_antigo"),
             "novo": m.get("texto_novo"), "descricao": m.get("descricao"), "campo": m.get("campo"),
             "bbox": [res.x0, res.y0, res.x1, res.y1], **({"fsts": m["fsts"]["tipo"]} if m.get("fsts") else {})}
+
+
+def motivo_da_recusa(erro) -> str:
+    """O motivo de uma técnica recusada, sem o nome da técnica nem os detalhes: "texto claro sobre fundo escuro",
+    "conferência por OCR", "não há outro campo da mesma categoria para copiar"."""
+    m = re.sub(r"^[a-z_]+\.[a-z_]+: ", "", str(erro))
+    return re.split(r"[:;(]", m)[0].strip() or str(erro)[:80]
 
 
 def _perito_por_edicao(sessao: Sessao) -> dict:
@@ -1316,9 +1310,6 @@ class Gerador:
         r = Receita(d or {}, self.ids)
         if r.usa_ia and r.perfil is None and not ia.status().get("online"):  # no perfil, a IA só entra se ligada
             raise ErroOperacao("o servidor de IA está desligado: desmarque as técnicas de IA ou ligue o servidor")
-        if r.perfil == "fsts" and not photocraft.disponivel():
-            raise ErroOperacao("o método FSTS faz o pós-processamento no PhotoCraft: instale o motor (photocraft-cli, "
-                               "veja config/photocraft.json)")
         return r
 
     def documentos(self, r: Receita) -> list:
@@ -1331,19 +1322,6 @@ class Gerador:
                     continue
                 itens.append(it)
         return itens
-
-    def versao_avulsa(self, it, d: dict, pasta: Path) -> dict:
-        """Uma versão do documento ``it`` pela receita ``d``, SEM gravar, com o rascunho da sessão em ``pasta``: a aba
-        Gerar do estúdio abre a versão no PhotoCraft para a pessoa revisar e salvar. A mesma montagem do lote
-        (``_versao``: a versão incoerente é refeita). Devolve o que ``_versao`` devolve."""
-        r = self.receita(d)
-        rng = random.SystemRandom()
-        base = self.registro.carregar(it.doc)
-        ctx = Contexto(it, base, self.raiz_saida, self.registro)
-        shutil.rmtree(pasta, ignore_errors=True)
-        return self._versao(it, base, ctx, r, Plano(r, random.Random(rng.randrange(2**31))), rng, [], pasta, {},
-                            bool(ia.status().get("online")) if r.falsificadores else False, salva_png=True,
-                            ao_falhar=lambda *_: None)  # fora de um lote: não mexe no status do último lote
 
     def _temp(self) -> Path:
         cache = self.raiz_saida / "_cache"
@@ -1528,14 +1506,10 @@ class Gerador:
         return cache[split]
 
     def _versao(self, it, base, ctx, r: Receita, plano: Plano, rng, sorteados: list, pasta: Path, est: dict,
-                ia_online: bool = False, variacao: int = 1, salva_png: bool = False, ao_falhar=None) -> dict:
+                ia_online: bool = False, variacao: int = 1) -> dict:
         """Uma versão do documento ``it`` numa sessão com o rascunho em ``pasta``, SEM gravar: a edição pela receita e o
         ``extra`` da anotação. Devolve ``sess``, ``feitos``, ``extra``, ``ctx_v``, ``theta`` (o canal da fase "depois"), ``tm``
-        (as marcas), ``extra_v`` (a captura "antes") e ``hab`` (o operador humano). Usado pelo lote e pela aba Gerar do
-        estúdio (que abre a versão no PhotoCraft para revisar antes de salvar); ``est`` recebe as contagens.
-        ``ao_falhar``: quem conta a técnica que falhou (padrão: o status do lote, ``_falhou_tecnica``).
-        ``salva_png`` (o estúdio, que grava o PNG revisado): o operador que salvaria em JPEG pelo editor salva em PNG,
-        como no editor clássico (``humano_da_sessao``), e o passo do "Salvar como" não entra no canal."""
+        (as marcas), ``extra_v`` (a captura "antes") e ``hab`` (o operador humano); ``est`` recebe as contagens."""
         # perfil profissional: a versão que CRIA uma incoerência (vencimento antes da emissão porque a
         # data pequena não coube, rua nova com o CEP antigo) é refeita com outro sorteio; quem frauda
         # com cuidado não deixa essa pista, e ela ensinaria o modelo a achar a falha do gerador
@@ -1548,20 +1522,23 @@ class Gerador:
             # versão; impressão, tela e transmissão ficam para depois, no salvamento, iguais no par;
             # marcas no papel só com captura física (senão seriam colagem digital "benigna")
             base_v, ctx_v, theta, tm, extra_v = self._preparar(it, base, ctx, r, rng_v, pessoa)
-            theta_antes = theta
             hab, theta = _humano_da_versao(r, ctx_v, theta, rng_v)
-            if salva_png and hab and hab.get("salvar") == "jpeg_editor":
-                hab = {k: x for k, x in hab.items() if k != "gravacao"} | {"salvar": "png"}
-                theta = theta_antes
             sess = Sessao(it, base_v.copy(), pasta, self.ids)
             envio = _data_envio(ctx, rng_v)
             info: dict = {}
+            motivos: Counter = Counter()  # por que as técnicas recusaram: vai na mensagem quando nada coube
+
+            def falhou(tid, campo, erro, _motivos=motivos):
+                _motivos[motivo_da_recusa(erro)] += 1
+                self._falhou_tecnica(tid, campo, erro)
             with geradores.usando(hoje=envio, documento=ctx_v.campos):  # datas e valores coerentes
-                feitos = aplicar_receita(sess, ctx_v, r, plano, rng_v, ao_falhar=ao_falhar or self._falhou_tecnica,
+                feitos = aplicar_receita(sess, ctx_v, r, plano, rng_v, ao_falhar=falhou,
                                          pessoa=pessoa, info=info, ja_sorteados=sorteados,
                                          humano_hab=hab, ajuste=ajuste)
             if not feitos:
-                raise ErroOperacao("nenhuma técnica coube neste documento")
+                raise ErroOperacao("nenhuma técnica coube neste documento" + (
+                    " (o motivo mais comum, em {1} de {2} tentativas: {0})".format(
+                        *motivos.most_common(1)[0], sum(motivos.values())) if motivos else ""))
             coer = _coerencia(ctx_v, feitos)
             novas = (coer or {}).get("novas_violacoes") or []
             if r.perfil != "profissional" or not novas:
@@ -1780,7 +1757,7 @@ def receita_limpa(ids_categoria: dict[str, int], categorias=CATEGORIAS_FOCO, com
 
 
 def receita_profissional(ids_categoria: dict[str, int], base=CATEGORIAS_FOCO, extras: bool = True,
-                         com_ia: bool = False, estilo: str | None = None, motor: str | None = None) -> dict:
+                         com_ia: bool = False, estilo: str | None = None) -> dict:
     """A receita da tela de um clique (e do "Editar os marcados"): edita SÓ a original, sem canal, marcas,
     falsificador nem disfarce; em cada versão, as classes ``base`` (nome e/ou endereço, pelo sorteio de
     ``_subconjunto``) e, com ``extras``, às vezes também um ou dois grupos coerentes entre si (``GRUPOS_EXTRAS``: o
@@ -1791,21 +1768,17 @@ def receita_profissional(ids_categoria: dict[str, int], base=CATEGORIAS_FOCO, ex
     Em ``HUMANO_PROB`` das versões a edição é feita como uma PESSOA a faria num editor (``rotulador.humano``: seleção,
     ferramenta, suavização, conta-gotas, retoques e o "Salvar como"); no resto, com o acabamento meticuloso.
     ``estilo`` (``ESTILOS``; padrão ``ESTILO_PADRAO``) decide essa fração e o envio do arquivo depois.
-    ``motor="photocraft"`` (a aba Gerar do estúdio): tudo pelas ferramentas do PhotoCraft, o campo inteiro só pelo
-    ``campo.photocraft`` e as parciais apagando no motor em todas as versões (``MOTOR_PROFISSIONAL`` não sorteia).
     ``Receita`` expande ``{"perfil": "profissional", "extras": ..., "categorias_base": [...], "estilo": ...}`` nesta
     receita."""
     estilo = estilo if estilo in ESTILOS else ESTILO_PADRAO
     est = ESTILOS[estilo]
-    motor = motor if motor in MOTOR_PROFISSIONAL else None
     validas = [c for c in ids_categoria if c != "outro"]
     base = [c for c in dict.fromkeys(base or ()) if c in validas] or [c for c in CATEGORIAS_FOCO if c in validas]
     cats = base + ([c for g in GRUPOS_EXTRAS.values() for c in g if c in validas and c not in base] if extras else [])
     tecnicas, mistura = {}, {}
     for g, (peso, ts) in PERFIL_PROFISSIONAL.items():
         ts = {tid: w for tid, w in ts.items() if tid in catalogo.TECNICAS and catalogo.TECNICAS[tid].automatica
-              and (com_ia or not catalogo.TECNICAS[tid].precisa_ia)
-              and (motor != "photocraft" or g != "campo" or tid == "campo.photocraft")}
+              and (com_ia or not catalogo.TECNICAS[tid].precisa_ia)}
         for tid, w in ts.items():
             tecnicas[tid] = round(100 * peso * w / sum(ts.values()), 2)
         mistura[g] = {"peso": peso, "tecnicas": list(ts)}
@@ -1817,7 +1790,6 @@ def receita_profissional(ids_categoria: dict[str, int], base=CATEGORIAS_FOCO, ex
             "exato": True, "subconjuntos": True, "tecnicas": tecnicas, "categorias": {c: 1 for c in cats},
             "edicoes": [1, 3], "distribuicao": "equilibrada", "acabamento": {"ruido": "auto", "disfarce": "nunca", "jpeg": 0},
             "humano": {"prob": est["humano"]} if est["humano"] > 0 else None, "canal": est["canal"], "estilo": estilo,
-            **({"motor": motor} if motor else {}),
             "mistura": {"granularidade": mistura, "humano": est["humano"], "estilo": estilo, "extras": {"prob": list(EXTRAS_PROB) if extras else [1.0],
                                                              "grupos": {g: list(cs) for g, cs in GRUPOS_EXTRAS.items()}}}}
 
@@ -1832,15 +1804,14 @@ def _expandir_perfil(d: dict, ids_categoria: dict[str, int]) -> dict:
     base = d.get("categorias_base")
     base = [base] if isinstance(base, str) else base
     exp = receita_profissional(ids_categoria, tuple(base) if base else CATEGORIAS_FOCO,
-                               extras=bool(d.get("extras", True)), com_ia=bool(d.get("com_ia")), estilo=d.get("estilo"),
-                               motor=d.get("motor"))
+                               extras=bool(d.get("extras", True)), com_ia=bool(d.get("com_ia")), estilo=d.get("estilo"))
     return {**exp, **{k: v for k, v in d.items() if k not in _CHAVES_DO_PERFIL}}
 
 
 def receita_fsts(ids_categoria: dict[str, int], categorias=None, tipos: dict | None = None) -> dict:
     """A receita do método FSTS (``aplicar_fsts``): qualquer campo de texto (o artigo sorteia regiões de texto do OCR;
     ``categorias`` restringe), as técnicas de ``TECNICAS_FSTS``, os pesos dos cinco tipos (``tipos``; padrão: iguais,
-    como na coleta do artigo) e nenhum acabamento automático (o disfarce é o pós-processamento do artigo). Sem canal,
+    como na coleta do artigo) e nenhum acabamento automático (o pós-processamento do artigo não é aplicado). Sem canal,
     marcas, falsificador nem operador humano por versão: a pessoa é a da população do FSTS. ``Receita`` expande
     ``{"perfil": "fsts", ...}`` nesta receita."""
     validas = [c for c in ids_categoria if c != "outro" and catalogo.TIPO_DA_CATEGORIA.get(c, "texto") == "texto"]
@@ -1853,7 +1824,7 @@ def receita_fsts(ids_categoria: dict[str, int], categorias=None, tipos: dict | N
 
 # o que o perfil FSTS define (o resto da receita — documentos, variações, nome, formato, operador — continua valendo)
 _CHAVES_DO_FSTS = ("perfil", "tecnicas", "categorias", "tipos", "exato", "subconjuntos", "fsts", "humano",
-                   "falsificadores", "canal", "marcas", "acabamento", "edicoes", "motor", "extras", "estilo")
+                   "falsificadores", "canal", "marcas", "acabamento", "edicoes", "extras", "estilo")
 
 
 def _expandir_fsts(d: dict, ids_categoria: dict[str, int]) -> dict:

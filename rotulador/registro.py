@@ -18,9 +18,6 @@ import csv
 import hashlib
 import json
 import os
-import re
-import shutil
-import threading
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -32,9 +29,6 @@ from . import documentos
 
 SPLITS = ("treino", "teste", "validacao")
 _VERSAO_CACHE = 1
-# documento novo (aberto no estúdio, fora da pasta de dados) vai para o split que está mais abaixo desta proporção
-PROPORCAO = {"treino": 0.70, "teste": 0.15, "validacao": 0.15}
-PASTA_NOVOS = "photocraft"  # dados/<split>/photocraft/: onde ficam os documentos que entraram pelo estúdio
 
 
 class ErroVazamento(Exception):
@@ -103,7 +97,6 @@ class Registro:
         self.por_split: dict[str, list[Item]] = {s: [] for s in SPLITS}
         self.pastas: dict[str, Path] = {}  # split → a subpasta dele na pasta de dados
         self.avisos: list[str] = []
-        self._lock = threading.Lock()
         self._construir()
 
     # ------------------------------------------------------------------ consulta
@@ -116,60 +109,6 @@ class Registro:
         if hash_pixels(img) != it.sha_pixels:
             raise ErroVazamento([f"{it.split}/{it.nome} mudou desde a partida; reinicie o servidor"])
         return img
-
-    def adicionar(self, nome: str, conteudo: bytes) -> list[Item]:
-        """Documento aberto fora da pasta de dados (o "Abrir" do estúdio PhotoCraft). Já registrado (mesmo arquivo ou
-        mesmos pixels em alguma página): os itens que já existem, no split deles. Novo: vai para
-        ``dados/<split>/photocraft/`` no split que está mais abaixo de ``PROPORCAO`` (em arquivos), ou no split onde
-        esses pixels já foram rotulados, e entra no registro. Devolve as páginas, em ordem."""
-        sufixo = Path(nome).suffix.lower()
-        if not documentos.eh_documento(Path("x" + sufixo)):
-            raise ValueError(f"formato de documento não aceito: '{sufixo or nome}'")
-        sha_arq = hashlib.sha256(conteudo).hexdigest()
-        with self._lock:
-            mesmos = sorted((it for it in self.itens.values() if it.sha_arquivo == sha_arq), key=lambda i: i.pagina)
-            if mesmos:
-                return mesmos
-            tmp = self.raiz_saida / "_cache" / "entrada" / f"{sha_arq[:16]}{sufixo}"
-            tmp.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_bytes(conteudo)
-            try:
-                paginas = []
-                for pg in range(documentos.contar_paginas(tmp)):
-                    img = documentos.carregar(tmp, pg, self.dpi)
-                    paginas.append((hash_pixels(img), int(img.shape[0]), int(img.shape[1])))
-                ja = [self.itens[h[:16]] for h, _, _ in paginas if h[:16] in self.itens]
-                if ja:  # o mesmo documento em outro formato (o PNG que o estúdio deu ao PhotoCraft, por exemplo)
-                    tmp.unlink(missing_ok=True)
-                    return ja
-                dono = self._hashes_ja_rotulados()
-                rotulado = [dono[h] for h in [sha_arq] + [p[0] for p in paginas] + [p[0][:16] for p in paginas]
-                            if h in dono]
-                if rotulado:
-                    split = rotulado[0]
-                else:
-                    arquivos = {s: len({it.caminho for it in self.por_split[s]}) for s in SPLITS}
-                    total = sum(arquivos.values()) + 1
-                    split = max(SPLITS, key=lambda s: PROPORCAO[s] - arquivos[s] / total)
-                pasta = self.pastas[split] / PASTA_NOVOS
-                pasta.mkdir(parents=True, exist_ok=True)
-                base = re.sub(r"[^\w\- .]+", "_", Path(nome).stem).strip(" .")[:60] or "documento"
-                destino = pasta / f"{base}{sufixo}"
-                if destino.exists():
-                    destino = pasta / f"{base}_{sha_arq[:8]}{sufixo}"
-                shutil.copyfile(tmp, destino)  # _cache (saída) e dados podem estar em discos diferentes
-            finally:
-                tmp.unlink(missing_ok=True)
-            rel = destino.relative_to(self.pastas[split]).as_posix()
-            novos = [Item(doc=h[:16], split=split, caminho=destino.resolve(), rel=rel, pagina=pg, paginas=len(paginas),
-                          sha_arquivo=sha_arq, sha_pixels=h, altura=a, largura=l)
-                     for pg, (h, a, l) in enumerate(paginas)]
-            for it in novos:
-                if it.doc not in self.itens:  # duas páginas iguais no mesmo arquivo: vale a primeira
-                    self.itens[it.doc] = it
-                    self.por_split[split].append(it)
-            self.por_split[split].sort(key=lambda i: (i.rel.lower(), i.pagina))
-            return [self.itens[it.doc] for it in novos]
 
     # ------------------------------------------------------------------ construção
     def _construir(self) -> None:

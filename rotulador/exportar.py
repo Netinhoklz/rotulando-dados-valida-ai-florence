@@ -12,9 +12,10 @@ Regras anti-vazamento/anti-atalho aplicadas aqui:
 Rótulos de cada versão: máscara de pixels alterados, de região, de CATEGORIA (o quê), de
 TÉCNICA (o como, rotulador/catalogo.py) e de IGNORAR (rótulo ambíguo), mais o JSON com a lista ``edicoes`` (técnica,
 categoria, texto antes/depois, caracteres alterados, descrição, caixa e pixels de cada
-edição). Índices por split: manifesto.csv (uma linha por versão) e catalogo.csv (uma
-linha por edição) — os dois são refeitos a partir dos JSON quando preciso (exclusão de
-versão, cabeçalho antigo), então os JSON são a fonte da verdade.
+edição). Índices por split: manifesto.csv (uma linha por versão), catalogo.csv (uma
+linha por edição) e categorias.csv (uma linha por imagem salva, com a categoria do editor:
+copiar e colar, pegar de outro documento ou apagar e substituir) — os três são refeitos a partir
+dos JSON quando preciso (exclusão de versão, cabeçalho antigo), então os JSON são a fonte da verdade.
 """
 
 from __future__ import annotations
@@ -50,6 +51,10 @@ CAMPOS_CATALOGO = ["split", "doc", "versao", "nome", "largura", "altura", "edita
                    "tecnica_num", "nome_tecnica", "familia", "nivel", "granularidade", "literatura", "texto_antigo",
                    "texto_novo", "pixels", "bbox", "descricao", "origem", "operador", "data", "canal", "revisao", "revisor",
                    "falsificador", "motivo", "pericia", "fornecedores"]
+# categorias.csv: de qual categoria do editor (catalogo.CATEGORIAS_EDITOR) é cada imagem salva; caminhos relativos à
+# pasta do split
+CAMPOS_CATEGORIAS = ["versao", "documento", "categoria", "editada", "original", "mascara", "anotacao", "origem"]
+_DO_EDITOR = {c["chave"] for c in catalogo.CATEGORIAS_EDITOR}
 # revisão humana de cada versão (gravada na anotação; "pendente" = ainda não revisada)
 ESTADOS_REVISAO = ("pendente", "aprovada", "reprovada")
 MOTIVOS_REVISAO = {"artefato": "artefato visível (caixa, mancha, cor, borda)", "rotulo": "rótulo errado (técnica, classe, texto)",
@@ -215,10 +220,9 @@ def descrever(n: int, r: dict, pixels: int, bbox) -> dict:
     d["origem"] = _ORIGEM_OPERACAO.get(r.get("tipo"), "manual")
     # conferido_ocr: True = o OCR leu o valor novo; None = não deu para julgar; sem a chave = não se aplica.
     # peso_traco: espessura do traço novo ÷ a do original (1 = igual); semelhanca_fonte: o quanto a fonte usada casou;
-    # photocraft: como o motor editou (fonte em pt, cor, desfoque, peso, posição, origem do remendo/carimbo, passos);
     # fsts: o tipo do artigo, a pessoa e as operações com os parâmetros (rotulador.fsts)
     for k in ("origem_glifo", "origem_campo", "trecho", "linha_digitavel", "conferido_ocr", "peso_traco",
-              "semelhanca_fonte", "photocraft", "fsts"):
+              "semelhanca_fonte", "fsts"):
         if k in meta:
             d[k] = meta[k]
     return d
@@ -348,6 +352,28 @@ def _linhas_catalogo(anot: dict) -> list[dict]:
             for e in edicoes_de_anotacao(anot)]
 
 
+def categorias_da_versao(anot: dict) -> list[str]:
+    """As categorias do editor de uma versão, na ordem das edições: a escolhida pela pessoa nas edições feitas à mão;
+    nas do gerador, a da família da técnica (``catalogo.CATEGORIA_DA_FAMILIA``; as outras apagam e escrevem por cima).
+    Edição à mão com uma classe de campo (salva antes das 3 categorias) não diz qual foi: fica de fora."""
+    out = []
+    for e in edicoes_de_anotacao(anot):
+        c = e.get("categoria")
+        if c not in _DO_EDITOR:
+            c = None if e.get("familia") == "manual" else catalogo.CATEGORIA_DA_FAMILIA.get(e.get("familia"), "apagar e substituir")
+        if c and c not in out:
+            out.append(c)
+    return out
+
+
+def _linha_categorias(anot: dict) -> dict:
+    arqs = anot.get("arquivos", {})
+    return {"versao": f"{anot['doc']}__v{int(anot['versao']):02d}", "documento": anot["doc"],
+            "categoria": ";".join(categorias_da_versao(anot)), **{k: arqs.get(k, "") for k in ("editada", "original",
+                                                                                                "mascara", "anotacao")},
+            "origem": _origem(anot)}
+
+
 def _anotacoes(raiz_split: Path) -> list[dict]:
     pasta = raiz_split / "anotacoes"
     out = []
@@ -372,10 +398,11 @@ def _reconstruir(raiz_split: Path) -> None:
     anots = _anotacoes(raiz_split)
     _gravar_csv(raiz_split / "manifesto.csv", CAMPOS_MANIFESTO, [_linha_manifesto(a) for a in anots])
     _gravar_csv(raiz_split / "catalogo.csv", CAMPOS_CATALOGO, [l for a in anots for l in _linhas_catalogo(a)])
+    _gravar_csv(raiz_split / "categorias.csv", CAMPOS_CATEGORIAS, [_linha_categorias(a) for a in anots])
 
 
 def reconstruir_indices(raiz_saida: Path, split: str) -> None:
-    """Refaz manifesto.csv e catalogo.csv do split a partir dos JSON de anotação."""
+    """Refaz manifesto.csv, catalogo.csv e categorias.csv do split a partir dos JSON de anotação."""
     if split not in SPLITS:
         raise ErroOperacao("split inválido")
     with _lock:
@@ -392,14 +419,15 @@ def _cabecalho(caminho: Path) -> list[str] | None:
 
 def _indexar(raiz_split: Path, anot: dict) -> None:
     """Acrescenta a versão aos índices; se um índice é de outra versão da ferramenta (ou falta), refaz tudo."""
-    man, cat = raiz_split / "manifesto.csv", raiz_split / "catalogo.csv"
+    man, cat, tip = raiz_split / "manifesto.csv", raiz_split / "catalogo.csv", raiz_split / "categorias.csv"
     ja_havia = len(list((raiz_split / "anotacoes").glob("*.json"))) > 1
-    if (_cabecalho(man) or (CAMPOS_MANIFESTO if not ja_havia else None)) != CAMPOS_MANIFESTO or \
-            (_cabecalho(cat) or (CAMPOS_CATALOGO if not ja_havia else None)) != CAMPOS_CATALOGO:
+    if any((_cabecalho(arq) or (campos if not ja_havia else None)) != campos
+           for arq, campos in ((man, CAMPOS_MANIFESTO), (cat, CAMPOS_CATALOGO), (tip, CAMPOS_CATEGORIAS))):
         _reconstruir(raiz_split)
         return
     for caminho, campos, linhas in ((man, CAMPOS_MANIFESTO, [_linha_manifesto(anot)]),
-                                    (cat, CAMPOS_CATALOGO, _linhas_catalogo(anot))):
+                                    (cat, CAMPOS_CATALOGO, _linhas_catalogo(anot)),
+                                    (tip, CAMPOS_CATEGORIAS, [_linha_categorias(anot)])):
         novo = not caminho.exists()
         with open(caminho, "a", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, campos, extrasaction="ignore")
@@ -409,10 +437,15 @@ def _indexar(raiz_split: Path, anot: dict) -> None:
 
 
 def _legenda(raiz_saida: Path, ids_categoria: dict[str, int]) -> None:
-    """catalogo.json na raiz da saída: o que significa cada valor das máscaras de categoria e de técnica."""
-    dados = {**catalogo.legenda(), "categorias": ids_categoria}
-    novo = json.dumps(dados, ensure_ascii=False, indent=1).encode("utf-8")
+    """catalogo.json na raiz da saída: o que significa cada valor das máscaras de categoria e de técnica. As classes
+    de quem salvou somam-se às que já estavam (o editor grava as 3 categorias dele; o gerador, as de campo)."""
     arq = Path(raiz_saida) / "catalogo.json"
+    try:
+        antes = json.loads(arq.read_text(encoding="utf-8")).get("categorias") or {}
+    except (OSError, ValueError):
+        antes = {}
+    dados = {**catalogo.legenda(), "categorias": {**antes, **ids_categoria}}
+    novo = json.dumps(dados, ensure_ascii=False, indent=1).encode("utf-8")
     try:
         if arq.read_bytes() == novo:
             return

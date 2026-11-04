@@ -109,10 +109,10 @@ for sp in ("treino", "teste", "validacao"):
         shutil.rmtree(S / "saida_teste" / sp / sub, ignore_errors=True)
     (S / "saida_teste" / sp / "manifesto.csv").unlink(missing_ok=True)
 
-d.get(URL + "/classico")
+d.get(URL)
 # este teste usa o editor completo: entra direto no modo avançado, tutorial já visto
 d.execute_script("localStorage.setItem('rotulador.modoSimples','false');localStorage.setItem('rotulador.tutorialVisto','true');localStorage.setItem('rotulador.operador', JSON.stringify('Teste UI'))")
-d.get(URL + "/classico")
+d.get(URL)
 checa(espera("window.rotulador && window.rotulador.sessao && document.getElementById('vazio').hidden"),
       "abre documento inicial")
 ocioso()
