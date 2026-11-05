@@ -125,8 +125,9 @@ export class Visor {
         if (!v) { px[k + 3] = 0; continue; }
         const borda = x === 0 || y === 0 || x === w - 1 || y === h - 1 ||
           !a[i - 1] || !a[i + 1] || !a[i - w] || !a[i + w];
-        if (borda) { px[k] = 0; px[k + 1] = 230; px[k + 2] = 255; px[k + 3] = 255; }
-        else { px[k] = 40; px[k + 1] = 140; px[k + 2] = 255; px[k + 3] = Math.round(v * 0.22); }
+        // a cor de destaque das sobreposições (#00a8ff, como no Graphite): borda cheia, interior translúcido
+        if (borda) { px[k] = 0; px[k + 1] = 168; px[k + 2] = 255; px[k + 3] = 255; }
+        else { px[k] = 0; px[k + 1] = 168; px[k + 2] = 255; px[k + 3] = Math.round(v * 0.2); }
       }
     }
     ctx.putImageData(d, 0, 0);
@@ -171,7 +172,7 @@ export class Visor {
       if (this.previa) ctx.drawImage(this.previa.bitmap, this.previa.x0, this.previa.y0);
       if (this.mostrarMascara && this.mascara) ctx.drawImage(this.mascara, 0, 0);
     }
-    if (this.selecao && !this.esconderSelecao) {  // escondida enquanto o trecho é puxado (o contorno vai com ele)
+    if (this.selecao && !this.esconderSelecao && !this.semBordas) {  // semBordas: Ctrl+H, como no Photoshop  // escondida enquanto o trecho é puxado (o contorno vai com ele)
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(this.selecao.canvas, this.selecao.x0, this.selecao.y0);
     }

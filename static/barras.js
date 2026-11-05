@@ -1,7 +1,8 @@
 // Duas barras que acompanham o que a pessoa está fazendo:
 //  - a barra de tarefas sob a seleção (como a "barra de tarefas contextual" do Photoshop): recortar, copiar, colar,
 //    puxar, apagar com preenchimento, substituir o texto… e, com um trecho solto, aplicar ou cancelar;
-//  - as dicas da barra de status (como no Graphite): o que cada gesto do mouse e cada tecla fazem AGORA.
+//  - as dicas da barra de status (como no Graphite): o que cada gesto do mouse e cada tecla fazem AGORA, no estado em
+//    que a ferramenta está (pronta, arrastando, solto…).
 // As duas são recalculadas a cada quadro do visor, mas só se refazem quando o estado muda.
 import { DICAS, NOMES } from "./ferramentas.js";
 import { icone, mouseEsquerdo } from "./icones.js";
@@ -47,13 +48,13 @@ export function instalarBarras(app) {
     const itens = [
       botao("recortar", "Recortar", "Recortar (Ctrl+X): o trecho fica solto para você arrastar; o lugar de onde saiu é preenchido com o papel em volta", app.recortar),
       botao("copiar", "Copiar", "Copiar (Ctrl+C): cole com Ctrl+V nesta imagem ou em outra do MESMO split", app.copiar),
-      app.clip ? botao("colar", "Colar", `Colar (Ctrl+V) o trecho copiado de ${app.clip.nome}`, app.colar) : null,
+      app.clip ? botao("colar", "Colar", `Colar (Ctrl+V; Ctrl+Shift+V cola no mesmo lugar) o trecho copiado de ${app.clip.nome}`, () => app.colar()) : null,
       app.idFerramenta === "transformar" ? null
         : botao("mover", "Puxar", "Puxar (V, ou Ctrl+arrastar): arraste a seleção e os pixels vão junto; o buraco é preenchido", app.puxar),
       sep(),
       botao("apagar", "Apagar", "Apagar com preenchimento (Delete): o que está selecionado some, refeito com o papel em volta", () => app.apagarComPreenchimento(), "destaque"),
       app.podeVariar() ? botao("dado", "", "Outra variação do preenchimento (refaz o último Apagar com outra semente)", app.outraVariacao) : null,
-      botao("substituir", "Substituir texto", "Substituir texto (R): apaga o texto selecionado e escreve outro na mesma fonte, cor e posição", () => app.usar("substituir")),
+      botao("substituir", "Substituir texto", "Substituir texto (T; Shift+T alterna): apaga o texto selecionado e escreve outro na mesma fonte, cor e posição", () => app.usar("substituir")),
       botao("ajustes", "", "Ajustes na seleção (brilho, níveis, desfoque, ruído, JPEG…)", app.abrirAjustes),
       sep(),
       botao("inverter", "", "Inverter a seleção (Ctrl+Shift+I)", app.inverterSelecao),
@@ -112,23 +113,42 @@ export function instalarBarras(app) {
   }
 
   // ------------------------------------------------------------------ dicas da barra de status
+  // o mouse da dica com o botão do gesto aceso: esquerdo, direito ("clique direito") ou a roda (desenho próprio, sobre
+  // o ícone do mouse de icones.js)
+  function glifoMouse(gesto) {
+    const pinta = (d) => { const s = icone("mouse", 13); s.insertAdjacentHTML("beforeend", d); return s; };
+    if (/direito/.test(gesto)) return pinta('<path d="M12 3a5.5 5.5 0 0 1 5.5 5.5V9.5H12Z" fill="currentColor" stroke="none"/>');
+    if (/^roda/.test(gesto)) return pinta('<rect x="11" y="5" width="2" height="4.5" rx="1" fill="currentColor" stroke="none"/>');
+    return mouseEsquerdo(13);
+  }
   function item({ k, m, t }) {
     const partes = [];
     if (k) partes.push(...k.split("+").flatMap((tecla, i) => [i ? el("span", { class: "mais" }, "+") : null, el("kbd", {}, tecla)]));
-    if (m) partes.push(el("span", { class: "gesto" }, mouseEsquerdo(13), m));
+    if (m) partes.push(el("span", { class: "gesto" }, glifoMouse(m), m));
     return el("span", { class: "dica-item" }, ...partes, el("span", { class: "dica-txt" }, t));
   }
+  // as dicas do ESTADO em que a ferramenta está (ferramentas.js: cada estado declara as suas, como no Graphite); com a
+  // ferramenta parada, também as da seleção feita e as de sempre
   function atualizarDicas() {
-    const id = app.idFerramenta;
-    const solto = app.ferramenta?.solto?.();
-    const sel = app.temSelecao();
-    const chave = `${id}:${sel}:${Boolean(solto)}:${app.sessao ? 1 : 0}`;
+    const id = app.idFerramenta, f = app.ferramenta;
+    let lista = f?.dicasAgora?.() || [];
+    if (!f?.emRepouso || f.emRepouso()) {
+      if (app.temSelecao() && !["texto", "substituir", "transformar", "colar"].includes(id)) lista = [...lista, ...DICAS.com_selecao];
+      lista = [...lista, ...DICAS.sempre];
+    }
+    const chave = `${id}:${f?.estado}:${lista.map((d) => `${d.k}|${d.m}|${d.t}`).join(";")}`;
     if (chave === chaveDicas) return;
     chaveDicas = chave;
-    let lista = id === "transformar" ? (solto ? DICAS.transformar : DICAS.transformar_sem) : (DICAS[id] || []);
-    if (sel && !["texto", "substituir", "transformar", "colar"].includes(id)) lista = [...lista, ...DICAS.com_selecao];
-    dicas.replaceChildren(el("span", { class: "dica-ferr" }, NOMES[id] || ""), ...[...lista, ...DICAS.sempre].map(item));
+    dicas.replaceChildren(el("span", { class: "dica-ferr" }, NOMES[id] || ""), ...lista.map(item));
+    dicas.dataset.estado = f?.estado || "";
   }
 
   app.atualizarBarras = () => { atualizarBarra(); atualizarDicas(); };
+
+  // segurando Shift, Alt ou Ctrl a pessoa vai mexer na seleção (somar, subtrair, puxar): a barra fica translúcida e
+  // deixa o clique passar para a imagem que está embaixo dela
+  const recolher = (ev) => barra.classList.toggle("recolhida", ev.shiftKey || ev.altKey || ev.ctrlKey);
+  document.addEventListener("keydown", recolher);
+  document.addEventListener("keyup", recolher);
+  window.addEventListener("blur", () => barra.classList.remove("recolhida"));
 }

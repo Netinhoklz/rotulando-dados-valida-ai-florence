@@ -62,6 +62,9 @@ class Camada:
     visivel: bool = True
     opacidade: float = 1.0
     rgba: np.ndarray | None = None  # (H, W, 4) uint8
+    # auto: camada interna, criada pela edição feita direto na imagem (o "Fundo"), uma por tipo da edição, só para a
+    # máscara de classes. O painel não a mostra: a pessoa vê a edição no Fundo, como no Photoshop
+    auto: bool = False
     versao: int = 0  # sobe a cada mudança de pixels (cache das estatísticas e das miniaturas)
     _cache: tuple | None = field(default=None, repr=False, compare=False)
 
@@ -80,7 +83,7 @@ class Camada:
 
     def props(self) -> dict:
         return {"id": self.id, "nome": self.nome, "categoria": self.categoria, "descricao": self.descricao,
-                "visivel": self.visivel, "opacidade": self.opacidade}
+                "visivel": self.visivel, "opacidade": self.opacidade, "auto": self.auto}
 
     def caixa(self):
         return self.estatistica()[0]
@@ -133,12 +136,11 @@ class Sessao:
         self._carregar_rascunho()
 
     # ------------------------------------------------------------------ composição
-    def _compor(self, bbox=None) -> None:
-        y0, y1, x0, x1 = bbox if bbox else (0, self.H, 0, self.W)
-        if y1 <= y0 or x1 <= x0:
-            return
+    def _composto(self, bbox, ids) -> np.ndarray:
+        """A base com as camadas ``ids`` por cima (as visíveis, de baixo para cima), na caixa."""
+        y0, y1, x0, x1 = bbox
         c = self.base[y0:y1, x0:x1].astype(np.float32)
-        for cid in self.ordem:
+        for cid in ids:
             cam = self.camadas[cid]
             if not cam.visivel or cam.opacidade <= 0:
                 continue
@@ -147,7 +149,13 @@ class Sessao:
             if not a.any():
                 continue
             c = c * (1 - a) + r[..., :3].astype(np.float32) * a
-        self.atual[y0:y1, x0:x1] = np.clip(c + 0.5, 0, 255).astype(np.uint8)
+        return np.clip(c + 0.5, 0, 255).astype(np.uint8)
+
+    def _compor(self, bbox=None) -> None:
+        y0, y1, x0, x1 = bbox if bbox else (0, self.H, 0, self.W)
+        if y1 <= y0 or x1 <= x0:
+            return
+        self.atual[y0:y1, x0:x1] = self._composto((y0, y1, x0, x1), self.ordem)
 
     # ------------------------------------------------------------------ camadas
     def _tocou(self, cid: str) -> None:
@@ -177,6 +185,14 @@ class Sessao:
             cam = self.camadas[cid]
             cam.nome, cam.categoria, cam.descricao = p["nome"], p["categoria"], p.get("descricao", "")
             cam.visivel, cam.opacidade = p["visivel"], p["opacidade"]
+            cam.auto = bool(p.get("auto", False))
+
+    def _n_auto(self) -> int:
+        """Quantas camadas internas há embaixo da pilha (as da pessoa vêm sempre acima delas)."""
+        n = 0
+        while n < len(self.ordem) and self.camadas[self.ordem[n]].auto:
+            n += 1
+        return n
 
     def _caixa_camadas(self, ids) -> tuple | None:
         bb = None
@@ -196,10 +212,20 @@ class Sessao:
             if acao == "criar":
                 cat = kw.get("categoria")
                 cam = self._nova_camada(cat, str(kw.get("nome") or ""), str(kw.get("descricao") or ""))
-                pos = self.ordem.index(self.ativa) + 1 if self.ativa in self.ordem else len(self.ordem)
+                cam.auto = bool(kw.get("auto"))
+                at = self.camadas.get(self.ativa) if self.ativa in self.ordem else None
+                if cam.auto or at is None or at.auto:
+                    # edição direto na imagem, ou camada nova com o Fundo ativo: logo acima do fundo (e das internas)
+                    pos = self._n_auto()
+                else:
+                    pos = self.ordem.index(self.ativa) + 1
                 self.ordem.insert(pos, cam.id)
                 self.ativa = cam.id
                 rotulo = f"nova camada '{cam.nome}'"
+            elif acao == "ativar" and camada == "fundo":  # o Fundo (a imagem) volta a receber as edições
+                self.ativa = None
+                self._gravar_estado()
+                return None
             elif acao == "ativar":
                 if alvo is None or alvo.id not in self.ordem:
                     raise ErroOperacao("camada não encontrada")
@@ -232,13 +258,14 @@ class Sessao:
                 elif acao == "ordem":
                     pos = int(kw.get("posicao", 0))
                     self.ordem.remove(alvo.id)
-                    self.ordem.insert(max(0, min(len(self.ordem), pos)), alvo.id)
+                    minimo = 0 if alvo.auto else self._n_auto()  # nenhuma camada da pessoa embaixo do Fundo
+                    self.ordem.insert(max(minimo, min(len(self.ordem), pos)), alvo.id)
                     rotulo = f"mover '{alvo.nome}' na pilha"
                 elif acao == "duplicar":
                     nova = self._nova_camada(alvo.categoria, f"{alvo.nome} cópia", alvo.descricao)
                     nova.rgba[:] = alvo.rgba
                     nova.visivel, nova.opacidade = alvo.visivel, alvo.opacidade
-                    self.ordem.insert(self.ordem.index(alvo.id) + 1, nova.id)
+                    self.ordem.insert(self._n_auto() if alvo.auto else self.ordem.index(alvo.id) + 1, nova.id)
                     self.ativa = nova.id
                     afetadas.append(nova.id)
                     rotulo = f"duplicar '{alvo.nome}'"
@@ -272,20 +299,91 @@ class Sessao:
             self._compor(bb) if bb else None
             return bb
 
+    def camada_via(self, sel, recortar: bool = False, categoria: str | None = None,
+                   preenchimento: Resultado | None = None, params: dict | None = None) -> tuple | None:
+        """Ctrl+J / Ctrl+Shift+J do Photoshop ("Camada via cópia" / "Camada via recorte"): o que a seleção pega da
+        camada ativa vai para uma camada nova, no mesmo lugar, logo acima dela, que passa a ser a ativa. Com o Fundo
+        ativo, a imagem sem as camadas da pessoa (sem seleção: o Fundo inteiro, "Fundo cópia"), na ``categoria``.
+        Recortar tira os pixels da camada de origem; no Fundo, o buraco recebe ``preenchimento`` (o apagar com
+        preenchimento), no mesmo passo do histórico. A cópia em si não é edição: ver ``mascaras``."""
+        with self.lock:
+            at = self.camadas.get(self.ativa) if self.ativa in self.ordem else None
+            no_fundo = at is None or at.auto
+            com_sel = sel is not None and not sel.vazia
+            if recortar and not com_sel:
+                raise ErroOperacao("selecione o trecho que vai para a camada nova")
+            if no_fundo and categoria not in self.ids_categoria:
+                raise ErroOperacao("escolha o tipo da edição antes")
+            a = sel.completa() if com_sel else np.ones((self.H, self.W), np.float32)
+            if no_fundo:
+                fundo = self._composto((0, self.H, 0, self.W), [c for c in self.ordem if self.camadas[c].auto])
+                rgba = np.dstack([fundo, (a * 255 + 0.5).astype(np.uint8)])
+            else:
+                rgba = at.rgba.copy()
+                rgba[..., 3] = (rgba[..., 3] * a + 0.5).astype(np.uint8)
+            rgba[rgba[..., 3] == 0] = 0
+            if not rgba[..., 3].any():
+                raise ErroOperacao("a área selecionada está vazia nesta camada")
+            n_antes = len(self.historico_)
+            if recortar and no_fundo:  # o buraco no Fundo, por baixo da camada nova (aparece quando ela sair dali)
+                if preenchimento is None:
+                    raise ErroOperacao("falta o preenchimento do buraco")
+                self.ativa = None
+                self.aplicar("preencher", categoria, "", dict(params or {}), preenchimento)
+            antes = self._estrutura()
+            nome = "Fundo cópia" if no_fundo and not com_sel else "" if no_fundo or com_sel else f"{at.nome} cópia"
+            cam = self._nova_camada(categoria if no_fundo else at.categoria, nome, "" if no_fundo else at.descricao)
+            cam.rgba[:] = rgba
+            if not no_fundo:
+                cam.opacidade = at.opacidade
+            self.ordem.insert(self._n_auto() if no_fundo else self.ordem.index(at.id) + 1, cam.id)
+            passos_px = []
+            if recortar and not no_fundo:
+                y0, y1, x0, x1 = sel.y0, sel.y1, sel.x0, sel.x1
+                ant = at.rgba[y0:y1, x0:x1].copy()
+                dep = ant.copy()
+                dep[..., 3] = (ant[..., 3] * (1 - sel.alpha) + 0.5).astype(np.uint8)
+                dep[dep[..., 3] == 0] = 0
+                at.rgba[y0:y1, x0:x1] = dep
+                self._tocou(at.id)
+                passos_px.append(("pixels", at.id, (y0, y1, x0, x1), ant, dep))
+            self.ativa = cam.id
+            passos = [("estrutura", antes, self._estrutura())] + passos_px
+            tipo, info = "camada", {"acao": "via_recorte" if recortar else "via_copia"}
+            rotulo = "Camada via recorte" if recortar else "Fundo cópia" if nome == "Fundo cópia" else "Camada via cópia"
+            if len(self.historico_) > n_antes:  # o preenchimento do buraco e a camada nova: um passo só
+                prev = self.historico_.pop()
+                self._apagar_entrada(prev)
+                passos = prev.passos + passos
+                tipo, info = prev.tipo, {**prev.info, **info}
+            self._registrar(Entrada(uuid.uuid4().hex[:10], rotulo, tipo, passos, info,
+                                    time.strftime("%Y-%m-%dT%H:%M:%S")))
+            bb = cam.caixa()
+            for p in passos:
+                if p[0] == "pixels":
+                    bb = _bbox_uniao(bb, p[2])
+            self._compor(bb)
+            return bb
+
     def garantir_camada(self, categoria: str | None, descricao: str = "") -> Camada:
-        """Camada para receber a edição: a ativa se for da categoria; senão a mais alta dela; senão cria."""
+        """Camada para receber a edição: a ativa, se for da categoria. Com o Fundo ativo (a imagem), a camada interna
+        daquela categoria, criada na primeira edição (``auto``: não aparece no painel). Com uma camada da pessoa
+        ativa, mas de outra categoria, a mais alta dessa categoria."""
         if categoria not in self.ids_categoria:
             raise ErroOperacao("escolha a categoria do que está sendo editado antes de aplicar")
         if categoria == "outro" and not descricao.strip() and not (
                 self.ativa and self.camadas[self.ativa].categoria == "outro" and self.camadas[self.ativa].descricao):
             raise ErroOperacao("a categoria 'outro' exige uma descrição")
-        if self.ativa and self.camadas[self.ativa].categoria == categoria:
-            return self.camadas[self.ativa]
+        at = self.camadas.get(self.ativa) if self.ativa in self.ordem else None
+        if at is not None and at.categoria == categoria:
+            return at
+        da_pessoa = at is not None and not at.auto
         for cid in reversed(self.ordem):
-            if self.camadas[cid].categoria == categoria:
+            c = self.camadas[cid]
+            if c.categoria == categoria and (da_pessoa or c.auto):
                 self.ativa = cid
-                return self.camadas[cid]
-        self.acao_camada("criar", categoria=categoria, descricao=descricao)
+                return c
+        self.acao_camada("criar", categoria=categoria, descricao=descricao, auto=True, nome=categoria)
         return self.camadas[self.ativa]
 
     # ------------------------------------------------------------------ edição
@@ -304,9 +402,9 @@ class Sessao:
                 if not res.restaura and cam.categoria is None:
                     raise ErroOperacao("defina a categoria da camada antes de editar")
             elif res.restaura:
-                if not self.ativa:
-                    raise ErroOperacao("não há camada para apagar")
-                cam = self.camadas[self.ativa]
+                cam = self.camadas.get(self.ativa) if self.ativa in self.ordem else None
+                if cam is None or cam.auto:  # Fundo ativo: a borracha devolve o original na imagem
+                    return self._apagar_do_fundo(tipo, params, res)
             else:
                 n_antes = len(self.historico_)
                 cam = self.garantir_camada(categoria, descricao)
@@ -344,18 +442,60 @@ class Sessao:
                 raise ErroOperacao("a operação não alterou nenhum pixel")
             cam.rgba[y0:y1, x0:x1] = depois
             self._tocou(cam.id)
+            # no Fundo (camadas internas, uma por tipo) a última edição aparece sempre, como numa imagem sem camadas:
+            # os mesmos pixels saem das internas que estão acima desta (o recorte já é a composição desejada)
+            por_cima = []
+            if cam.auto and not res.restaura:
+                for cid in self.ordem[self.ordem.index(cam.id) + 1:]:
+                    outra = self.camadas[cid]
+                    if not outra.auto:
+                        break
+                    o_antes = outra.rgba[y0:y1, x0:x1].copy()
+                    o_depois = o_antes.copy()
+                    o_depois[pegada] = 0
+                    if not np.array_equal(o_depois, o_antes):
+                        outra.rgba[y0:y1, x0:x1] = o_depois
+                        self._tocou(cid)
+                        por_cima.append(("pixels", cid, (y0, y1, x0, x1), o_antes, o_depois))
             passos_criacao = []
             if criou:
                 passos_criacao = self.historico_.pop().passos
             ent = Entrada(uuid.uuid4().hex[:10], str(res.meta.get("rotulo") or tipo), tipo,
-                          passos_criacao + [("pixels", cam.id, (y0, y1, x0, x1), antes, depois)],
-                          {"camada": cam.id, "nome_camada": cam.nome, "categoria": cam.categoria,
+                          passos_criacao + [("pixels", cam.id, (y0, y1, x0, x1), antes, depois)] + por_cima,
+                          {"camada": cam.id, "nome_camada": cam.nome, "categoria": cam.categoria, "auto": cam.auto,
                            "descricao": cam.descricao, "params": params, "meta": res.meta, "restaura": res.restaura,
                            "bbox": [x0, y0, x1, y1]},
                           time.strftime("%Y-%m-%dT%H:%M:%S"))
             self._registrar(ent)
             self._compor((y0, y1, x0, x1))
             return ent
+
+    def _apagar_do_fundo(self, tipo: str, params: dict, res: Resultado) -> Entrada:
+        """Borracha no Fundo: tira a edição de todas as camadas internas (o original volta), num passo só."""
+        y0, y1, x0, x1 = (int(v) for v in (res.y0, res.y1, res.x0, res.x1))
+        a = np.asarray(res.alfa_borracha if res.alfa_borracha is not None else res.pegada, np.float32)
+        passos = []
+        for cid in self.ordem:
+            cam = self.camadas[cid]
+            if not cam.auto or not cam.visivel:
+                continue
+            antes = cam.rgba[y0:y1, x0:x1].copy()
+            depois = antes.copy()
+            depois[..., 3] = np.clip(antes[..., 3] * (1 - a) + 0.5, 0, 255).astype(np.uint8)
+            depois[depois[..., 3] == 0] = 0
+            if not np.array_equal(depois, antes):
+                cam.rgba[y0:y1, x0:x1] = depois
+                self._tocou(cid)
+                passos.append(("pixels", cid, (y0, y1, x0, x1), antes, depois))
+        if not passos:
+            raise ErroOperacao("não há edição para apagar aqui")
+        ent = Entrada(uuid.uuid4().hex[:10], str(res.meta.get("rotulo") or tipo), tipo, passos,
+                      {"camada": None, "nome_camada": "Fundo", "categoria": None, "auto": True, "descricao": "",
+                       "params": params, "meta": res.meta, "restaura": True, "bbox": [x0, y0, x1, y1]},
+                      time.strftime("%Y-%m-%dT%H:%M:%S"))
+        self._registrar(ent)
+        self._compor((y0, y1, x0, x1))
+        return ent
 
     def deslocar_camada(self, camada: str | None, dx, dy) -> tuple | None:
         """Move todo o conteúdo da camada (ferramenta Mover sem seleção)."""
@@ -445,6 +585,26 @@ class Sessao:
             self._gravar_estado()
             return bb or (0, 0, 0, 0)
 
+    def ir_para(self, n: int):
+        """Deixa ``n`` passos aplicados: volta (desfaz) ou avança (refaz) até lá, como clicar num estado do painel
+        Histórico do Photoshop. Os passos à frente continuam lá até a próxima edição."""
+        with self.lock:
+            n = max(0, min(int(n), len(self.historico_) + len(self.refazer_pilha)))
+            bb = None
+            while len(self.historico_) > n:
+                ent = self.historico_.pop()
+                bb = _bbox_uniao(bb, self._desfazer_passos(ent, inverso=True))
+                self.refazer_pilha.append(ent)
+            while len(self.historico_) < n and self.refazer_pilha:
+                ent = self.refazer_pilha.pop()
+                bb = _bbox_uniao(bb, self._desfazer_passos(ent, inverso=False))
+                self.historico_.append(ent)
+            self.versao += 1
+            if bb:
+                self._compor(bb)
+            self._gravar_estado()
+            return bb or (0, 0, 0, 0)
+
     def recomecar(self) -> None:
         """Volta ao original e apaga o rascunho (usado ao descartar e depois de salvar)."""
         with self.lock:
@@ -458,14 +618,44 @@ class Sessao:
     def camadas_visiveis(self) -> list[Camada]:
         return [self.camadas[c] for c in self.ordem if self.camadas[c].visivel and self.camadas[c].opacidade > 0]
 
+    def _tocados(self) -> dict[str, np.ndarray]:
+        """Por camada, os pixels que algum passo do histórico mudou nela (edição, mover, mesclar, borracha). O resto do
+        conteúdo dela veio de uma cópia (Ctrl+J, duplicar)."""
+        out: dict[str, np.ndarray] = {}
+        for e in self.historico_:
+            for p in e.passos:
+                if p[0] == "pixels":
+                    _, cid, (y0, y1, x0, x1), antes, depois = p
+                    if cid not in out:
+                        out[cid] = np.zeros((self.H, self.W), bool)
+                    out[cid][y0:y1, x0:x1] |= (antes != depois).any(2)
+        return out
+
+    def _muda_a_imagem(self, cam: Camada, onde: np.ndarray) -> np.ndarray:
+        """Os pixels de ``onde`` em que a camada muda o que está embaixo dela."""
+        ys, xs = np.nonzero(onde)
+        bb = (int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1)
+        i = self.ordem.index(cam.id)
+        out = np.zeros((self.H, self.W), bool)
+        y0, y1, x0, x1 = bb
+        out[y0:y1, x0:x1] = ((self._composto(bb, self.ordem[:i]) != self._composto(bb, self.ordem[:i + 1])).any(2)
+                             & onde[y0:y1, x0:x1])
+        return out
+
     def mascaras(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """(alterados, regiao, classes): pixels que mudaram, área editada e categoria por pixel."""
+        """(alterados, regiao, classes): pixels que mudaram, área editada e categoria por pixel. O conteúdo de camada
+        que só foi copiado (Ctrl+J, duplicar), sem edição nem movimento ali, só conta onde muda a imagem: uma cópia
+        parada no mesmo lugar não é edição."""
         with self.lock:
             alterados = (self.atual != self.base).any(axis=2)
             regiao = np.zeros((self.H, self.W), bool)
             classes = np.zeros((self.H, self.W), np.uint8)
+            tocados = self._tocados()
             for cam in self.camadas_visiveis():
                 m = cam.rgba[..., 3] > 0
+                copia = m & ~tocados[cam.id] if cam.id in tocados else m
+                if copia.any():
+                    m = m & (~copia | self._muda_a_imagem(cam, copia))
                 regiao |= m
                 if cam.categoria in self.ids_categoria:
                     classes[m] = self.ids_categoria[cam.categoria]
@@ -546,6 +736,7 @@ class Sessao:
         ok, motivo = self.pode_salvar()
         ocultas = [self.camadas[c].nome for c in self.ordem if not self.camadas[c].visivel]
         return {"versao": self.versao, "historico": self.historico(), "camadas": self.lista_camadas(),
+                "refazer": [e.resumo() for e in reversed(self.refazer_pilha)],  # os passos à frente, do próximo em diante
                 "ativa": self.ativa, "pode_refazer": bool(self.refazer_pilha), "categorias": self.categorias(),
                 "pode_salvar": ok, "motivo": motivo, "ocultas": ocultas}
 
@@ -607,7 +798,7 @@ class Sessao:
                 rgba = z["rgba"]
             self.camadas[cid] = Camada(id=cid, nome=p["nome"], categoria=p["categoria"],
                                        descricao=p.get("descricao", ""), visivel=p["visivel"],
-                                       opacidade=p["opacidade"], rgba=rgba)
+                                       opacidade=p["opacidade"], rgba=rgba, auto=bool(p.get("auto", False)))
         self._restaurar_estrutura(e)
 
         def ler(m: dict) -> Entrada:

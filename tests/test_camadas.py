@@ -87,13 +87,69 @@ class TestCamadas(unittest.TestCase):
         self.s.desfazer()
         self.assertEqual(len(self.s.ordem), 2)
 
+    def borracha(self, pts, tamanho=30):
+        p = {"pontos": pts, "tamanho": tamanho, "dureza": 1}
+        res = executar("borracha", self.s.atual, p, selecao.vazia(*self.img.shape[:2]), base=self.s.base)
+        return self.s.aplicar("borracha", None, "", p, res)
+
     def test_borracha_revela_camada_de_baixo(self):
+        """Com camadas que a pessoa criou, a borracha tira da camada ativa e revela a de baixo."""
+        self.s.acao_camada("criar", categoria="valor")
+        self.pintar([[100, 100]], "#ff0000", "valor", tamanho=40)
+        self.s.acao_camada("criar", categoria="nome")
+        self.pintar([[100, 100]], "#0000ff", "nome", tamanho=20)
+        self.borracha([[100, 100]])
+        self.assertEqual(tuple(self.s.atual[100, 100]), (255, 0, 0))
+
+    # ---------------------------------------------------------------- edição direto no Fundo (como no Photoshop)
+    def test_edicao_vai_direto_no_fundo(self):
+        """Sem camada da pessoa ativa, a edição vai para a imagem: as camadas internas (uma por tipo, para a
+        máscara de classes) são ``auto`` e o painel não as mostra; a camada que a pessoa cria fica acima delas."""
+        self.pintar([[100, 100]], "#ff0000", "valor")
+        self.pintar([[160, 160]], "#0000ff", "nome")
+        self.assertTrue(all(c["auto"] for c in self.s.lista_camadas()))
+        self.s.acao_camada("ativar", "fundo")
+        self.s.acao_camada("criar", categoria="nome")
+        cams = self.s.lista_camadas()  # de cima para baixo
+        self.assertEqual([c["auto"] for c in cams], [False, True, True])
+        self.assertTrue(cams[0]["ativa"])
+
+    def test_no_fundo_a_ultima_edicao_aparece(self):
+        """Vermelho (valor), azul (nome) por cima e vermelho de novo: o último vermelho aparece e o pixel é 'valor'."""
+        self.pintar([[100, 100]], "#ff0000", "valor")
+        self.pintar([[100, 100]], "#0000ff", "nome")
+        self.pintar([[100, 100]], "#ff0000", "valor", tamanho=10)
+        self.assertEqual(tuple(self.s.atual[100, 100]), (255, 0, 0))
+        self.assertEqual(self.s.mascaras()[2][100, 100], 9)
+        self.s.desfazer()  # o azul volta
+        self.assertEqual(tuple(self.s.atual[100, 100]), (0, 0, 255))
+
+    def test_borracha_no_fundo_devolve_o_original(self):
         self.pintar([[100, 100]], "#ff0000", "valor", tamanho=40)
         self.pintar([[100, 100]], "#0000ff", "nome", tamanho=20)
-        p = {"pontos": [[100, 100]], "tamanho": 30, "dureza": 1}
-        res = executar("borracha", self.s.atual, p, selecao.vazia(*self.img.shape[:2]), base=self.s.base)
-        self.s.aplicar("borracha", None, "", p, res)
-        self.assertEqual(tuple(self.s.atual[100, 100]), (255, 0, 0))
+        self.s.acao_camada("ativar", "fundo")
+        self.borracha([[100, 100]], tamanho=60)
+        np.testing.assert_array_equal(self.s.atual[80:120, 80:120], self.s.base[80:120, 80:120])
+        self.s.desfazer()
+        self.assertEqual(tuple(self.s.atual[100, 100]), (0, 0, 255))
+
+    def test_historico_ir_para_um_passo(self):
+        """O clique num estado do Histórico: volta até ele, os passos à frente ficam e somem na próxima edição."""
+        self.pintar([[60, 60]], "#ff0000", "valor")
+        depois_do_1 = self.s.atual.copy()
+        self.pintar([[120, 60]], "#00ff00", "valor")
+        self.pintar([[180, 60]], "#0000ff", "nome")
+        final = self.s.atual.copy()
+        self.s.ir_para(1)
+        np.testing.assert_array_equal(self.s.atual, depois_do_1)
+        self.assertEqual((len(self.s.historico_), len(self.s.estado()["refazer"])), (1, 2))
+        self.s.ir_para(3)
+        np.testing.assert_array_equal(self.s.atual, final)
+        self.s.ir_para(0)
+        np.testing.assert_array_equal(self.s.atual, self.s.base)
+        self.s.ir_para(1)
+        self.pintar([[60, 160]], "#00ffff", "nome")  # edição nova: os passos à frente somem
+        self.assertEqual((len(self.s.historico_), self.s.estado()["refazer"]), (2, []))
 
     def test_mover_camada(self):
         self.pintar([[100, 100]], "#ff0000", "valor", tamanho=10)
@@ -125,6 +181,85 @@ class TestCamadas(unittest.TestCase):
             pass
         np.testing.assert_array_equal(nova.atual, nova.base)
         self.assertEqual(nova.ordem, [])
+
+
+class TestCamadaVia(unittest.TestCase):
+    """Ctrl+J / Ctrl+Shift+J do Photoshop: camada via cópia / via recorte."""
+
+    setUp, tearDown, nova, pintar = (TestCamadas.__dict__[k] for k in ("setUp", "tearDown", "nova", "pintar"))
+    RET = {"formas": [{"tipo": "ret", "x0": 40, "y0": 60, "x1": 160, "y1": 120}]}
+
+    def sel(self):
+        return selecao.rasterizar(self.RET, self.s.atual)
+
+    def test_copia_do_fundo_parada_nao_e_edicao_e_movida_e(self):
+        self.s.camada_via(self.sel(), categoria="valor")
+        cam = self.s.camadas[self.s.ativa]
+        self.assertFalse(cam.auto)
+        self.assertEqual(cam.caixa(), (60, 120, 40, 160))
+        np.testing.assert_array_equal(cam.rgba[60:120, 40:160, :3], self.s.base[60:120, 40:160])
+        np.testing.assert_array_equal(self.s.atual, self.s.base)
+        alterados, regiao, classes = self.s.mascaras()
+        self.assertFalse(regiao.any() or classes.any())  # a cópia parada no lugar não é edição
+        self.assertEqual(self.s.historico()[-1]["rotulo"], "Camada via cópia")
+        self.s.deslocar_camada(None, 0, 70)  # o Mover leva a camada: copiar e colar
+        alterados, regiao, classes = self.s.mascaras()
+        self.assertTrue(alterados[130:190, 40:160].any())
+        self.assertFalse(regiao[:125].any())  # o trecho de origem continua autêntico
+        self.assertTrue((classes[regiao] == IDS["valor"]).all())
+        self.assertTrue(self.s.pode_salvar()[0])
+
+    def test_fundo_copia_inteiro_so_marca_o_que_for_editado_nele(self):
+        self.s.camada_via(None, categoria="valor")
+        cam = self.s.camadas[self.s.ativa]
+        self.assertEqual(cam.nome, "Fundo cópia")
+        self.assertTrue((cam.rgba[..., 3] == 255).all())
+        self.pintar([[100, 100]], "#ff0000", "valor")  # na camada ativa (mesmo tipo)
+        self.assertEqual(len(self.s.ordem), 1)
+        _, regiao, _ = self.s.mascaras()
+        self.assertTrue(regiao[100, 100])
+        self.assertLess(regiao.sum(), 2000)  # só a pincelada, não a página inteira
+
+    def test_recorte_do_fundo_preenche_o_buraco_num_passo_so(self):
+        sel = self.sel()
+        res = executar("preencher", self.s.atual, {"semente": 1}, sel, base=self.s.base)
+        n = len(self.s.historico())
+        self.s.camada_via(sel, recortar=True, categoria="valor", preenchimento=res, params={"semente": 1})
+        self.assertEqual(len(self.s.historico()), n + 1)
+        self.assertEqual(self.s.historico()[-1]["rotulo"], "Camada via recorte")
+        cam = self.s.camadas[self.s.ativa]
+        np.testing.assert_array_equal(self.s.atual, self.s.base)  # a camada nova cobre o buraco
+        self.s.deslocar_camada(None, 0, 80)
+        self.assertFalse(np.array_equal(self.s.atual[60:120, 40:160], self.s.base[60:120, 40:160]))  # o buraco aparece
+        self.s.desfazer()
+        self.s.desfazer()  # um Ctrl+Z desfaz o recorte inteiro (camada e preenchimento)
+        np.testing.assert_array_equal(self.s.atual, self.s.base)
+        self.assertNotIn(cam.id, self.s.ordem)
+        self.assertEqual(self.s.historico(), [])
+
+    def test_recorte_de_camada_tira_da_origem(self):
+        self.s.acao_camada("criar", categoria="valor")  # uma camada da pessoa (Ctrl+Shift+N)
+        origem = self.s.ativa
+        self.pintar([[100, 90]], "#ff0000", "valor", tamanho=40, camada=origem)
+        self.s.camada_via(self.sel(), recortar=True)
+        nova = self.s.camadas[self.s.ativa]
+        self.assertEqual(nova.categoria, "valor")
+        self.assertEqual(self.s.ordem.index(nova.id), self.s.ordem.index(origem) + 1)
+        self.assertTrue((self.s.camadas[origem].rgba[60:120, 40:160, 3] == 0).all())
+        self.assertTrue((nova.rgba[60:120, 40:160, 3] > 0).any())
+
+    def test_erros(self):
+        with self.assertRaises(ErroOperacao):
+            self.s.camada_via(None, recortar=True, categoria="valor")  # recortar pede seleção
+        with self.assertRaises(ErroOperacao):
+            self.s.camada_via(self.sel(), categoria=None)  # do Fundo, o tipo da edição
+        self.assertEqual(self.s.ordem, [])
+
+    def test_rascunho_guarda_a_copia_sem_virar_edicao(self):
+        self.s.camada_via(self.sel(), categoria="valor")
+        self.s = self.nova()
+        self.assertEqual(len(self.s.ordem), 1)
+        self.assertFalse(self.s.mascaras()[1].any())
 
 
 if __name__ == "__main__":

@@ -1,9 +1,60 @@
 // Ferramentas do editor. Cada uma descreve a edição em vetores (pontos, retângulos, texto);
 // o servidor aplica na resolução original. ``app`` é o editor (editor.js).
+//
+// Arquitetura e comportamento inspirados nas ferramentas do Graphite (github.com/GraphiteEditor/Graphite,
+// editor/src/messages/tool/tool_messages; Apache-2.0. Só o desenho e o comportamento, nenhum código ou ícone copiado):
+//  - cada ferramenta é uma MÁQUINA DE ESTADOS. Ela declara os estados em que pode estar (pronta, arrastando, solto…),
+//    uma transição para cada evento de entrada em cada estado (pressionar, mover, soltar, tecla…), os dados que guarda
+//    entre um evento e outro, a barra de opções (como dados) e as dicas da barra de status de CADA estado: o que cada
+//    gesto e cada tecla fazem agora. ``maquina`` monta a ferramenta e a entrega ao editor com a interface de sempre;
+//  - o uso: no arraste de seleção e de forma, Shift iguala os lados, Alt cresce a partir do centro e Espaço leva a
+//    forma junto; a caixa de transformação tem alças nos cantos e nos lados (Shift mantém a proporção, Alt escala a
+//    partir do centro), gira por fora (Shift de 15 em 15°) e Shift ao mover prende no eixo; o zoom aproxima no clique,
+//    afasta com Alt e arrastando para os lados é contínuo; conta-gotas e balde usam o botão direito para a cor de fundo;
+//    as sobreposições são na cor de destaque, com a medida (L × A px, ângulo) ao lado do cursor.
+// Os atalhos continuam os do Photoshop (editor.js): Shift/Alt no COMEÇO do arraste de seleção somam/subtraem; o
+// quadrado e o centro valem quando a tecla é apertada depois de começar (solte e aperte de novo, como no Photoshop).
 
 const RAIO_ALCA = 7; // px de tela
+const ACENTO = "#00a8ff";  // a cor de destaque das sobreposições (seleção, alças, medidas)
+// cursor de girar (desenho próprio: um arco com a seta)
+const CURSOR_GIRAR = `url("data:image/svg+xml,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">'
+  + '<path d="M6 13a6.5 6.5 0 1 1 2 4.6" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round"/>'
+  + '<path d="M6 13a6.5 6.5 0 1 1 2 4.6" fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round"/>'
+  + '<path d="M2.5 17.5l5.8.2-1.6-5.4z" fill="#000" stroke="#fff" stroke-width="0.9"/></svg>')}") 12 12, alias`;
+const CURSORES_LADO = ["ew-resize", "nwse-resize", "ns-resize", "nesw-resize"];
+// o cursor de redimensionar que aponta na direção (dx, dy) da tela
+function cursorNaDirecao(dx, dy) {
+  const k = ((Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) % 4) + 4) % 4;
+  return CURSORES_LADO[k];
+}
 
 function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+// o retângulo de um arraste de ``a`` até ``p``: ``quadrado`` iguala os lados; ``centro`` cresce para os dois lados a
+// partir de ``a`` (o ponto em que o arraste começou)
+function retDoArraste(a, p, quadrado, centro) {
+  let dx = p.x - a.x, dy = p.y - a.y;
+  if (quadrado) { const m = Math.max(Math.abs(dx), Math.abs(dy)); dx = Math.sign(dx || 1) * m; dy = Math.sign(dy || 1) * m; }
+  return centro ? { x0: a.x - dx, y0: a.y - dy, x1: a.x + dx, y1: a.y + dy } : { x0: a.x, y0: a.y, x1: a.x + dx, y1: a.y + dy };
+}
+// graus da tela para leitura (anti-horário positivo, de -180 a 180)
+function graus(rad) { let g = (-rad * 180) / Math.PI; g = ((g + 180) % 360 + 360) % 360 - 180; return Math.round(g * 10) / 10; }
+// a medida ao lado do cursor (L × A px, ângulo): etiqueta na cor de destaque, como as do Graphite
+function leitura(ctx, s, texto) {
+  if (!s || !texto) return;
+  ctx.save();
+  ctx.font = "11px 'Segoe UI', system-ui, sans-serif";
+  const w = Math.ceil(ctx.measureText(texto).width) + 10, h = 18, dpr = window.devicePixelRatio || 1;
+  const x = Math.round(Math.min(s.x + 14, ctx.canvas.width / dpr - w - 4)), y = Math.round(Math.min(s.y + 16, ctx.canvas.height / dpr - h - 4));
+  ctx.fillStyle = ACENTO;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, 3); else ctx.rect(x, y, w, h);
+  ctx.fill();
+  ctx.fillStyle = "#fff"; ctx.textBaseline = "middle";
+  ctx.fillText(texto, x + 5, y + h / 2 + 0.5);
+  ctx.restore();
+}
 // o ponto com o instante em que o mouse passou por ele: os traços salvos levam ``tempos`` (ms desde o 1º ponto), e
 // a geração automática aprende com eles a velocidade e o ritmo de uma pessoa de verdade (rotulador/gesto.py)
 function comTempo(p) { return { ...p, t: performance.now() }; }
@@ -23,11 +74,15 @@ function tracarTela(ctx, visor, pts, fechar) {
   if (fechar) ctx.closePath();
 }
 
-function contorno(ctx, desenhar) {
+// contorno de sobreposição: a cor de destaque sobre um halo claro (lê-se no papel e no fundo escuro); ``tracejado``
+// marca o que está solto (o trecho puxado ou colado, ainda não aplicado)
+function contorno(ctx, desenhar, tracejado = false) {
   ctx.save();
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = "#000"; ctx.setLineDash([]); desenhar(); ctx.stroke();
-  ctx.strokeStyle = "#fff"; ctx.setLineDash([4, 4]); desenhar(); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,255,255,0.7)"; desenhar(); ctx.stroke();
+  ctx.lineWidth = 1; ctx.strokeStyle = ACENTO;
+  if (tracejado) ctx.setLineDash([5, 3]);
+  desenhar(); ctx.stroke();
   ctx.restore();
 }
 
@@ -54,6 +109,77 @@ function fantasma(ctx, v, mouse, origem, inicio, o) {
   ctx.drawImage(o.fonte === "original" && v.orig ? v.orig : v.img, 0, 0);
   ctx.restore();
 }
+
+// ---------------------------------------------------------------------------
+// a máquina de estados de cada ferramenta
+// ---------------------------------------------------------------------------
+// Uma ferramenta é declarada com:
+//   estados   {estado: {evento: (t, ...args) => próximo estado}}; devolver nada = fica no estado; ``false`` = não tratou
+//             (a tecla segue para os atalhos do editor)
+//   sempre    as transições que valem em qualquer estado (as do estado atual vêm antes)
+//   inicial   o estado de partida (padrão "pronta"); ``repouso``: os estados em que ela espera a pessoa começar algo
+//   dados     () => os dados da ferramenta (``t.d``: o que ela guarda entre os eventos)
+//   opcoes    a barra de opções, como dados, na ordem em que aparece: campos {chave, tipo, rotulo, …}, botões
+//             {rotulo, acao, …}, campos da seleção {campoSel, rotulo} e "|" (separador)
+//   dicas     {estado: [dica, …] | (t) => [dica, …]}: o que cada gesto e cada tecla fazem AGORA (barra de status)
+//   desenhar  (ctx, visor, t) => o que a ferramenta desenha por cima da imagem
+//   cursorEm  (p, t) => o cursor sobre o ponto p
+//   api       (t) => métodos e propriedades que o editor chama direto (confirmar, cancelar, solto, ancora…)
+// Eventos: pressionar, mover, soltar, duplo, sair, tecla e os da vida da ferramenta (ativar, desativar, opcao = mudou
+// uma opção, selecao = a seleção mudou).
+const EVENTOS = { down: "pressionar", move: "mover", up: "soltar", dbl: "duplo", sair: "sair", tecla: "tecla",
+  ativar: "ativar", desativar: "desativar", mudouOpcao: "opcao", aoMudarSelecao: "selecao" };
+
+function maquina(app, def) {
+  const inicial = def.inicial || "pronta";
+  const t = {
+    nome: def.nome, icone: def.icone, atalho: def.atalho, cursor: def.cursor || "default",
+    estado: inicial, d: def.dados ? def.dados() : {}, layout: def.opcoes || [],
+    aceitaDireito: Boolean(def.aceitaDireito),  // o editor também manda o clique do botão direito (cor de fundo)
+  };
+  t.campos = t.layout.filter((w) => w !== "|" && w.chave);
+  t.botoes = t.layout.filter((w) => w !== "|" && !w.chave);
+  const repouso = new Set(def.repouso || [inicial, "pronta"]);
+  t.emRepouso = () => repouso.has(t.estado);
+  // muda de estado; a barra de status passa a mostrar as dicas do estado novo
+  t.ir = (estado) => {
+    if (typeof estado !== "string" || estado === t.estado) return;
+    t.estado = estado;
+    app.visor.redesenhar();
+  };
+  // um evento: a transição do estado atual (ou a de ``sempre``) faz o efeito e diz o próximo estado
+  t.enviar = (evento, ...args) => {
+    const tr = def.estados?.[t.estado]?.[evento] || def.sempre?.[evento];
+    if (!tr) return false;
+    const r = tr(t, ...args);
+    if (r === false) return false;
+    t.ir(r);
+    return true;
+  };
+  const trata = (evento) => evento in (def.sempre || {}) || Object.values(def.estados || {}).some((e) => evento in e);
+  for (const [metodo, evento] of Object.entries(EVENTOS)) if (trata(evento)) t[metodo] = (...a) => t.enviar(evento, ...a);
+  t.dicasAgora = () => {
+    const ds = def.dicas?.[t.estado] ?? def.dicas?.[inicial] ?? [];
+    return (typeof ds === "function" ? ds(t) : ds) || [];
+  };
+  if (def.desenhar) t.desenhar = (ctx, v) => def.desenhar(ctx, v, t);
+  if (def.cursorEm) t.cursorEm = (p) => def.cursorEm(p, t);
+  if (def.api) Object.defineProperties(t, Object.getOwnPropertyDescriptors(def.api(t)));
+  return t;
+}
+
+// dica da barra de status: tecla (k), gesto do mouse (m) e o que acontece (t)
+const h = (k, m, t) => ({ k, m, t });
+const DICA_SEL = [h("", "arrastar", "selecionar"), h("Shift", "arrastar", "somar"), h("Alt", "arrastar", "subtrair")];
+const DICA_TAM = h("[ ]", "", "tamanho · Shift dureza · 1–0 opacidade");
+const DICA_FONTE = [h("Alt", "clique", "origem"), h("", "arrastar", "pintar a cópia"), DICA_TAM];
+const NOME_MODO_SEL = { novo: "selecionar", somar: "somar à seleção", subtrair: "tirar da seleção", intersectar: "intersectar" };
+// dicas que valem com a ferramenta parada: com uma seleção feita, e sempre
+export const DICAS = {
+  com_selecao: [h("Ctrl", "arrastar", "puxar"), h("Del", "", "apagar com preenchimento"),
+    h("Ctrl+C · Ctrl+X · Ctrl+V", "", "copiar · recortar · colar")],
+  sempre: [h("Espaço", "arrastar", "mover a vista")],
+};
 
 // ---------------------------------------------------------------------------
 // quadrilátero com alças (mover / escalar / girar / perspectiva)
@@ -89,67 +215,132 @@ export class Quad {
     const c = this.centro(), co = Math.cos(da), si = Math.sin(da);
     this.livre = this.livre.map((p) => ({ x: c.x + (p.x - c.x) * co - (p.y - c.y) * si, y: c.y + (p.x - c.x) * si + (p.y - c.y) * co }));
   }
-  arrastarCanto(i, p, perspectiva, proporcao, base) {
+  // canto ``i`` arrastado até ``p``: o canto oposto fica (com ``doCentro``, o centro do começo do arraste: cresce para
+  // os dois lados); ``proporcao`` mantém a do começo; ``perspectiva`` solta o canto
+  arrastarCanto(i, p, perspectiva, proporcao, base, doCentro = false) {
     if (perspectiva || this.livre) {
       if (!this.livre) this.livre = this.cantos();
       this.livre[i] = { x: p.x, y: p.y };
       return;
     }
-    const opp = this.cantos()[(i + 2) % 4];
     const u = { x: Math.cos(this.ang), y: Math.sin(this.ang) }, v = { x: -u.y, y: u.x };
-    const d = { x: p.x - opp.x, y: p.y - opp.y };
-    let du = d.x * u.x + d.y * u.y, dv = d.x * v.x + d.y * v.y;
+    const fixo = doCentro && base?.c ? base.c : this.cantos()[(i + 2) % 4];
+    const d = { x: p.x - fixo.x, y: p.y - fixo.y }, k = doCentro && base?.c ? 2 : 1;
+    let du = k * (d.x * u.x + d.y * u.y), dv = k * (d.x * v.x + d.y * v.y);
     if (proporcao && base) {
       const f = Math.max(Math.abs(du) / base.w, Math.abs(dv) / base.h);
       du = Math.sign(du || 1) * base.w * f; dv = Math.sign(dv || 1) * base.h * f;
     }
     this.w = Math.max(1, Math.abs(du)); this.h = Math.max(1, Math.abs(dv));
+    if (k === 2) { this.cx = fixo.x; this.cy = fixo.y; return; }
     const su = Math.sign(du || 1) * this.w / 2, sv = Math.sign(dv || 1) * this.h / 2;
-    this.cx = opp.x + su * u.x + sv * v.x;
-    this.cy = opp.y + su * u.y + sv * v.y;
+    this.cx = fixo.x + su * u.x + sv * v.x;
+    this.cy = fixo.y + su * u.y + sv * v.y;
+  }
+  // os lados: 0 em cima, 1 à direita, 2 embaixo, 3 à esquerda (o meio de cada um tem uma alça)
+  meioDoLado(i) { const c = this.cantos(), a = c[i], b = c[(i + 1) % 4]; return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+  // lado ``i`` arrastado até ``p``: estica só a largura (lados 1 e 3) ou só a altura (0 e 2); o lado oposto fica (com
+  // ``doCentro``, o centro: estica para os dois lados). ``base.fixo`` e ``base.c`` vêm do começo do arraste
+  arrastarLado(i, p, doCentro, base) {
+    if (this.livre) return;
+    const u = { x: Math.cos(this.ang), y: Math.sin(this.ang) }, v = { x: -u.y, y: u.x };
+    const eixo = i % 2 ? u : v;
+    const fixo = doCentro ? base.c : base.fixo;
+    const s = (p.x - fixo.x) * eixo.x + (p.y - fixo.y) * eixo.y;
+    const novo = Math.max(1, Math.abs(s) * (doCentro ? 2 : 1));
+    if (i % 2) this.w = novo; else this.h = novo;
+    if (doCentro) { this.cx = fixo.x; this.cy = fixo.y; } else { this.cx = fixo.x + eixo.x * s / 2; this.cy = fixo.y + eixo.y * s / 2; }
   }
   destino() { return this.cantos().map((p) => [p.x, p.y]); }
 }
 
-function desenharQuad(ctx, visor, quad) {
+// as alças dos lados que cabem na tela: só com o lado comprido e a caixa alta o bastante (numa linha de texto miúda,
+// a alça do lado ficaria em cima do miolo e o arraste para mover viraria esticar)
+function ladosVisiveis(quad, visor) {
+  if (quad.livre) return [];
+  const c = quad.cantos().map((p) => visor.imgParaTela(p.x, p.y));
+  const comp = (i) => dist(c[i], c[(i + 1) % 4]);
+  return [0, 1, 2, 3].filter((i) => comp(i) >= 40 && comp((i + 1) % 4) >= 24)
+    .map((i) => ({ i, s: { x: (c[i].x + c[(i + 1) % 4].x) / 2, y: (c[i].y + c[(i + 1) % 4].y) / 2 } }));
+}
+
+// a caixa de transformação: contorno na cor de destaque (tracejado = o trecho está solto) e alças brancas com a borda
+// na cor de destaque nos cantos e no meio dos lados
+function desenharQuad(ctx, visor, quad, tracejado = false) {
   const q = quad.cantos().map((p) => visor.imgParaTela(p.x, p.y));
-  contorno(ctx, () => { ctx.beginPath(); q.forEach((s, i) => (i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y))); ctx.closePath(); });
+  contorno(ctx, () => { ctx.beginPath(); q.forEach((s, i) => (i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y))); ctx.closePath(); }, tracejado);
   ctx.save();
-  for (const s of q) {
-    ctx.fillStyle = "#fff"; ctx.strokeStyle = "#000";
-    ctx.fillRect(s.x - 4, s.y - 4, 8, 8); ctx.strokeRect(s.x - 4.5, s.y - 4.5, 9, 9);
+  ctx.lineWidth = 1;
+  for (const s of [...q, ...ladosVisiveis(quad, visor).map((l) => l.s)]) {
+    const x = Math.round(s.x) - 3.5, y = Math.round(s.y) - 3.5;
+    ctx.fillStyle = "#fff"; ctx.fillRect(x, y, 7, 7);
+    ctx.strokeStyle = ACENTO; ctx.strokeRect(x, y, 7, 7);
   }
   ctx.restore();
 }
 
-// interação comum de V (transformar) e colar
+// interação comum de V (transformar) e colar: o que o arraste pegou — canto (escala), lado (estica um eixo), miolo
+// (move; Shift prende no eixo) ou fora (gira; Shift de 15 em 15°)
 function interacaoQuad(app, obterQuad, aoMudar) {
-  let arr = null;
+  let arr = null, mouse = null;
+  const naTela = (p) => app.visor.imgParaTela(p.x, p.y);
+  function alvo(quad, p) {
+    const s = naTela(p), cantos = quad.cantos().map(naTela);
+    const i = cantos.findIndex((c) => dist(c, s) <= RAIO_ALCA + 2);
+    if (i >= 0) return { tipo: "canto", i, s, c: cantos[i] };
+    const l = ladosVisiveis(quad, app.visor).find((x) => dist(x.s, s) <= RAIO_ALCA);
+    if (l) return { tipo: "lado", i: l.i, s, c: l.s };
+    if (quad.contem(p)) return { tipo: "mover", s };
+    return { tipo: "girar", s };
+  }
   return {
-    down(p, ev) {
+    pegou: () => arr?.tipo || null,
+    mouse: () => mouse,
+    // a medida do que o arraste está fazendo (para a etiqueta ao lado do cursor)
+    medida() {
       const quad = obterQuad();
-      if (!quad) return false;
-      const s = app.visor.imgParaTela(p.x, p.y);
-      const cantos = quad.cantos();
-      const i = cantos.findIndex((c) => dist(app.visor.imgParaTela(c.x, c.y), s) <= RAIO_ALCA + 2);
-      if (i >= 0) arr = { tipo: "canto", i, base: { w: quad.w, h: quad.h } };
-      else if (quad.contem(p)) arr = { tipo: "mover", ultimo: p };
-      else {
+      if (!arr || !quad) return "";
+      if (arr.tipo === "mover") return `Δ ${Math.round(arr.dx || 0)}, ${Math.round(arr.dy || 0)} px`;
+      if (arr.tipo === "girar") return `${graus(quad.ang)}°`;
+      return quad.livre ? "perspectiva" : `${Math.round(quad.w)} × ${Math.round(quad.h)} px`;
+    },
+    down(p) {
+      const quad = obterQuad();
+      if (!quad) return null;
+      const a = alvo(quad, p);
+      mouse = a.s;
+      if (a.tipo === "canto") arr = { tipo: "canto", i: a.i, base: { w: quad.w, h: quad.h, c: quad.centro() } };
+      else if (a.tipo === "lado") {
+        const fixo = quad.meioDoLado((a.i + 2) % 4);
+        arr = { tipo: "lado", i: a.i, base: { c: quad.centro(), fixo } };
+      } else if (a.tipo === "mover") {
+        arr = { tipo: "mover", inicio: p, cx: quad.cx, cy: quad.cy, livre: quad.livre?.map((q) => ({ ...q })), dx: 0, dy: 0 };
+      } else {  // o giro conta do começo do arraste (com Shift, o total anda de 15 em 15°)
         const c = quad.centro();
-        arr = { tipo: "girar", ang0: Math.atan2(p.y - c.y, p.x - c.x) };
+        arr = { tipo: "girar", ang0: Math.atan2(p.y - c.y, p.x - c.x), ang: quad.ang, livre: quad.livre?.map((q) => ({ ...q })) };
       }
-      return true;
+      return arr.tipo;
     },
     move(p, ev) {
       const quad = obterQuad();
+      mouse = naTela(p);
       if (!arr || !quad) return;
-      if (arr.tipo === "mover") { quad.mover(p.x - arr.ultimo.x, p.y - arr.ultimo.y); arr.ultimo = p; }
-      else if (arr.tipo === "canto") quad.arrastarCanto(arr.i, p, ev.ctrlKey, ev.shiftKey, arr.base);
+      if (arr.tipo === "mover") {
+        let dx = p.x - arr.inicio.x, dy = p.y - arr.inicio.y;
+        if (ev.shiftKey) { if (Math.abs(dx) >= Math.abs(dy)) dy = 0; else dx = 0; }  // prende no eixo
+        quad.cx = arr.cx; quad.cy = arr.cy;
+        if (arr.livre) quad.livre = arr.livre.map((q) => ({ ...q }));
+        quad.mover(dx, dy);
+        arr.dx = dx; arr.dy = dy;
+      } else if (arr.tipo === "canto") quad.arrastarCanto(arr.i, p, ev.ctrlKey, ev.shiftKey, arr.base, ev.altKey);
+      else if (arr.tipo === "lado") quad.arrastarLado(arr.i, p, ev.altKey, arr.base);
       else {
-        const c = quad.centro(), a = Math.atan2(p.y - c.y, p.x - c.x);
-        let da = a - arr.ang0;
+        const c = quad.centro();
+        let da = Math.atan2(p.y - c.y, p.x - c.x) - arr.ang0;
         if (ev.shiftKey) da = Math.round(da / (Math.PI / 12)) * (Math.PI / 12);
-        quad.girar(da); arr.ang0 = ev.shiftKey ? arr.ang0 + da : a;
+        quad.ang = arr.ang;
+        if (arr.livre) quad.livre = arr.livre.map((q) => ({ ...q }));
+        quad.girar(da);
       }
       aoMudar();
     },
@@ -165,17 +356,29 @@ function interacaoQuad(app, obterQuad, aoMudar) {
     cursor(p) {
       const quad = obterQuad();
       if (!quad) return "default";
-      const s = app.visor.imgParaTela(p.x, p.y);
-      if (quad.cantos().some((c) => dist(app.visor.imgParaTela(c.x, c.y), s) <= RAIO_ALCA + 2)) return "nwse-resize";
-      return quad.contem(p) ? "move" : "alias";
+      const a = alvo(quad, p);
+      if (a.tipo === "canto" || a.tipo === "lado") {
+        const cc = naTela(quad.centro());
+        return cursorNaDirecao(a.c.x - cc.x, a.c.y - cc.y);
+      }
+      return a.tipo === "mover" ? "move" : CURSOR_GIRAR;
     },
   };
 }
+// as dicas enquanto se arrasta o quadrilátero, conforme o que o arraste pegou
+function dicasDoArraste(pegou, soltar) {
+  if (pegou === "canto") return [h("Shift", "", "manter a proporção"), h("Alt", "", "a partir do centro"), h("Ctrl", "", "perspectiva (canto livre)")];
+  if (pegou === "lado") return [h("Alt", "", "a partir do centro")];
+  if (pegou === "girar") return [h("Shift", "", "girar de 15 em 15°")];
+  return [h("Shift", "", "só na horizontal ou na vertical"), h("", "soltar", soltar)];
+}
+const SETAS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
 
 // ---------------------------------------------------------------------------
 export function criarFerramentas(app) {
   const F = {};
   const op = (id) => app.opcoes(id);
+  const nova = (def) => maquina(app, def);
   const camposSelecao = [
     { chave: "modo", tipo: "select", rotulo: "Modo", opcoes: [["novo", "nova"], ["somar", "somar (Shift)"], ["subtrair", "subtrair (Alt)"], ["intersectar", "intersectar (Shift+Alt)"]], padrao: "novo" },
   ];
@@ -187,192 +390,323 @@ export function criarFerramentas(app) {
     { campoSel: "expandir", rotulo: "Expandir/contrair px" },
     { campoSel: "suavizar", rotulo: "Suavizar px" },
   ];
+  // o ponto andou ao menos ``px`` de tela desde o último do traço
+  const andou = (p, ult, px) => dist(app.visor.imgParaTela(p.x, p.y), app.visor.imgParaTela(ult.x, ult.y)) >= px;
+  const zoomAtual = () => Math.round(app.visor.escala * 1000) / 1000;
 
   // ------------------------------------------------------------- navegação
-  F.mao = {
+  // a Mão: o editor faz o arraste da vista (também com Espaço, com qualquer ferramenta); aqui só os estados e as dicas
+  F.mao = nova({
     nome: "Mão (H / segure Espaço)", icone: "✋", atalho: "h", cursor: "grab",
-    down(p, ev) { this._u = app.visor.telaDoEvento(ev); },
-    move(p, ev) { if (!this._u) return; const s = app.visor.telaDoEvento(ev); app.visor.mover(s.x - this._u.x, s.y - this._u.y); this._u = s; },
-    up() { this._u = null; },
+    dados: () => ({ u: null }),
+    estados: {
+      pronta: { pressionar: (t, p, ev) => { t.d.u = app.visor.telaDoEvento(ev); return "arrastando"; } },
+      arrastando: {
+        mover: (t, p, ev) => { const s = app.visor.telaDoEvento(ev); app.visor.mover(s.x - t.d.u.x, s.y - t.d.u.y); t.d.u = s; },
+        soltar: (t) => { t.d.u = null; return "pronta"; },
+      },
+    },
+    dicas: { pronta: [h("", "arrastar", "mover a vista"), h("", "roda", "zoom")], arrastando: [h("", "soltar", "parar")] },
+  });
+  // zoom: o clique aproxima (Alt: afasta) onde foi; arrastar para a direita aproxima e para a esquerda afasta, sem
+  // parar, em volta do ponto em que o arraste começou (o "zoom arrastando" do Graphite)
+  const zoomArrastando = (t, p, ev) => {
+    const s = app.visor.telaDoEvento(ev), dx = s.x - t.d.s0.x;
+    if (t.estado === "pressionado" && Math.abs(dx) < 4) return undefined;
+    app.visor.zoomEm((t.d.e0 * Math.exp(dx * 0.01)) / app.visor.escala, t.d.s0.x, t.d.s0.y);
+    return "arrastando";
   };
-  F.zoom = {
+  F.zoom = nova({
     nome: "Zoom (Z; Alt = afastar)", icone: "🔍", atalho: "z", cursor: "zoom-in",
-    down(p, ev) { const s = app.visor.telaDoEvento(ev); app.visor.zoomEm(ev.altKey ? 1 / 1.6 : 1.6, s.x, s.y); },
-    botoes: [{ rotulo: "Ajustar (0)", acao: () => app.visor.ajustar() }, { rotulo: "100% (1)", acao: () => app.visor.zoom100() }],
-  };
+    opcoes: ["|", { rotulo: "Ajustar (Ctrl+0)", acao: () => app.visor.ajustar() }, { rotulo: "100% (Ctrl+1)", acao: () => app.visor.zoom100() }],
+    dados: () => ({ s0: null, e0: 1, alt: false }),
+    estados: {
+      pronta: {
+        pressionar: (t, p, ev) => { Object.assign(t.d, { s0: app.visor.telaDoEvento(ev), e0: app.visor.escala, alt: ev.altKey }); return "pressionado"; },
+      },
+      pressionado: {
+        mover: zoomArrastando,
+        soltar: (t, p, ev) => { app.visor.zoomEm(t.d.alt || ev.altKey ? 1 / 1.6 : 1.6, t.d.s0.x, t.d.s0.y); return "pronta"; },
+      },
+      arrastando: { mover: zoomArrastando, soltar: () => "pronta" },
+    },
+    dicas: {
+      pronta: [h("", "clique", "aproximar"), h("Alt", "clique", "afastar"), h("", "arrastar ←→", "zoom contínuo"),
+        h("Ctrl+0", "", "caber na tela"), h("Ctrl+1", "", "100%")],
+      pressionado: [h("", "soltar", "aproximar (Alt: afastar)"), h("", "arrastar ←→", "zoom contínuo")],
+      arrastando: [h("", "arrastar →", "aproximar"), h("", "arrastar ←", "afastar")],
+    },
+  });
 
   // ------------------------------------------------------------- seleção
+  // arraste de retângulo/elipse (seleção e formas), como no Graphite: Shift iguala os lados, Alt cresce a partir do
+  // centro e Espaço (segurado durante o arraste) leva a forma junto com o mouse. ``prende``: Shift e Alt só valem
+  // depois de soltos e apertados de novo, quando no começo do arraste eles já disseram outra coisa (somar/subtrair)
+  function arrasteDeForma(t, p, ev, prende) {
+    const d = t.d;
+    if (app.espaco && d.ultimo) d.a = { x: d.a.x + p.x - d.ultimo.x, y: d.a.y + p.y - d.ultimo.y };
+    d.ultimo = p; d.b = p;
+    if (!ev.shiftKey) d.shift0 = false;
+    if (!ev.altKey) d.alt0 = false;
+    d.quadrado = ev.shiftKey && !(prende && d.shift0);
+    d.centro = ev.altKey && !(prende && d.alt0);
+    d.r = retDoArraste(d.a, p, d.quadrado, d.centro);
+    app.visor.redesenhar();
+  }
+  const comecarForma = (t, p, ev) => Object.assign(t.d, { a: p, b: p, ultimo: p, shift0: ev.shiftKey, alt0: ev.altKey,
+    quadrado: false, centro: false, r: { x0: p.x, y0: p.y, x1: p.x, y1: p.y } });
+  const tamanhoDoRet = (r) => `${Math.round(Math.abs(r.x1 - r.x0))} × ${Math.round(Math.abs(r.y1 - r.y0))} px`;
   function selRet(id, nome, icone, atalho, tipo) {
-    return {
-      nome, icone, atalho, cursor: "crosshair", grupo: "selecao", campos: camposSelecao, botoes: botoesSelecao,
-      down(p, ev) { this._a = p; this._b = p; this._modo = modoSelecao(ev, op(id).modo); },
-      move(p) { if (this._a) { this._b = p; app.visor.redesenhar(); } },
-      up(p) {
-        if (!this._a) return;
-        const a = this._a, b = p; this._a = null;
-        const pequeno = Math.abs(a.x - b.x) * app.visor.escala < 3 && Math.abs(a.y - b.y) * app.visor.escala < 3;
-        if (pequeno) { if (this._modo === "novo") app.desmarcar(); app.visor.redesenhar(); return; }
-        app.adicionarForma({ tipo, x0: a.x, y0: a.y, x1: b.x, y1: b.y }, this._modo);
+    const forma = tipo === "ret" ? "quadrado" : "círculo";
+    return nova({
+      nome, icone, atalho, cursor: "crosshair", opcoes: [...camposSelecao, "|", ...botoesSelecao],
+      dados: () => ({ a: null, b: null, modo: "novo", r: null }),
+      sempre: {
+        pressionar: (t, p, ev) => { comecarForma(t, p, ev); t.d.modo = modoSelecao(ev, op(id).modo); return "arrastando"; },
       },
-      desenhar(ctx, v) {
-        if (!this._a) return;
-        const a = v.imgParaTela(this._a.x, this._a.y), b = v.imgParaTela(this._b.x, this._b.y);
+      estados: {
+        arrastando: {
+          mover: (t, p, ev) => arrasteDeForma(t, p, ev, true),
+          soltar: (t, p, ev) => {
+            arrasteDeForma(t, p, ev, true);
+            const { r, modo } = t.d;
+            t.d.a = null;
+            const pequeno = Math.abs(r.x1 - r.x0) * app.visor.escala < 3 && Math.abs(r.y1 - r.y0) * app.visor.escala < 3;
+            if (pequeno) { if (modo === "novo") app.desmarcar(); app.visor.redesenhar(); return "pronta"; }
+            app.adicionarForma({ tipo, x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1 }, modo);
+            return "pronta";
+          },
+        },
+      },
+      dicas: {
+        pronta: DICA_SEL,
+        arrastando: (t) => [h("", "soltar", NOME_MODO_SEL[t.d.modo] || "selecionar"),
+          h("Shift", "", t.d.shift0 ? `${forma} (solte e aperte de novo)` : forma),
+          h("Alt", "", t.d.alt0 ? "a partir do centro (solte e aperte de novo)" : "a partir do centro"),
+          h("Espaço", "", "levar a seleção junto"),
+          ...(t.d.modo === "novo" ? [h("", "clique sem arrastar", "desmarcar")] : [])],
+      },
+      desenhar(ctx, v, t) {
+        if (t.estado !== "arrastando" || !t.d.a) return;
+        const { r } = t.d, a = v.imgParaTela(r.x0, r.y0), b = v.imgParaTela(r.x1, r.y1);
         contorno(ctx, () => {
           ctx.beginPath();
           if (tipo === "ret") ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y);
           else ctx.ellipse((a.x + b.x) / 2, (a.y + b.y) / 2, Math.abs(b.x - a.x) / 2, Math.abs(b.y - a.y) / 2, 0, 0, Math.PI * 2);
         });
+        leitura(ctx, v.imgParaTela(t.d.b.x, t.d.b.y), tamanhoDoRet(r));
       },
-    };
+    });
   }
   F.ret = selRet("ret", "Seleção retangular (M)", "⬚", "m", "ret");
-  F.elipse = selRet("elipse", "Seleção elíptica (Shift+M)", "◯", "M", "elipse");
+  F.elipse = selRet("elipse", "Seleção elíptica (M; Shift+M alterna)", "◯", "m", "elipse");
 
-  F.laco = {
-    nome: "Laço (L) — marque 'poligonal' para clicar ponto a ponto", icone: "➰", atalho: "l", cursor: "crosshair", grupo: "selecao",
-    campos: [...camposSelecao, { chave: "poligonal", tipo: "bool", rotulo: "Poligonal", padrao: false }],
-    botoes: botoesSelecao,
-    down(p, ev) {
-      if (op("laco").poligonal) {
-        if (!this._pts) { this._pts = [comTempo(p)]; this._modo = modoSelecao(ev, op("laco").modo); }
-        else if (this._pts.length > 2 && dist(app.visor.imgParaTela(p.x, p.y), app.visor.imgParaTela(this._pts[0].x, this._pts[0].y)) < 8) this.fechar();
-        else this._pts.push(comTempo(p));
-      } else { this._pts = [comTempo(p)]; this._modo = modoSelecao(ev, op("laco").modo); this._arrastando = true; }
-    },
-    move(p) {
-      this._mouse = p;
-      if (this._arrastando && this._pts) {
-        const ult = this._pts[this._pts.length - 1];
-        if (dist(app.visor.imgParaTela(p.x, p.y), app.visor.imgParaTela(ult.x, ult.y)) >= 2) this._pts.push(comTempo(p));
-      }
-      if (this._pts) app.visor.redesenhar();
-    },
-    up() { if (this._arrastando) { this._arrastando = false; this.fechar(); } },
-    dbl() { if (op("laco").poligonal) this.fechar(); },
-    fechar() {
-      const pts = this._pts; this._pts = null;
-      if (pts && pts.length >= 3) {
-        app.adicionarForma({ tipo: "poligono", pontos: pts.map((q) => [q.x, q.y]), tempos: tempos(pts),
-          zoom: Math.round(app.visor.escala * 1000) / 1000 }, this._modo);
-      }
+  // laço: "contornando" (à mão livre, arrastando) ou "poligono" (um clique por ponto)
+  function fecharLaco(t) {
+    const pts = t.d.pts;
+    t.d.pts = null;
+    if (pts && pts.length >= 3) {
+      app.adicionarForma({ tipo: "poligono", pontos: pts.map((q) => [q.x, q.y]), tempos: tempos(pts), zoom: zoomAtual() }, t.d.modo);
+    }
+    app.visor.redesenhar();
+    return "pronta";
+  }
+  function teclaLaco(t, ev) {
+    if (!t.d.pts) return false;
+    if (ev.key === "Enter") return fecharLaco(t);
+    if (ev.key === "Escape") { t.d.pts = null; app.visor.redesenhar(); return "pronta"; }
+    if (ev.key === "Backspace") {
+      t.d.pts.pop();
       app.visor.redesenhar();
+      if (!t.d.pts.length) { t.d.pts = null; return "pronta"; }
+      return undefined;
+    }
+    return false;
+  }
+  F.laco = nova({
+    nome: "Laço (L) — marque 'poligonal' para clicar ponto a ponto", icone: "➰", atalho: "l", cursor: "crosshair",
+    opcoes: [...camposSelecao, { chave: "poligonal", tipo: "bool", rotulo: "Poligonal", padrao: false }, "|", ...botoesSelecao],
+    dados: () => ({ pts: null, modo: "novo", mouse: null }),
+    sempre: {
+      mover: (t, p) => { t.d.mouse = p; if (t.d.pts) app.visor.redesenhar(); },
+      desativar: (t) => { t.d.pts = null; return "pronta"; },
     },
-    tecla(ev) {
-      if (!this._pts) return false;
-      if (ev.key === "Enter") { this.fechar(); return true; }
-      if (ev.key === "Escape") { this._pts = null; app.visor.redesenhar(); return true; }
-      if (ev.key === "Backspace") { this._pts.pop(); if (!this._pts.length) this._pts = null; app.visor.redesenhar(); return true; }
-      return false;
+    estados: {
+      pronta: {
+        pressionar: (t, p, ev) => {
+          t.d.modo = modoSelecao(ev, op("laco").modo);
+          t.d.pts = [comTempo(p)];
+          return op("laco").poligonal ? "poligono" : "contornando";
+        },
+      },
+      contornando: {
+        pressionar: (t, p, ev) => { t.d.modo = modoSelecao(ev, op("laco").modo); t.d.pts = [comTempo(p)]; },
+        mover: (t, p) => {
+          t.d.mouse = p;
+          if (andou(p, t.d.pts[t.d.pts.length - 1], 2)) t.d.pts.push(comTempo(p));
+          app.visor.redesenhar();
+        },
+        soltar: fecharLaco,
+        tecla: teclaLaco,
+      },
+      poligono: {
+        pressionar: (t, p) => {
+          const pts = t.d.pts;
+          if (pts.length > 2 && !andou(p, pts[0], 8)) return fecharLaco(t);
+          pts.push(comTempo(p));
+          return undefined;
+        },
+        duplo: fecharLaco,
+        tecla: teclaLaco,
+      },
     },
-    desenhar(ctx, v) {
-      if (!this._pts) return;
-      const pts = op("laco").poligonal && this._mouse ? [...this._pts, this._mouse] : this._pts;
+    dicas: {
+      pronta: () => (op("laco").poligonal
+        ? [h("", "clique", "primeiro ponto"), h("Shift", "", "somar"), h("Alt", "", "subtrair")]
+        : [h("", "arrastar", "contornar"), h("Shift", "", "somar"), h("Alt", "", "subtrair")]),
+      contornando: [h("", "soltar", "fechar o laço"), h("Enter", "", "fechar"), h("Backspace", "", "tirar o último ponto"),
+        h("Esc", "", "cancelar")],
+      poligono: [h("", "clique", "próximo ponto"), h("", "clique no 1º ponto · duplo clique", "fechar"), h("Enter", "", "fechar"),
+        h("Backspace", "", "tirar o último ponto"), h("Esc", "", "cancelar")],
+    },
+    desenhar(ctx, v, t) {
+      if (!t.d.pts) return;
+      const pts = t.estado === "poligono" && t.d.mouse ? [...t.d.pts, t.d.mouse] : t.d.pts;
       contorno(ctx, () => tracarTela(ctx, v, pts, false));
     },
-    desativar() { this._pts = null; },
-  };
+  });
 
-  F.varinha = {
-    nome: "Varinha mágica (W)", icone: "✨", atalho: "w", cursor: "crosshair", grupo: "selecao",
-    campos: [...camposSelecao,
+  F.varinha = nova({
+    nome: "Varinha mágica (W)", icone: "✨", atalho: "w", cursor: "crosshair",
+    opcoes: [...camposSelecao,
       { chave: "tolerancia", tipo: "num", rotulo: "Tolerância", min: 0, max: 255, passo: 1, padrao: 24 },
-      { chave: "contigua", tipo: "bool", rotulo: "Contígua", padrao: true }],
-    botoes: botoesSelecao,
-    down(p, ev) {
-      const o = op("varinha");
-      app.adicionarForma({ tipo: "varinha", x: p.x, y: p.y, tolerancia: o.tolerancia, contigua: o.contigua }, modoSelecao(ev, o.modo));
+      { chave: "contigua", tipo: "bool", rotulo: "Contígua", padrao: true }, "|", ...botoesSelecao],
+    estados: {
+      pronta: {
+        pressionar: (t, p, ev) => {
+          const o = op("varinha");
+          app.adicionarForma({ tipo: "varinha", x: p.x, y: p.y, tolerancia: o.tolerancia, contigua: o.contigua }, modoSelecao(ev, o.modo));
+        },
+      },
     },
-  };
+    dicas: { pronta: [h("", "clique", "cor parecida"), h("Shift", "clique", "somar"), h("Alt", "clique", "subtrair")] },
+  });
 
-  F.pincelsel = {
-    nome: "Pincel de seleção (Q): pinte a área a selecionar (Alt = tirar da seleção)", icone: "🖍", atalho: "q",
-    cursor: "none", grupo: "selecao", campos: [{ chave: "tamanho", tipo: "num", rotulo: "Tamanho ([ ])", min: 1, max: 1000, passo: 1, padrao: 20 }],
-    botoes: botoesSelecao,
-    down(p, ev) { this._pts = [comTempo(p)]; this._modo = ev.altKey ? "subtrair" : (app.temSelecao() ? "somar" : "novo"); },
-    move(p) {
-      this._mouse = p;
-      if (this._pts) {
-        const ult = this._pts[this._pts.length - 1];
-        if (dist(app.visor.imgParaTela(p.x, p.y), app.visor.imgParaTela(ult.x, ult.y)) >= 2) this._pts.push(comTempo(p));
-      }
-      app.visor.redesenhar();
+  F.pincelsel = nova({
+    nome: "Pincel de seleção (Q): pinte a área a selecionar (Alt = tirar da seleção)", icone: "🖍", atalho: "q", cursor: "none",
+    opcoes: [{ chave: "tamanho", tipo: "num", rotulo: "Tamanho ([ ])", min: 1, max: 1000, passo: 1, padrao: 20 }, "|", ...botoesSelecao],
+    dados: () => ({ pts: null, modo: "novo", mouse: null }),
+    sempre: {
+      pressionar: (t, p, ev) => {
+        t.d.pts = [comTempo(p)];
+        t.d.modo = ev.altKey ? "subtrair" : (app.temSelecao() ? "somar" : "novo");
+        return "pintando";
+      },
+      mover: (t, p) => {
+        t.d.mouse = p;
+        if (t.d.pts && andou(p, t.d.pts[t.d.pts.length - 1], 2)) t.d.pts.push(comTempo(p));
+        app.visor.redesenhar();
+      },
+      sair: (t) => { t.d.mouse = null; app.visor.redesenhar(); },
+      tecla: (t, ev) => {
+        const o = op("pincelsel");
+        if (ev.key !== "[" && ev.key !== "]") return false;
+        o.tamanho = Math.max(1, Math.round(o.tamanho * (ev.key === "]" ? 1.25 : 0.8)));
+        app.salvarOpcoes(); app.renderOpcoes(); app.visor.redesenhar();
+        return undefined;
+      },
     },
-    up() {
-      if (!this._pts) return;
-      const t = tempos(this._pts);
-      const pts = this._pts.map((q) => [q.x, q.y]); this._pts = null;
-      app.adicionarForma({ tipo: "traco", pontos: pts, tamanho: op("pincelsel").tamanho, tempos: t,
-        zoom: Math.round(app.visor.escala * 1000) / 1000 }, this._modo);
+    estados: {
+      pintando: {
+        soltar: (t) => {
+          const pts = t.d.pts;
+          t.d.pts = null;
+          app.adicionarForma({ tipo: "traco", pontos: pts.map((q) => [q.x, q.y]), tamanho: op("pincelsel").tamanho, tempos: tempos(pts),
+            zoom: zoomAtual() }, t.d.modo);
+          return "pronta";
+        },
+      },
     },
-    desenhar(ctx, v) {
-      if (this._pts) {
+    dicas: {
+      pronta: [h("", "arrastar", "pintar a seleção"), h("Alt", "arrastar", "tirar"), DICA_TAM],
+      pintando: (t) => [h("", "soltar", NOME_MODO_SEL[t.d.modo] || "selecionar")],
+    },
+    desenhar(ctx, v, t) {
+      if (t.d.pts) {
         ctx.save(); ctx.globalAlpha = 0.45; ctx.lineCap = "round"; ctx.lineJoin = "round";
-        ctx.strokeStyle = this._modo === "subtrair" ? "#ff4fa0" : "#28a0ff";
+        ctx.strokeStyle = t.d.modo === "subtrair" ? "#ff4fa0" : "#28a0ff";
         ctx.lineWidth = Math.max(1, op("pincelsel").tamanho * v.escala);
-        tracarTela(ctx, v, this._pts.length === 1 ? [this._pts[0], this._pts[0]] : this._pts); ctx.stroke(); ctx.restore();
+        tracarTela(ctx, v, t.d.pts.length === 1 ? [t.d.pts[0], t.d.pts[0]] : t.d.pts); ctx.stroke(); ctx.restore();
       }
-      circuloCursor(ctx, v, this._mouse, op("pincelsel").tamanho);
+      circuloCursor(ctx, v, t.d.mouse, op("pincelsel").tamanho);
     },
-    sair() { this._mouse = null; app.visor.redesenhar(); },
-    tecla(ev) {
-      const o = op("pincelsel");
-      if (ev.key === "[" || ev.key === "]") { o.tamanho = Math.max(1, Math.round(o.tamanho * (ev.key === "]" ? 1.25 : 0.8))); app.salvarOpcoes(); app.renderOpcoes(); app.visor.redesenhar(); return true; }
-      return false;
-    },
-  };
+  });
 
   // ------------------------------------------------------------- pintura
+  // [ ] tamanho; Shift+[ Shift+] dureza (de 25 em 25%), como no Photoshop
+  function teclaPincel(id, ev) {
+    const o = op(id), k = ev.key;
+    if ((k === "{" || k === "}" || (ev.shiftKey && (k === "[" || k === "]"))) && "dureza" in o) {
+      o.dureza = Math.min(1, Math.max(0, Math.round((o.dureza + (k === "}" || k === "]" ? 0.25 : -0.25)) * 100) / 100));
+      app.salvarOpcoes(); app.renderOpcoes(); app.status(`dureza ${Math.round(o.dureza * 100)}%`);
+      return undefined;
+    }
+    if (k === "[" || k === "]") {
+      o.tamanho = Math.max(1, Math.round(o.tamanho * (k === "]" ? 1.25 : 0.8)));
+      app.salvarOpcoes(); app.renderOpcoes(); app.visor.redesenhar();
+      return undefined;
+    }
+    return false;
+  }
+  // um traço de pincel: "pronta" → (pressionar) "pintando" → (soltar) manda o traço ao servidor e volta a "pronta". Os
+  // traços que esperam o servidor ficam desenhados (``pendentes``); um novo pode começar enquanto isso.
+  // ``extra``: antes(t, p, ev) (false = não pinta), params(t), desenhar(ctx, v, t), dados(), inicial, dicas
   function ferramentaTraco(id, nome, icone, atalho, tipo, campos, extra = {}) {
-    return {
-      nome, icone, atalho, cursor: "none", campos, botoes: extra.botoes,
-      down(p, ev) {
-        if (extra.antes && extra.antes(p, ev) === false) return;
-        this._pts = [comTempo(p)];
-        app.visor.redesenhar();
+    async function aplicarTraco(t) {
+      const traco = { pts: t.d.pts, cor: app.corFrente, tamanho: op(id).tamanho };
+      t.d.pts = null;
+      const params = { ...op(id), pontos: traco.pts.map((q) => [q.x, q.y]), tempos: tempos(traco.pts), zoom: zoomAtual(),
+        ...(extra.params ? extra.params(t) : {}) };
+      if (extra.cor) params.cor = traco.cor;
+      t.d.pendentes.push(traco);
+      try { await app.aplicar(tipo, params, { semCategoria: tipo === "borracha" }); }
+      finally { t.d.pendentes = t.d.pendentes.filter((x) => x !== traco); app.visor.redesenhar(); }
+    }
+    return nova({
+      nome, icone, atalho, cursor: "none", opcoes: campos, inicial: extra.inicial, repouso: extra.repouso,
+      dados: () => ({ pts: null, mouse: null, pendentes: [], ...(extra.dados ? extra.dados() : {}) }),
+      sempre: {
+        pressionar: (t, p, ev) => {
+          if (extra.antes && extra.antes(t, p, ev) === false) return undefined;
+          t.d.pts = [comTempo(p)];
+          app.visor.redesenhar();
+          return "pintando";
+        },
+        mover: (t, p) => {
+          t.d.mouse = p;
+          if (t.d.pts && andou(p, t.d.pts[t.d.pts.length - 1], 1.5)) t.d.pts.push(comTempo(p));
+          app.visor.redesenhar();
+        },
+        sair: (t) => { t.d.mouse = null; app.visor.redesenhar(); },
+        tecla: (t, ev) => teclaPincel(id, ev),
       },
-      move(p) {
-        this._mouse = p;
-        if (this._pts) {
-          const ult = this._pts[this._pts.length - 1];
-          if (dist(app.visor.imgParaTela(p.x, p.y), app.visor.imgParaTela(ult.x, ult.y)) >= 1.5) this._pts.push(comTempo(p));
-        }
-        app.visor.redesenhar();
-      },
-      async up() {
-        if (!this._pts) return;
-        const traco = { pts: this._pts, cor: app.corFrente, tamanho: op(id).tamanho };
-        this._pts = null;  // um novo traço pode começar enquanto este espera o servidor
-        const params = { ...op(id), pontos: traco.pts.map((q) => [q.x, q.y]), tempos: tempos(traco.pts),
-          zoom: Math.round(app.visor.escala * 1000) / 1000, ...(extra.params ? extra.params(traco.pts) : {}) };
-        if (extra.cor) params.cor = traco.cor;
-        (this._pendentes ||= []).push(traco);
-        try { await app.aplicar(tipo, params, { semCategoria: tipo === "borracha" }); }
-        finally { this._pendentes = this._pendentes.filter((t) => t !== traco); app.visor.redesenhar(); }
-      },
-      desenhar(ctx, v) {
+      estados: { pintando: { soltar: (t) => { aplicarTraco(t); return "pronta"; } } },
+      dicas: { pintando: [h("", "soltar", "aplicar o traço")], ...extra.dicas },
+      desenhar(ctx, v, t) {
         const o = op(id);
-        const tracos = [...(this._pendentes || []), ...(this._pts ? [{ pts: this._pts, cor: app.corFrente, tamanho: o.tamanho }] : [])];
-        for (const t of tracos) {  // pendentes continuam visíveis até o servidor devolver o resultado
+        const tracos = [...t.d.pendentes, ...(t.d.pts ? [{ pts: t.d.pts, cor: app.corFrente, tamanho: o.tamanho }] : [])];
+        for (const tr of tracos) {  // pendentes continuam visíveis até o servidor devolver o resultado
           ctx.save();
           ctx.globalAlpha = 0.55; ctx.lineCap = "round"; ctx.lineJoin = "round";
-          ctx.strokeStyle = extra.cor ? t.cor : (tipo === "borracha" ? "#ff4fa0" : "#4fc3ff");
-          ctx.lineWidth = Math.max(1, t.tamanho * v.escala);
-          tracarTela(ctx, v, t.pts.length === 1 ? [t.pts[0], t.pts[0]] : t.pts);
+          ctx.strokeStyle = extra.cor ? tr.cor : (tipo === "borracha" ? "#ff4fa0" : "#4fc3ff");
+          ctx.lineWidth = Math.max(1, tr.tamanho * v.escala);
+          tracarTela(ctx, v, tr.pts.length === 1 ? [tr.pts[0], tr.pts[0]] : tr.pts);
           ctx.stroke(); ctx.restore();
         }
-        circuloCursor(ctx, v, this._mouse, o.tamanho);
-        if (extra.desenhar) extra.desenhar(ctx, v, this);
+        circuloCursor(ctx, v, t.d.mouse, o.tamanho);
+        if (extra.desenhar) extra.desenhar(ctx, v, t);
       },
-      sair() { this._mouse = null; app.visor.redesenhar(); },
-      tecla(ev) {
-        const o = op(id);
-        if (ev.key === "[" || ev.key === "]") {
-          o.tamanho = Math.max(1, Math.round(o.tamanho * (ev.key === "]" ? 1.25 : 0.8)));
-          app.salvarOpcoes(); app.renderOpcoes(); app.visor.redesenhar(); return true;
-        }
-        return false;
-      },
-    };
+    });
   }
   const tam = (p) => ({ chave: "tamanho", tipo: "num", rotulo: "Tamanho ([ ])", min: 1, max: 1000, passo: 1, padrao: p });
   const dur = (p) => ({ chave: "dureza", tipo: "faixa", rotulo: "Dureza", min: 0, max: 1, passo: 0.05, padrao: p });
@@ -382,40 +716,46 @@ export function criarFerramentas(app) {
 
   F.pincel = ferramentaTraco("pincel", "Pincel (B) — Alt+clique pega a cor", "🖌", "b", "pincel", [tam(8), dur(0.9), opa], {
     cor: true,
-    antes: (p, ev) => { if (ev.altKey) { app.contaGotas(p); return false; } },
+    antes: (t, p, ev) => { if (ev.altKey) { app.contaGotas(p); return false; } return true; },
+    dicas: { pronta: [h("", "arrastar", "pintar"), h("Alt", "clique", "pegar a cor"), DICA_TAM] },
   });
-  F.borracha = ferramentaTraco("borracha", "Borracha (E): apaga da CAMADA ativa, revelando o que está embaixo (o original)", "⌫", "e", "borracha", [tam(20), dur(1), opa]);
-  F.corretivo = ferramentaTraco("corretivo", "Pincel corretivo (J): reconstrói o traço a partir do entorno", "✚", "j", "corretivo", [tam(16), dur(0.8), patch, semente]);
+  F.borracha = ferramentaTraco("borracha", "Borracha (E): apaga da CAMADA ativa, revelando o que está embaixo (o original)", "⌫", "e",
+    "borracha", [tam(20), dur(1), opa], { dicas: { pronta: [h("", "arrastar", "devolver o original"), DICA_TAM] } });
+  F.corretivo = ferramentaTraco("corretivo", "Pincel corretivo (J): reconstrói o traço a partir do entorno", "✚", "j", "corretivo",
+    [tam(16), dur(0.8), patch, semente], { dicas: { pronta: [h("", "arrastar", "sumir com o que pintar"), DICA_TAM] } });
+  // carimbo e recuperação: "sem_origem" até o Alt+clique dizer de onde copiar; depois "pronta" ⇄ "pintando"
   function ferramentaFonte(id, nome, icone, atalho, tipo, campos) {
-    const estado = { origem: null, inicio: null };
-    const t = ferramentaTraco(id, nome, icone, atalho, tipo, campos, {
-      antes: (p, ev) => {
+    return ferramentaTraco(id, nome, icone, atalho, tipo, campos, {
+      inicial: "sem_origem", repouso: ["sem_origem", "pronta"],
+      dados: () => ({ origem: null, inicio: null }),
+      antes: (t, p, ev) => {
         if (ev.altKey) {
-          estado.origem = p; estado.inicio = null;
-          app.status("origem definida: agora pinte onde quer copiar"); app.visor.redesenhar(); return false;
+          t.d.origem = p; t.d.inicio = null;
+          app.status("origem definida: agora pinte onde quer copiar"); app.visor.redesenhar();
+          t.ir("pronta");
+          return false;
         }
-        if (!estado.origem) { app.aviso("Alt+clique para definir a ORIGEM (de onde copiar)", "erro"); return false; }
-        if (!estado.inicio || !op(id).alinhado) estado.inicio = p;
+        if (!t.d.origem) { app.aviso("Alt+clique para definir a ORIGEM (de onde copiar)", "erro"); return false; }
+        if (!t.d.inicio || !op(id).alinhado) t.d.inicio = p;
         if (op(id).fonte === "original" && !app.visor.orig) app.carregarOriginal();
+        return true;
       },
-      params: () => ({ origem_x: estado.origem.x, origem_y: estado.origem.y, inicio_x: estado.inicio.x, inicio_y: estado.inicio.y }),
-      desenhar: (ctx, v, tr) => {
-        if (estado.origem) {
-          const esc = (op(id).escala || 100) / 100, ang = ((op(id).rotacao || 0) * Math.PI) / 180;
-          let alvo = estado.origem;
-          if (tr._mouse && estado.inicio) {
-            const dx = tr._mouse.x - estado.inicio.x, dy = tr._mouse.y - estado.inicio.y;
-            alvo = { x: estado.origem.x + esc * (Math.cos(ang) * dx - Math.sin(ang) * dy),
-              y: estado.origem.y + esc * (Math.sin(ang) * dx + Math.cos(ang) * dy) };
-          }
-          const sc = v.imgParaTela(alvo.x, alvo.y);
-          contorno(ctx, () => { ctx.beginPath(); ctx.moveTo(sc.x - 9, sc.y); ctx.lineTo(sc.x + 9, sc.y); ctx.moveTo(sc.x, sc.y - 9); ctx.lineTo(sc.x, sc.y + 9); });
-          if (!tr._pts && op(id).fantasma !== false) fantasma(ctx, v, tr._mouse, estado.origem, estado.inicio, op(id));
+      params: (t) => ({ origem_x: t.d.origem.x, origem_y: t.d.origem.y, inicio_x: t.d.inicio.x, inicio_y: t.d.inicio.y }),
+      dicas: { sem_origem: [h("Alt", "clique", "definir a origem (de onde copiar)"), DICA_TAM], pronta: DICA_FONTE },
+      desenhar: (ctx, v, t) => {
+        if (!t.d.origem) return;
+        const esc = (op(id).escala || 100) / 100, ang = ((op(id).rotacao || 0) * Math.PI) / 180;
+        let alvo = t.d.origem;
+        if (t.d.mouse && t.d.inicio) {
+          const dx = t.d.mouse.x - t.d.inicio.x, dy = t.d.mouse.y - t.d.inicio.y;
+          alvo = { x: t.d.origem.x + esc * (Math.cos(ang) * dx - Math.sin(ang) * dy),
+            y: t.d.origem.y + esc * (Math.sin(ang) * dx + Math.cos(ang) * dy) };
         }
+        const sc = v.imgParaTela(alvo.x, alvo.y);
+        contorno(ctx, () => { ctx.beginPath(); ctx.moveTo(sc.x - 9, sc.y); ctx.lineTo(sc.x + 9, sc.y); ctx.moveTo(sc.x, sc.y - 9); ctx.lineTo(sc.x, sc.y + 9); });
+        if (!t.d.pts && op(id).fantasma !== false) fantasma(ctx, v, t.d.mouse, t.d.origem, t.d.inicio, op(id));
       },
     });
-    t.estado = estado;
-    return t;
   }
   const camposFonte = [
     { chave: "fonte", tipo: "select", rotulo: "Amostrar de", opcoes: [["atual", "imagem atual"], ["original", "ORIGINAL"]], padrao: "atual" },
@@ -428,28 +768,41 @@ export function criarFerramentas(app) {
     "carimbo", [tam(16), dur(0.8), opa,
       { chave: "modo_mescla", tipo: "select", rotulo: "Mescla", opcoes: [["normal", "normal"], ["escurecer", "escurecer"], ["clarear", "clarear"], ["multiplicar", "multiplicar"], ["tela", "tela"]], padrao: "normal" },
       ...camposFonte]);
-  F.recuperacao = ferramentaFonte("recuperacao", "Pincel de recuperação (Shift+J): como o carimbo, mas casa cor e luz com o destino",
-    "🩹", "J", "recuperacao", [tam(16), dur(1), ...camposFonte]);
+  F.recuperacao = ferramentaFonte("recuperacao", "Pincel de recuperação (J; Shift+J alterna): como o carimbo, mas casa cor e luz com o destino",
+    "🩹", "j", "recuperacao", [tam(16), dur(1), ...camposFonte]);
   F.retoque = ferramentaTraco("retoque", "Pincel de retoque (O): desfocar, nitidez, borrar, clarear, escurecer, saturar", "💧", "o", "retoque", [
     { chave: "modo", tipo: "select", rotulo: "Modo", opcoes: [["desfocar", "desfocar"], ["nitidez", "nitidez"], ["borrar", "borrar (dedo)"], ["clarear", "clarear (subexposição)"], ["escurecer", "escurecer (superexposição)"], ["saturar", "saturar"], ["dessaturar", "dessaturar"]], padrao: "desfocar" },
-    { chave: "forca", tipo: "faixa", rotulo: "Força", min: 0.05, max: 1, passo: 0.05, padrao: 0.5 }, tam(24), dur(0.6)]);
+    { chave: "forca", tipo: "faixa", rotulo: "Força", min: 0.05, max: 1, passo: 0.05, padrao: 0.5 }, tam(24), dur(0.6)],
+  { dicas: { pronta: [h("", "arrastar", "retocar"), DICA_TAM] } });
 
-  F.balde = {
+  F.balde = nova({
     nome: "Balde de tinta (G)", icone: "🪣", atalho: "g", cursor: "crosshair",
-    campos: [{ chave: "tolerancia", tipo: "num", rotulo: "Tolerância", min: 0, max: 255, passo: 1, padrao: 20 },
+    opcoes: [{ chave: "tolerancia", tipo: "num", rotulo: "Tolerância", min: 0, max: 255, passo: 1, padrao: 20 },
       { chave: "contigua", tipo: "bool", rotulo: "Contígua", padrao: true }, opa],
-    down(p) { app.aplicar("balde", { ...op("balde"), x: p.x, y: p.y, cor: app.corFrente }); },
-  };
-  F.contagotas = {
+    aceitaDireito: true,  // como no Graphite: clique = cor de frente, clique direito = cor de fundo
+    estados: {
+      pronta: {
+        pressionar: (t, p, ev) => {
+          app.aplicar("balde", { ...op("balde"), x: p.x, y: p.y, cor: ev.button === 2 ? app.corFundo : app.corFrente });
+        },
+      },
+    },
+    dicas: { pronta: [h("", "clique", "preencher com a cor de frente"), h("", "clique direito", "com a cor de fundo")] },
+  });
+  F.contagotas = nova({
     nome: "Conta-gotas (I): lê a cor do pixel no servidor", icone: "🎯", atalho: "i", cursor: "crosshair",
-    campos: [{ chave: "raio", tipo: "select", rotulo: "Amostra", opcoes: [[0, "1 px"], [1, "3x3 (mediana)"], [2, "5x5 (mediana)"]], padrao: 1 }],
-    down(p) { app.contaGotas(p, op("contagotas").raio); },
-  };
+    opcoes: [{ chave: "raio", tipo: "select", rotulo: "Amostra", opcoes: [[0, "1 px"], [1, "3x3 (mediana)"], [2, "5x5 (mediana)"]], padrao: 1 }],
+    aceitaDireito: true,
+    estados: {
+      pronta: { pressionar: (t, p, ev) => { app.contaGotas(p, op("contagotas").raio, ev.button === 2 ? "fundo" : "frente"); } },
+    },
+    dicas: { pronta: [h("", "clique", "cor de frente"), h("", "clique direito", "cor de fundo")] },
+  });
 
   // ------------------------------------------------------------- texto
   const camposTexto = [
     { chave: "texto", tipo: "texto", rotulo: "Texto", padrao: "", largo: true, dado: true },
-    { chave: "_gerar", tipo: "botao", rotulo: "🎲", titulo: "Valor aleatório plausível para a categoria ativa", acao: () => app.gerarTexto() },
+    { chave: "_gerar", tipo: "botao", rotulo: "🎲", titulo: "Valor novo parecido com o texto antigo (o selecionado, ou o campo onde você clicou)", acao: () => app.gerarTexto() },
     { chave: "fonte", tipo: "fonte", rotulo: "Fonte", padrao: "" },
     { chave: "tamanho", tipo: "num", rotulo: "Tam. px", min: 2, max: 1000, passo: 0.25, padrao: 24 },
     { chave: "_cor", tipo: "corfrente", rotulo: "Cor" },
@@ -461,57 +814,88 @@ export function criarFerramentas(app) {
     { chave: "opacidade", tipo: "faixa", rotulo: "Opac.", min: 0.05, max: 1, passo: 0.05, padrao: 1 },
     { chave: "antialias", tipo: "bool", rotulo: "Suavizar bordas", padrao: true },
   ];
+  // texto: "pronta" (sem linha de base) → (clique) "posicionando" (arrastando a linha de base) → (soltar) "digitando"
+  // (linha de base no lugar: digita nas opções, setas ajustam, Enter aplica, Esc cancela). O substituir tem também
+  // "selecionando" (arraste sobre o texto antigo; ao soltar, o servidor estima posição, tamanho e cor).
+  // ``extra``: pressionar(t, p, ev) → estado (ou nada: segue o clique normal), estados, dicas, desenhar, ativar, depois,
+  // exigeSelecao, botoes
   function ferramentaTexto(id, tipo, nome, icone, atalho, extraCampos, extra = {}) {
-    const t = {
-      nome, icone, atalho, cursor: "text", campos: [...camposTexto, ...extraCampos],
-      botoes: [...(extra.botoes || []),
+    let t = null;
+    const previa = () => { if (t.pronto()) app.previa(tipo, t.params()); else app.limparPrevia(); };
+    t = nova({
+      nome, icone, atalho, cursor: "text",
+      opcoes: [...camposTexto, ...extraCampos, "|", ...(extra.botoes || []),
         { rotulo: "🔍 Qual é a fonte?", titulo: "Compara o texto selecionado com todas as fontes instaladas e mostra as mais parecidas",
           acao: () => app.identificarFonte() },
         { rotulo: "Aplicar (Enter)", primario: true, acao: () => t.aplicar() }, { rotulo: "Cancelar (Esc)", acao: () => t.cancelar() }],
-      ancora: null,
-      params() {
-        const o = op(id);
-        return { ...o, fonte: o.fonte || app.estado.fonte_padrao, x: t.ancora.x, y: t.ancora.y, cor: app.corFrente };
+      dados: () => ({ ancora: null, arr: null }),
+      sempre: {
+        pressionar: (t, p, ev) => {
+          const r = extra.pressionar ? extra.pressionar(t, p, ev) : undefined;
+          if (r) return r;
+          t.d.ancora = p; app.visor.redesenhar(); previa();
+          return "posicionando";
+        },
+        tecla: (t, ev) => {
+          if (ev.key === "Enter") { t.aplicar(); return undefined; }
+          if (ev.key === "Escape") { t.cancelar(); return undefined; }
+          if (!t.d.ancora) return false;
+          const passo = ev.shiftKey ? 10 : (ev.altKey ? 0.25 : 1), m = SETAS[ev.key];
+          if (!m) return false;
+          t.d.ancora = { x: t.d.ancora.x + m[0] * passo, y: t.d.ancora.y + m[1] * passo };
+          app.visor.redesenhar(); previa();
+          return undefined;
+        },
+        opcao: () => { previa(); },
+        ativar: (t) => { if (extra.ativar) extra.ativar(t); previa(); },
+        desativar: (t) => { t.d.ancora = null; t.d.arr = null; app.limparPrevia(); return "pronta"; },
       },
-      pronto() { return t.ancora && (op(id).texto || "").trim() && (!extra.exigeSelecao || app.temSelecao()); },
-      previa() { if (t.pronto()) app.previa(tipo, t.params()); else app.limparPrevia(); },
-      async aplicar() {
-        if (!t.pronto()) { app.aviso(extra.exigeSelecao && !app.temSelecao() ? "selecione o texto antigo primeiro" : "clique na imagem e digite o texto", "erro"); return; }
-        if (await app.aplicar(tipo, t.params())) { t.ancora = null; if (extra.depois) extra.depois(); app.visor.redesenhar(); }
+      estados: {
+        posicionando: {
+          mover: (t, p) => { t.d.ancora = p; app.visor.redesenhar(); },
+          soltar: () => { previa(); return "digitando"; },
+        },
+        ...extra.estados,
       },
-      cancelar() { t.ancora = null; app.limparPrevia(); app.visor.redesenhar(); },
-      down(p, ev) {
-        if (extra.down && extra.down(p, ev) === true) return;
-        t._arr = true; t.ancora = p; app.visor.redesenhar(); t.previa();
+      dicas: {
+        pronta: [h("", "clique", "linha de base"), h("Enter", "", "aplicar"), h("Esc", "", "cancelar"), h("setas", "", "ajuste fino")],
+        posicionando: [h("", "arrastar", "posicionar a linha de base"), h("", "soltar", "digitar o texto nas opções")],
+        digitando: [h("Enter", "", "aplicar"), h("Esc", "", "cancelar"), h("setas", "", "ajuste fino (Shift 10 px · Alt ¼ px)"),
+          h("", "clique", "outra linha de base")],
+        ...extra.dicas,
       },
-      move(p) { if (t._arr) { t.ancora = p; app.visor.redesenhar(); } if (extra.move) extra.move(p); },
-      up(p) { if (extra.up && extra.up(p) === true) return; if (t._arr) { t._arr = false; t.previa(); } },
-      mudouOpcao() { t.previa(); },
-      tecla(ev) {
-        if (ev.key === "Enter") { t.aplicar(); return true; }
-        if (ev.key === "Escape") { t.cancelar(); return true; }
-        if (!t.ancora) return false;
-        const passo = ev.shiftKey ? 10 : (ev.altKey ? 0.25 : 1);
-        const mov = { ArrowLeft: [-passo, 0], ArrowRight: [passo, 0], ArrowUp: [0, -passo], ArrowDown: [0, passo] }[ev.key];
-        if (!mov) return false;
-        t.ancora = { x: t.ancora.x + mov[0], y: t.ancora.y + mov[1] }; app.visor.redesenhar(); t.previa(); return true;
-      },
-      desenhar(ctx, v) {
-        if (extra.desenhar) extra.desenhar(ctx, v);
-        if (!t.ancora) return;
-        const s = v.imgParaTela(t.ancora.x, t.ancora.y);
+      desenhar(ctx, v, t) {
+        if (extra.desenhar) extra.desenhar(ctx, v, t);
+        if (!t.d.ancora) return;
+        const s = v.imgParaTela(t.d.ancora.x, t.d.ancora.y);
         const tamTela = op(id).tamanho * v.escala;
         contorno(ctx, () => { ctx.beginPath(); ctx.moveTo(s.x - 6, s.y); ctx.lineTo(s.x + Math.max(30, tamTela * 3), s.y); ctx.moveTo(s.x, s.y + 4); ctx.lineTo(s.x, s.y - Math.max(10, tamTela)); });
       },
-      ativar() { if (extra.ativar) extra.ativar(); t.previa(); },
-      desativar() { t.ancora = null; app.limparPrevia(); },
-    };
+      api: (t) => ({
+        // a linha de base: o editor lê e escreve direto (🔍 "usar esta fonte" põe a tinta no mesmo lugar)
+        get ancora() { return t.d.ancora; },
+        set ancora(v) { t.d.ancora = v; t.ir(v ? (t.estado === "posicionando" ? "posicionando" : "digitando") : "pronta"); },
+        params() {
+          const o = op(id);
+          return { ...o, fonte: o.fonte || app.estado.fonte_padrao, x: t.d.ancora.x, y: t.d.ancora.y, cor: app.corFrente };
+        },
+        pronto() { return Boolean(t.d.ancora && (op(id).texto || "").trim() && (!extra.exigeSelecao || app.temSelecao())); },
+        previa,
+        async aplicar() {
+          if (!t.pronto()) {
+            app.aviso(extra.exigeSelecao && !app.temSelecao() ? "selecione o texto antigo primeiro" : "clique na imagem e digite o texto", "erro");
+            return;
+          }
+          if (await app.aplicar(tipo, t.params())) { t.ancora = null; if (extra.depois) extra.depois(); app.visor.redesenhar(); }
+        },
+        cancelar() { t.ancora = null; app.limparPrevia(); app.visor.redesenhar(); },
+      }),
+    });
     return t;
   }
   F.texto = ferramentaTexto("texto", "texto", "Texto (T): clique na linha de base, digite e Enter", "T", "t", []);
 
   // substituir: arraste sobre o texto antigo; o servidor estima posição/tamanho/cor
-  const R = { arr: null };
   async function estimar() {
     if (!app.temSelecao()) return;
     const o = op("substituir");
@@ -525,71 +909,97 @@ export function criarFerramentas(app) {
     F.substituir.previa();
   }
   F.substituir = ferramentaTexto("substituir", "substituir_texto",
-    "Substituir texto (R): arraste sobre o texto antigo, digite o novo e Enter (apaga com preenchimento inteligente)", "T↔", "r",
+    "Substituir texto (T; Shift+T alterna): arraste sobre o texto antigo, digite o novo e Enter (apaga com preenchimento inteligente)", "T↔", "t",
     [patch, semente], {
       exigeSelecao: true,
       botoes: [{ rotulo: "Re-estimar", titulo: "Estimar de novo posição, tamanho e cor", acao: estimar }],
-      down(p, ev) {
-        // dentro da seleção: move a âncora; fora: nova seleção retangular
+      // dentro da seleção: move a linha de base; fora (ou com Shift): uma seleção nova sobre o texto antigo
+      pressionar: (t, p, ev) => {
         const bb = app.selBbox();
-        if (bb && p.x >= bb[0] && p.x <= bb[2] && p.y >= bb[1] && p.y <= bb[3] && !ev.shiftKey) return false;
-        R.arr = { a: p, b: p };
-        return true;
+        if (bb && p.x >= bb[0] && p.x <= bb[2] && p.y >= bb[1] && p.y <= bb[3] && !ev.shiftKey) return undefined;
+        t.d.arr = { a: p, b: p };
+        return "selecionando";
       },
-      move(p) { if (R.arr) { R.arr.b = p; app.visor.redesenhar(); } },
-      up(p) {
-        if (!R.arr) return false;
-        const { a } = R.arr; R.arr = null;
-        if (Math.abs(a.x - p.x) * app.visor.escala < 3 || Math.abs(a.y - p.y) * app.visor.escala < 3) { app.visor.redesenhar(); return true; }
-        app.adicionarForma({ tipo: "ret", x0: a.x, y0: a.y, x1: p.x, y1: p.y }, "novo").then(estimar);
-        return true;
+      estados: {
+        selecionando: {
+          mover: (t, p) => { t.d.arr.b = p; app.visor.redesenhar(); },
+          soltar: (t, p) => {
+            const { a } = t.d.arr;
+            t.d.arr = null;
+            const volta = t.d.ancora ? "digitando" : "pronta";
+            if (Math.abs(a.x - p.x) * app.visor.escala < 3 || Math.abs(a.y - p.y) * app.visor.escala < 3) { app.visor.redesenhar(); return volta; }
+            app.adicionarForma({ tipo: "ret", x0: a.x, y0: a.y, x1: p.x, y1: p.y }, "novo").then(estimar);
+            return volta;
+          },
+        },
       },
-      desenhar(ctx, v) {
-        if (!R.arr) return;
-        const a = v.imgParaTela(R.arr.a.x, R.arr.a.y), b = v.imgParaTela(R.arr.b.x, R.arr.b.y);
+      dicas: {
+        pronta: [h("", "arrastar", "sobre o texto antigo"), h("Enter", "", "aplicar"), h("Esc", "", "cancelar")],
+        selecionando: [h("", "soltar", "estimar fonte, tamanho e cor do texto antigo")],
+        digitando: [h("Enter", "", "aplicar"), h("Esc", "", "cancelar"), h("setas", "", "ajuste fino (Shift 10 px · Alt ¼ px)"),
+          h("", "arrastar dentro", "mover a linha de base"), h("Shift", "arrastar", "outro texto antigo")],
+      },
+      desenhar(ctx, v, t) {
+        if (!t.d.arr) return;
+        const a = v.imgParaTela(t.d.arr.a.x, t.d.arr.a.y), b = v.imgParaTela(t.d.arr.b.x, t.d.arr.b.y);
         contorno(ctx, () => { ctx.beginPath(); ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y); });
       },
       ativar() { if (app.temSelecao() && !F.substituir.ancora) estimar(); },
       depois() { app.desmarcar(); },
     });
+  // a seleção mudou: estima de novo (evento à parte do texto, que não tem)
   F.substituir.aoMudarSelecao = () => { if (app.temSelecao()) estimar(); };
 
   // ------------------------------------------------------------- remendo
-  const RM = { a: null, d: { x: 0, y: 0 } };
-  F.remendo = {
-    nome: "Remendo (Y): com uma seleção feita, arraste-a até uma área boa; a seleção recebe aquela textura, mesclada",
-    icone: "🧩", atalho: "y", cursor: "move",
-    campos: [
+  F.remendo = nova({
+    nome: "Remendo (J; Shift+J alterna): com uma seleção feita, arraste-a até uma área boa; a seleção recebe aquela textura, mesclada",
+    icone: "🧩", atalho: "j", cursor: "move",
+    opcoes: [
       { chave: "modo", tipo: "select", rotulo: "Modo", opcoes: [["origem", "origem: preencher a seleção"], ["destino", "destino: levar a seleção para lá"]], padrao: "origem" },
       { chave: "mesclar", tipo: "bool", rotulo: "Mesclar cor/luz (Poisson)", padrao: true },
     ],
-    down(p) { if (!app.temSelecao()) { app.aviso("faça uma seleção da área a corrigir antes", "erro"); return; } RM.a = p; RM.d = { x: 0, y: 0 }; },
-    move(p) {
-      if (!RM.a) return;
-      RM.d = { x: Math.round(p.x - RM.a.x), y: Math.round(p.y - RM.a.y) };
-      if (RM.d.x || RM.d.y) app.previa("remendo", { ...op("remendo"), dx: RM.d.x, dy: RM.d.y });
-      app.visor.redesenhar();
+    dados: () => ({ a: null, d: { x: 0, y: 0 } }),
+    sempre: {
+      pressionar: (t, p) => {
+        if (!app.temSelecao()) { app.aviso("faça uma seleção da área a corrigir antes", "erro"); return "pronta"; }
+        t.d.a = p; t.d.d = { x: 0, y: 0 };
+        return "arrastando";
+      },
+      desativar: (t) => { t.d.a = null; app.limparPrevia(); return "pronta"; },
     },
-    async up() {
-      if (!RM.a) return;
-      const d = RM.d; RM.a = null;
-      if (!d.x && !d.y) { app.visor.redesenhar(); return; }
-      if (await app.aplicar("remendo", { ...op("remendo"), dx: d.x, dy: d.y })) app.desmarcar();
-      app.visor.redesenhar();
+    estados: {
+      arrastando: {
+        mover: (t, p) => {
+          t.d.d = { x: Math.round(p.x - t.d.a.x), y: Math.round(p.y - t.d.a.y) };
+          if (t.d.d.x || t.d.d.y) app.previa("remendo", { ...op("remendo"), dx: t.d.d.x, dy: t.d.d.y });
+          app.visor.redesenhar();
+        },
+        soltar: (t) => {
+          const d = t.d.d;
+          t.d.a = null;
+          if (!d.x && !d.y) { app.visor.redesenhar(); return "pronta"; }
+          app.aplicar("remendo", { ...op("remendo"), dx: d.x, dy: d.y }).then((ok) => { if (ok) app.desmarcar(); app.visor.redesenhar(); });
+          return "pronta";
+        },
+      },
     },
-    desenhar(ctx, v) {
+    dicas: {
+      pronta: () => (app.temSelecao() ? [h("", "arrastar", "leve a seleção até papel limpo")]
+        : [h("", "", "faça antes uma seleção da área a corrigir"), h("", "arrastar", "leve a seleção até papel limpo")]),
+      arrastando: [h("", "soltar", "remendar com o papel daqui")],
+    },
+    desenhar(ctx, v, t) {
       const bb = app.selBbox();
-      if (!bb || !RM.a) return;
-      const a = v.imgParaTela(bb[0] + RM.d.x, bb[1] + RM.d.y), b = v.imgParaTela(bb[2] + RM.d.x, bb[3] + RM.d.y);
+      if (!bb || !t.d.a) return;
+      const a = v.imgParaTela(bb[0] + t.d.d.x, bb[1] + t.d.d.y), b = v.imgParaTela(bb[2] + t.d.d.x, bb[3] + t.d.d.y);
       contorno(ctx, () => { ctx.beginPath(); ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y); });
     },
-    desativar() { RM.a = null; app.limparPrevia(); },
-  };
+  });
 
   // ------------------------------------------------------------- formas
-  F.forma = {
+  F.forma = nova({
     nome: "Formas (U): arraste para desenhar; Shift = quadrado/círculo/linha reta", icone: "▭", atalho: "u", cursor: "crosshair",
-    campos: [
+    opcoes: [
       { chave: "tipo", tipo: "select", rotulo: "Forma", opcoes: [["ret", "retângulo"], ["elipse", "elipse"], ["linha", "linha"]], padrao: "ret" },
       { chave: "preencher", tipo: "bool", rotulo: "Preencher (cor de frente)", padrao: true },
       { chave: "_cor", tipo: "corfrente", rotulo: "Preench." },
@@ -597,44 +1007,70 @@ export function criarFerramentas(app) {
       { chave: "cor_contorno", tipo: "cor", rotulo: "Cor contorno", padrao: "#000000" },
       opa,
     ],
-    down(p) { this._a = p; this._b = p; },
-    move(p, ev) {
-      if (!this._a) return;
-      let b = p;
-      if (ev.shiftKey) {
-        const dx = p.x - this._a.x, dy = p.y - this._a.y;
-        if (op("forma").tipo === "linha") b = Math.abs(dx) > Math.abs(dy) ? { x: p.x, y: this._a.y } : { x: this._a.x, y: p.y };
-        else { const m = Math.max(Math.abs(dx), Math.abs(dy)); b = { x: this._a.x + Math.sign(dx || 1) * m, y: this._a.y + Math.sign(dy || 1) * m }; }
-      }
-      this._b = b; app.visor.redesenhar();
+    // retângulo e elipse: Shift iguala os lados, Alt cresce a partir do centro; linha: Shift prende o ângulo de 15 em
+    // 15°, Alt estende para os dois lados do ponto inicial; Espaço leva a forma junto
+    dados: () => ({ a: null, b: null, r: null }),
+    sempre: { pressionar: (t, p, ev) => { comecarForma(t, p, ev); return "desenhando"; } },
+    estados: {
+      desenhando: {
+        mover: (t, p, ev) => { arrasteDaForma(t, p, ev); },
+        soltar: (t, p, ev) => {
+          arrasteDaForma(t, p, ev);
+          const { r } = t.d;
+          t.d.a = null;
+          if (Math.hypot(r.x1 - r.x0, r.y1 - r.y0) * app.visor.escala < 3) { app.visor.redesenhar(); return "pronta"; }
+          const o = op("forma");
+          if (o.tipo === "linha" && !(o.espessura > 0)) { app.aviso("a linha precisa de 'Contorno px' maior que zero", "erro"); return "pronta"; }
+          app.aplicar("forma", { ...o, x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1, cor: app.corFrente }).then(() => app.visor.redesenhar());
+          return "pronta";
+        },
+      },
     },
-    async up() {
-      if (!this._a) return;
-      const a = this._a, b = this._b; this._a = null;
-      if (Math.hypot(a.x - b.x, a.y - b.y) * app.visor.escala < 3) { app.visor.redesenhar(); return; }
-      const o = op("forma");
-      if (o.tipo === "linha" && !(o.espessura > 0)) { app.aviso("a linha precisa de 'Contorno px' maior que zero", "erro"); return; }
-      await app.aplicar("forma", { ...o, x0: a.x, y0: a.y, x1: b.x, y1: b.y, cor: app.corFrente });
-      app.visor.redesenhar();
+    dicas: {
+      pronta: [h("", "arrastar", "desenhar"), h("Shift", "arrastar", "quadrado / linha de 15 em 15°"), h("Alt", "arrastar", "a partir do centro")],
+      desenhando: () => [h("Shift", "", op("forma").tipo === "linha" ? "de 15 em 15°" : "quadrado / círculo"),
+        h("Alt", "", "a partir do centro"), h("Espaço", "", "levar a forma junto"), h("", "soltar", "desenhar")],
     },
-    desenhar(ctx, v) {
-      if (!this._a) return;
-      const a = v.imgParaTela(this._a.x, this._a.y), b = v.imgParaTela(this._b.x, this._b.y), t = op("forma").tipo;
+    desenhar(ctx, v, t) {
+      if (!t.d.a) return;
+      const { r } = t.d, a = v.imgParaTela(r.x0, r.y0), b = v.imgParaTela(r.x1, r.y1), tp = op("forma").tipo;
       contorno(ctx, () => {
         ctx.beginPath();
-        if (t === "linha") { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }
-        else if (t === "ret") ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y);
+        if (tp === "linha") { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }
+        else if (tp === "ret") ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y);
         else ctx.ellipse((a.x + b.x) / 2, (a.y + b.y) / 2, Math.abs(b.x - a.x) / 2, Math.abs(b.y - a.y) / 2, 0, 0, Math.PI * 2);
       });
+      leitura(ctx, v.imgParaTela(t.d.b.x, t.d.b.y), tp === "linha"
+        ? `${Math.round(Math.hypot(r.x1 - r.x0, r.y1 - r.y0))} px · ${graus(Math.atan2(r.y1 - r.y0, r.x1 - r.x0))}°` : tamanhoDoRet(r));
     },
-  };
+  });
+  // o arraste da ferramenta Formas: o retângulo de sempre; na linha, o Shift prende o ângulo e o Alt a centra
+  function arrasteDaForma(t, p, ev) {
+    if (op("forma").tipo !== "linha") { arrasteDeForma(t, p, ev, false); return; }
+    const d = t.d;
+    if (app.espaco && d.ultimo) d.a = { x: d.a.x + p.x - d.ultimo.x, y: d.a.y + p.y - d.ultimo.y };
+    d.ultimo = p; d.b = p;
+    let dx = p.x - d.a.x, dy = p.y - d.a.y;
+    if (ev.shiftKey) {
+      const ang = Math.round(Math.atan2(dy, dx) / (Math.PI / 12)) * (Math.PI / 12), len = Math.hypot(dx, dy);
+      dx = len * Math.cos(ang); dy = len * Math.sin(ang);
+    }
+    d.r = ev.altKey ? { x0: d.a.x - dx, y0: d.a.y - dy, x1: d.a.x + dx, y1: d.a.y + dy } : { x0: d.a.x, y0: d.a.y, x1: d.a.x + dx, y1: d.a.y + dy };
+    app.visor.redesenhar();
+  }
 
   // ------------------------------------------------------------- mover / puxar
   // Com uma seleção, arrastar PUXA os pixels: eles seguem o mouse na hora e, ao soltar, o servidor mostra o resultado de
   // verdade (com o buraco já preenchido). Alt no começo do arraste = duplicar. Cantos escalam (Shift = proporção, Ctrl =
   // perspectiva); fora da caixa, gira. Enter (ou ✓) aplica, Esc desfaz o arraste. Como no Photoshop, trocar de
   // ferramenta, desmarcar, salvar ou trocar de imagem também aplicam o que está solto.
-  const V = { quad: null, base: null, sujo: false, modo: null, recorte: false, arrastando: false, flut: null, buraco: null };
+  // Estados: "sem_selecao" (arrastar move a camada ativa) ⇄ "movendo_camada"; com seleção, "pronta" → "arrastando" →
+  // "solto" (o trecho fora do lugar, esperando Enter/Esc) → "aplicando". O estado sai sempre dos dados (``estadoV``):
+  // o editor também solta (Ctrl+X, Ctrl+V), confirma e cancela por fora.
+  const V = { quad: null, base: null, sujo: false, modo: null, recorte: false, arrastando: false, flut: null, buraco: null,
+    cam: null, aplicando: false };
+  const estadoV = () => (V.aplicando ? "aplicando" : V.cam ? "movendo_camada" : !V.quad ? "sem_selecao"
+    : V.arrastando ? "arrastando" : (V.sujo || V.recorte) ? "solto" : "pronta");
   function iniciarQuad() {
     const bb = app.selBbox();
     Object.assign(V, { quad: bb ? new Quad(bb[0], bb[1], bb[2], bb[3]) : null, base: bb, sujo: false, modo: null,
@@ -692,116 +1128,158 @@ export function criarFerramentas(app) {
     }
     ctx.restore();
   }
-  F.transformar = {
+  // Alt no começo do arraste: no miolo, duplica (o Mover do Photoshop); num canto ou lado, escala a partir do centro
+  const pegarQuad = (t, p, ev) => {
+    const pegou = quadV.down(p, ev);
+    if (!V.sujo && ev.altKey && pegou === "mover") { V.modo = "duplicar"; V.buraco = null; }
+    V.arrastando = true;
+    return "arrastando";
+  };
+  const pegarCamada = (t, p) => {
+    const at = app.camadaAtiva();
+    if (!at || at.vazia) { app.aviso("faça uma seleção (ou escolha uma camada com conteúdo) para mover", "erro"); return undefined; }
+    V.cam = { a: p, d: { x: 0, y: 0 }, bbox: at.bbox, id: at.id };
+    return "movendo_camada";
+  };
+  F.transformar = nova({
     nome: "Mover / puxar (V): arraste a seleção para puxar os pixels (Alt = duplicar); cantos escalam, fora gira; sem seleção, move a CAMADA ativa",
-    icone: "✥", atalho: "v", cursor: "move",
-    campos: [
+    icone: "✥", atalho: "v", cursor: "move", inicial: "sem_selecao", repouso: ["sem_selecao", "pronta"],
+    opcoes: [
       { chave: "acao", tipo: "select", rotulo: "Ao arrastar", opcoes: [["mover", "puxar (o buraco é preenchido)"], ["duplicar", "duplicar (ou Alt+arrastar)"]], padrao: "mover" },
       { chave: "origem", tipo: "select", rotulo: "Buraco", opcoes: [["preencher", "preencher com o papel em volta"], ["cor", "cor de fundo"], ["nada", "deixar como está"]], padrao: "preencher" },
       { chave: "interpolacao", tipo: "select", rotulo: "Interp.", opcoes: [["bicubica", "bicúbica"], ["bilinear", "bilinear"], ["vizinho", "vizinho"]], padrao: "bicubica" },
-      semente,
+      semente, "|",
+      { rotulo: "Aplicar (Enter)", primario: true, acao: () => F.transformar.confirmar(true) },
+      { rotulo: "Cancelar (Esc)", acao: () => F.transformar.cancelar() },
     ],
-    botoes: [{ rotulo: "Aplicar (Enter)", primario: true, acao: () => F.transformar.confirmar(true) },
-      { rotulo: "Cancelar (Esc)", acao: () => F.transformar.cancelar() }],
-    pendente: () => Boolean(V.quad && (V.sujo || V.recorte) && !V.aplicando),
-    solto: () => (V.quad ? { modo: modoV(), recorte: V.recorte, sujo: V.sujo, arrastando: V.arrastando } : null),
-    ancora() {
-      if (!V.quad) return null;
-      const c = V.quad.cantos();
-      return [Math.min(...c.map((p) => p.x)), Math.min(...c.map((p) => p.y)), Math.max(...c.map((p) => p.x)), Math.max(...c.map((p) => p.y))];
+    estados: {
+      sem_selecao: { pressionar: pegarCamada },
+      movendo_camada: {
+        pressionar: pegarCamada,  // o soltar anterior se perdeu: recomeça daqui
+        mover: (t, p, ev) => {  // Shift prende no eixo
+          let dx = Math.round(p.x - V.cam.a.x), dy = Math.round(p.y - V.cam.a.y);
+          if (ev.shiftKey) { if (Math.abs(dx) >= Math.abs(dy)) dy = 0; else dx = 0; }
+          V.cam.d = { x: dx, y: dy };
+          V.cam.mouse = app.visor.imgParaTela(p.x, p.y);
+          app.visor.redesenhar();
+        },
+        soltar: () => {
+          const c = V.cam;
+          V.cam = null;
+          if (c.d.x || c.d.y) app.acaoCamada("mover", { camada: c.id, dx: c.d.x, dy: c.d.y });
+          app.visor.redesenhar();
+          return estadoV();
+        },
+      },
+      pronta: { pressionar: pegarQuad },
+      solto: { pressionar: pegarQuad },
+      aplicando: { pressionar: pegarQuad },
+      arrastando: {
+        pressionar: pegarQuad,  // o soltar anterior se perdeu: recomeça daqui
+        mover: (t, p, ev) => { quadV.move(p, ev); },
+        soltar: () => { V.arrastando = false; quadV.up(); app.visor.redesenhar(); return estadoV(); },
+      },
     },
-    // deixa a seleção solta para puxar (Ctrl+X = recortar; Ctrl+V no mesmo documento = duplicar, um pouco deslocada)
-    soltar({ recorte = false, modo = null, deslocar = 0 } = {}) {
-      iniciarQuad();
-      if (!V.quad) return false;
-      V.recorte = recorte; V.modo = modo;
-      if (deslocar) { V.quad.mover(deslocar, deslocar); V.sujo = true; }
-      previaV();
-      return true;
-    },
-    trocarModo(modo) { V.modo = modo; V.buraco = null; previaV(); },
-    async confirmar(explicito = false) {
-      if (V.aplicando) return false;
-      if (!V.quad) { if (explicito) app.aviso("selecione algo para mover", "erro"); return false; }
-      if (!V.sujo && !V.recorte) {
-        if (explicito) app.aviso("arraste o trecho para outro lugar antes de aplicar (Esc cancela)", "erro");
-        return false;
-      }
-      V.aplicando = true;
-      try {
-        if (!V.sujo) {  // recortou e não levou a lugar nenhum: o trecho some (apagar com preenchimento)
-          const ok = await app.apagarComPreenchimento();
-          if (ok) { V.recorte = false; app.visor.esconderSelecao = false; app.visor.redesenhar(); }
-          return ok;
+    sempre: {
+      soltar: () => { V.arrastando = false; quadV.up(); app.visor.redesenhar(); return estadoV(); },
+      tecla: (t, ev) => {
+        if (ev.key === "Enter") { F.transformar.confirmar(true); return undefined; }
+        if (ev.key === "Escape" && V.quad) { F.transformar.cancelar(); return undefined; }
+        if (!V.quad) {  // sem seleção: setas empurram a camada ativa
+          const at = app.camadaAtiva(), m = SETAS[ev.key], passo = ev.shiftKey ? 10 : 1;
+          if (m && at && !at.vazia) { app.acaoCamada("mover", { camada: at.id, dx: m[0] * passo, dy: m[1] * passo }); return undefined; }
+          return false;
         }
-        app.ajustarCategoria("copiar e colar");
-        const ok = await app.aplicar("transformar", paramsV(),
-          { msg: modoV() === "mover" ? "puxando… (preenchendo o buraco)" : "duplicando…" });
-        if (ok) { V.sujo = V.recorte = false; app.desmarcar(); }
-        return ok;
-      } finally { V.aplicando = false; }
+        return quadV.tecla(ev) ? estadoV() : false;
+      },
+      opcao: () => { V.buraco = null; previaV(); return estadoV(); },
+      ativar: (t, origem) => { if (!V.quad || origem === "documento") iniciarQuad(); previaV(); return estadoV(); },
+      desativar: () => {
+        V.quad = null; V.sujo = V.recorte = V.arrastando = false; V.cam = null;
+        app.visor.esconderSelecao = false; app.limparPrevia();
+        return estadoV();
+      },
+      selecao: () => { iniciarQuad(); previaV(); return estadoV(); },
     },
-    cancelar() {
-      const tinha = V.sujo || V.recorte;
-      iniciarQuad(); previaV();
-      if (tinha) app.status("puxar cancelado: o trecho voltou ao lugar");
-    },
-    down(p, ev) {
-      if (V.quad) {
-        if (!V.sujo && ev.altKey) { V.modo = "duplicar"; V.buraco = null; }
-        V.arrastando = true;
-        quadV.down(p, ev);
-        return;
-      }
-      const at = app.camadaAtiva();
-      if (!at || at.vazia) { app.aviso("faça uma seleção (ou escolha uma camada com conteúdo) para mover", "erro"); return; }
-      V.cam = { a: p, d: { x: 0, y: 0 }, bbox: at.bbox, id: at.id };
-    },
-    move(p, ev) {
-      if (V.cam) { V.cam.d = { x: Math.round(p.x - V.cam.a.x), y: Math.round(p.y - V.cam.a.y) }; app.visor.redesenhar(); return; }
-      quadV.move(p, ev);
-    },
-    up() {
-      if (V.cam) {
-        const c = V.cam; V.cam = null;
-        if (c.d.x || c.d.y) app.acaoCamada("mover", { camada: c.id, dx: c.d.x, dy: c.d.y });
-        app.visor.redesenhar(); return;
-      }
-      V.arrastando = false;
-      quadV.up();
-      app.visor.redesenhar();
+    dicas: {
+      sem_selecao: [h("", "arrastar", "mover a camada ativa"), h("setas", "", "empurrar 1 px (Shift 10)")],
+      movendo_camada: [h("Shift", "", "só na horizontal ou na vertical"), h("", "soltar", "deixar a camada aqui")],
+      pronta: [h("", "arrastar", "puxar"), h("Alt", "arrastar", "duplicar"), h("", "arrastar canto", "escala"),
+        h("", "arrastar lado", "esticar"), h("", "arrastar fora", "girar"), h("setas", "", "1 px")],
+      arrastando: () => dicasDoArraste(quadV.pegou(), modoV() === "duplicar" ? "deixar a cópia aqui" : "deixar o trecho aqui"),
+      solto: [h("Enter", "", "aplicar"), h("Esc", "", "cancelar"), h("", "arrastar", "ajustar"), h("", "arrastar canto", "escala"),
+        h("", "arrastar lado", "esticar"), h("", "arrastar fora", "girar"), h("setas", "", "1 px (Shift 10)")],
+      aplicando: [h("", "", "aplicando…")],
     },
     cursorEm: (p) => quadV.cursor(p),
-    tecla(ev) {
-      if (ev.key === "Enter") { F.transformar.confirmar(true); return true; }
-      if (ev.key === "Escape" && V.quad) { F.transformar.cancelar(); return true; }
-      if (!V.quad) {  // sem seleção: setas empurram a camada ativa
-        const at = app.camadaAtiva(), passo = ev.shiftKey ? 10 : 1;
-        const mov = { ArrowLeft: [-passo, 0], ArrowRight: [passo, 0], ArrowUp: [0, -passo], ArrowDown: [0, passo] }[ev.key];
-        if (mov && at && !at.vazia) { app.acaoCamada("mover", { camada: at.id, dx: mov[0], dy: mov[1] }); return true; }
-        return false;
-      }
-      return quadV.tecla(ev);
-    },
     desenhar(ctx, v) {
       if (V.quad) {
         if ((V.sujo || V.recorte) && !v.previa) desenharSolto(ctx, v);
-        desenharQuad(ctx, v, V.quad);
+        desenharQuad(ctx, v, V.quad, V.sujo || V.recorte);
+        if (V.arrastando) leitura(ctx, quadV.mouse(), quadV.medida());
       }
       if (V.cam && V.cam.bbox) {
         const [x0, y0, x1, y1] = V.cam.bbox, d = V.cam.d;
         const a = v.imgParaTela(x0 + d.x, y0 + d.y), b = v.imgParaTela(x1 + d.x, y1 + d.y);
-        contorno(ctx, () => { ctx.beginPath(); ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y); });
+        contorno(ctx, () => { ctx.beginPath(); ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y); }, true);
+        leitura(ctx, V.cam.mouse, `Δ ${d.x}, ${d.y} px`);
       }
     },
-    mudouOpcao() { V.buraco = null; previaV(); },
-    ativar(origem) { if (!V.quad || origem === "documento") iniciarQuad(); previaV(); },
-    desativar() { V.quad = null; V.sujo = V.recorte = V.arrastando = false; app.visor.esconderSelecao = false; app.limparPrevia(); },
-    aoMudarSelecao() { iniciarQuad(); previaV(); },
-  };
+    api: (t) => ({
+      pendente: () => Boolean(V.quad && (V.sujo || V.recorte) && !V.aplicando),
+      solto: () => (V.quad ? { modo: modoV(), recorte: V.recorte, sujo: V.sujo, arrastando: V.arrastando, angulo: graus(V.quad.ang) } : null),
+      ancora() {
+        if (!V.quad) return null;
+        const c = V.quad.cantos();
+        return [Math.min(...c.map((p) => p.x)), Math.min(...c.map((p) => p.y)), Math.max(...c.map((p) => p.x)), Math.max(...c.map((p) => p.y))];
+      },
+      // deixa a seleção solta para puxar (Ctrl+X = recortar; Ctrl+V no mesmo documento = duplicar, um pouco deslocada)
+      soltar({ recorte = false, modo = null, deslocar = 0 } = {}) {
+        iniciarQuad();
+        if (!V.quad) { t.ir(estadoV()); return false; }
+        V.recorte = recorte; V.modo = modo;
+        if (deslocar) { V.quad.mover(deslocar, deslocar); V.sujo = true; }
+        previaV();
+        t.ir(estadoV());
+        return true;
+      },
+      trocarModo(modo) { V.modo = modo; V.buraco = null; previaV(); },
+      async confirmar(explicito = false) {
+        if (V.aplicando) return false;
+        if (!V.quad) { if (explicito) app.aviso("selecione algo para mover", "erro"); return false; }
+        if (!V.sujo && !V.recorte) {
+          if (explicito) app.aviso("arraste o trecho para outro lugar antes de aplicar (Esc cancela)", "erro");
+          return false;
+        }
+        V.aplicando = true;
+        t.ir(estadoV());
+        try {
+          if (!V.sujo) {  // recortou e não levou a lugar nenhum: o trecho some (apagar com preenchimento)
+            const ok = await app.apagarComPreenchimento();
+            if (ok) { V.recorte = false; app.visor.esconderSelecao = false; app.visor.redesenhar(); }
+            return ok;
+          }
+          app.ajustarCategoria("copiar e colar");
+          const ok = await app.aplicar("transformar", paramsV(),
+            { msg: modoV() === "mover" ? "puxando… (preenchendo o buraco)" : "duplicando…" });
+          if (ok) { V.sujo = V.recorte = false; app.desmarcar(); }
+          return ok;
+        } finally { V.aplicando = false; t.ir(estadoV()); }
+      },
+      cancelar() {
+        const tinha = V.sujo || V.recorte;
+        iniciarQuad(); previaV();
+        t.ir(estadoV());
+        if (tinha) app.status("puxar cancelado: o trecho voltou ao lugar");
+      },
+    }),
+  });
 
   // ------------------------------------------------------------- colar (Ctrl+V de outro documento ou o diálogo do doador)
-  const C = { quad: null, doador: null, origem: null, selecao: null, pre: null };
+  // Estados: "vazio" (nada para colar: o clique abre a escolha do trecho) → "posicionando" ⇄ "arrastando" →
+  // "aplicando". Como no Mover, o estado sai dos dados (``estadoC``).
+  const C = { quad: null, doador: null, origem: null, selecao: null, pre: null, arrastando: false, aplicando: false };
+  const estadoC = () => (C.aplicando ? "aplicando" : !C.quad ? "vazio" : C.arrastando ? "arrastando" : "posicionando");
   function paramsC() {
     return { ...op("colar"), doador: C.doador, origem: C.origem, destino: C.quad.destino(),
       ...(C.selecao ? { selecao_doador: C.selecao } : {}) };
@@ -813,58 +1291,44 @@ export function criarFerramentas(app) {
     app.visor.redesenhar();
   }
   const quadC = interacaoQuad(app, () => C.quad, previaC);
-  F.colar = {
-    nome: "Colar de outro documento do MESMO split (Ctrl+V depois de copiar em outra imagem, ou escolha o trecho)", icone: "⧉", atalho: "", cursor: "move",
-    campos: [
+  const pegarC = (t, p, ev) => { C.arrastando = true; quadC.down(p, ev); return estadoC(); };
+  F.colar = nova({
+    nome: "Colar de outro documento do MESMO split (V; Shift+V alterna. Ctrl+V depois de copiar em outra imagem, ou escolha o trecho)", icone: "⧉", atalho: "v", cursor: "move",
+    inicial: "vazio", repouso: ["vazio", "posicionando"],
+    opcoes: [
       { chave: "suavizar_borda", tipo: "num", rotulo: "Suavizar borda px", min: 0, max: 50, passo: 0.5, padrao: 0 },
       { chave: "interpolacao", tipo: "select", rotulo: "Interp.", opcoes: [["bicubica", "bicúbica"], ["bilinear", "bilinear"], ["vizinho", "vizinho"]], padrao: "bicubica" },
-      { chave: "limitar_selecao", tipo: "bool", rotulo: "Só dentro da seleção", padrao: false },
-    ],
-    botoes: [{ rotulo: "Escolher trecho…", acao: () => app.escolherDoador() },
+      { chave: "limitar_selecao", tipo: "bool", rotulo: "Só dentro da seleção", padrao: false }, "|",
+      { rotulo: "Escolher trecho…", acao: () => app.escolherDoador() },
       { rotulo: "Aplicar (Enter)", primario: true, acao: () => F.colar.confirmar(true) },
-      { rotulo: "Cancelar (Esc)", acao: () => F.colar.cancelar() }],
-    // trecho do doador (retângulo ``origem``; com ``selecao``, só o formato copiado). ``pre`` = os pixels, para a
-    // prévia na hora; ``emLugar`` = nas mesmas coordenadas (se couber), senão no meio da vista
-    iniciar(doador, origem, { selecao = null, pre = null, emLugar = false } = {}) {
-      Object.assign(C, { doador, origem, selecao, pre });
-      const w = origem.x1 - origem.x0, h = origem.y1 - origem.y0;
-      if (emLugar && app.sessao && origem.x1 <= app.sessao.largura && origem.y1 <= app.sessao.altura) {
-        C.quad = new Quad(origem.x0, origem.y0, origem.x1, origem.y1);
-      } else {
-        const v = app.visor, r = v.el.getBoundingClientRect();
-        const c = v.telaParaImg(r.width / 2, r.height / 2);
-        C.quad = new Quad(c.x - w / 2, c.y - h / 2, c.x + w / 2, c.y + h / 2);
-      }
-      previaC();
+      { rotulo: "Cancelar (Esc)", acao: () => F.colar.cancelar() },
+    ],
+    estados: {
+      vazio: { pressionar: () => { app.escolherDoador(); } },
+      posicionando: { pressionar: pegarC },
+      arrastando: { pressionar: pegarC },
+      aplicando: { pressionar: pegarC },
     },
-    pendente: () => Boolean(C.quad && !C.aplicando),
-    solto: () => (C.quad ? { modo: "colar", doador: C.doador, arrastando: C.arrastando } : null),
-    ancora() {
-      if (!C.quad) return null;
-      const c = C.quad.cantos();
-      return [Math.min(...c.map((p) => p.x)), Math.min(...c.map((p) => p.y)), Math.max(...c.map((p) => p.x)), Math.max(...c.map((p) => p.y))];
+    sempre: {
+      mover: (t, p, ev) => { quadC.move(p, ev); },
+      soltar: () => { C.arrastando = false; quadC.up(); app.visor.redesenhar(); return estadoC(); },
+      tecla: (t, ev) => {
+        if (ev.key === "Enter") { F.colar.confirmar(true); return undefined; }
+        if (ev.key === "Escape" && C.quad) { F.colar.cancelar(); return undefined; }
+        return quadC.tecla(ev) ? estadoC() : false;
+      },
+      opcao: () => { previaC(); },
+      ativar: (t, origem) => { if (C.quad) previaC(); else if (origem === "usuario") app.escolherDoador(); return estadoC(); },
+      desativar: () => { C.quad = null; C.pre = null; C.arrastando = false; app.limparPrevia(); return estadoC(); },
     },
-    async confirmar(explicito = false) {
-      if (C.aplicando) return false;
-      if (!C.quad) { if (explicito) app.escolherDoador(); return false; }
-      app.ajustarCategoria(C.doador === app.sessao?.id ? "copiar e colar" : "pegar de outro documento");
-      C.aplicando = true;
-      try {
-        const ok = await app.aplicar("colar", paramsC(), { msg: "colando…" });
-        if (ok) { C.quad = null; C.pre = null; app.visor.redesenhar(); }
-        return ok;
-      } finally { C.aplicando = false; }
+    dicas: {
+      vazio: [h("", "clique", "escolher o trecho de outro documento"), h("Ctrl+V", "", "colar o que copiou")],
+      posicionando: [h("", "arrastar", "posicionar"), h("", "arrastar canto", "escala"), h("", "arrastar lado", "esticar"),
+        h("", "arrastar fora", "girar"), h("Enter", "", "aplicar"), h("Esc", "", "cancelar")],
+      arrastando: () => dicasDoArraste(quadC.pegou(), "deixar o trecho aqui"),
+      aplicando: [h("", "", "colando…")],
     },
-    cancelar() { C.quad = null; C.pre = null; app.limparPrevia(); app.visor.redesenhar(); },
-    down(p, ev) { if (!C.quad) { app.escolherDoador(); return; } C.arrastando = true; quadC.down(p, ev); },
-    move(p, ev) { quadC.move(p, ev); },
-    up() { C.arrastando = false; quadC.up(); app.visor.redesenhar(); },
     cursorEm: (p) => quadC.cursor(p),
-    tecla(ev) {
-      if (ev.key === "Enter") { F.colar.confirmar(true); return true; }
-      if (ev.key === "Escape" && C.quad) { F.colar.cancelar(); return true; }
-      return quadC.tecla(ev);
-    },
     desenhar(ctx, v) {
       if (!C.quad) return;
       if (C.pre && !v.previa && !C.quad.livre) {  // os pixels copiados seguem o mouse; a prévia do servidor vem depois
@@ -876,12 +1340,50 @@ export function criarFerramentas(app) {
         ctx.drawImage(C.pre, -w0 / 2, -h0 / 2);
         ctx.restore();
       }
-      desenharQuad(ctx, v, C.quad);
+      desenharQuad(ctx, v, C.quad, true);  // tracejado: o trecho colado ainda está solto
+      if (C.arrastando) leitura(ctx, quadC.mouse(), quadC.medida());
     },
-    mudouOpcao: previaC,
-    ativar(origem) { if (C.quad) previaC(); else if (origem === "usuario") app.escolherDoador(); },
-    desativar() { C.quad = null; C.pre = null; app.limparPrevia(); },
-  };
+    api: (t) => ({
+      // trecho do doador (retângulo ``origem``; com ``selecao``, só o formato copiado). ``pre`` = os pixels, para a
+      // prévia na hora; ``centro`` = onde o trecho foi solto; ``emLugar`` = nas mesmas coordenadas (se couber); sem
+      // nenhum dos dois, no meio da vista
+      iniciar(doador, origem, { selecao = null, pre = null, emLugar = false, centro = null } = {}) {
+        Object.assign(C, { doador, origem, selecao, pre });
+        const w = origem.x1 - origem.x0, hh = origem.y1 - origem.y0;
+        if (centro) {
+          C.quad = new Quad(centro.x - w / 2, centro.y - hh / 2, centro.x + w / 2, centro.y + hh / 2);
+        } else if (emLugar && app.sessao && origem.x1 <= app.sessao.largura && origem.y1 <= app.sessao.altura) {
+          C.quad = new Quad(origem.x0, origem.y0, origem.x1, origem.y1);
+        } else {
+          const v = app.visor, r = v.el.getBoundingClientRect();
+          const c = v.telaParaImg(r.width / 2, r.height / 2);
+          C.quad = new Quad(c.x - w / 2, c.y - hh / 2, c.x + w / 2, c.y + hh / 2);
+        }
+        previaC();
+        t.ir(estadoC());
+      },
+      pendente: () => Boolean(C.quad && !C.aplicando),
+      solto: () => (C.quad ? { modo: "colar", doador: C.doador, arrastando: C.arrastando } : null),
+      ancora() {
+        if (!C.quad) return null;
+        const c = C.quad.cantos();
+        return [Math.min(...c.map((p) => p.x)), Math.min(...c.map((p) => p.y)), Math.max(...c.map((p) => p.x)), Math.max(...c.map((p) => p.y))];
+      },
+      async confirmar(explicito = false) {
+        if (C.aplicando) return false;
+        if (!C.quad) { if (explicito) app.escolherDoador(); return false; }
+        app.ajustarCategoria(C.doador === app.sessao?.id ? "copiar e colar" : "pegar de outro documento");
+        C.aplicando = true;
+        t.ir(estadoC());
+        try {
+          const ok = await app.aplicar("colar", paramsC(), { msg: "colando…" });
+          if (ok) { C.quad = null; C.pre = null; app.visor.redesenhar(); }
+          return ok;
+        } finally { C.aplicando = false; t.ir(estadoC()); }
+      },
+      cancelar() { C.quad = null; C.pre = null; app.limparPrevia(); app.visor.redesenhar(); t.ir(estadoC()); },
+    }),
+  });
 
   return F;
 }
@@ -905,37 +1407,4 @@ export const NOMES = {
   corretivo: "Pincel corretivo", recuperacao: "Pincel de recuperação", remendo: "Remendo", pincel: "Pincel",
   carimbo: "Carimbo de clonagem", borracha: "Borracha", balde: "Balde de tinta", retoque: "Retoque", texto: "Texto",
   substituir: "Substituir texto", forma: "Formas", mao: "Mão", zoom: "Zoom",
-};
-
-// dicas da barra de status (como no Graphite): tecla (k), gesto do mouse (m) e o que acontece (t)
-const h = (k, m, t) => ({ k, m, t });
-const DICA_SEL = [h("", "arrastar", "selecionar"), h("Shift", "arrastar", "somar"), h("Alt", "arrastar", "subtrair")];
-const DICA_TAM = h("[ ]", "", "tamanho");
-const DICA_FONTE = [h("Alt", "clique", "origem"), h("", "arrastar", "pintar a cópia"), DICA_TAM];
-export const DICAS = {
-  mao: [h("", "arrastar", "mover a vista"), h("", "roda", "zoom")],
-  zoom: [h("", "clique", "aproximar"), h("Alt", "clique", "afastar"), h("0", "", "caber na tela"), h("1", "", "100%")],
-  ret: DICA_SEL, elipse: DICA_SEL,
-  laco: [h("", "arrastar", "contornar"), h("Shift", "", "somar"), h("Alt", "", "subtrair")],
-  varinha: [h("", "clique", "cor parecida"), h("Shift", "clique", "somar"), h("Alt", "clique", "subtrair")],
-  pincelsel: [h("", "arrastar", "pintar a seleção"), h("Alt", "arrastar", "tirar"), DICA_TAM],
-  pincel: [h("", "arrastar", "pintar"), h("Alt", "clique", "pegar a cor"), DICA_TAM],
-  borracha: [h("", "arrastar", "devolver o original"), DICA_TAM],
-  corretivo: [h("", "arrastar", "sumir com o que pintar"), DICA_TAM],
-  carimbo: DICA_FONTE, recuperacao: DICA_FONTE,
-  remendo: [h("", "arrastar", "leve a seleção até papel limpo")],
-  retoque: [h("", "arrastar", "retocar"), DICA_TAM],
-  balde: [h("", "clique", "preencher")],
-  contagotas: [h("", "clique", "pegar a cor")],
-  forma: [h("", "arrastar", "desenhar"), h("Shift", "arrastar", "quadrado / linha reta")],
-  texto: [h("", "clique", "linha de base"), h("Enter", "", "aplicar"), h("Esc", "", "cancelar"), h("setas", "", "ajuste fino")],
-  substituir: [h("", "arrastar", "sobre o texto antigo"), h("Enter", "", "aplicar"), h("Esc", "", "cancelar")],
-  transformar: [h("", "arrastar", "puxar"), h("Alt", "arrastar", "duplicar"), h("", "arrastar canto", "escala"),
-    h("", "arrastar fora", "girar"), h("setas", "", "1 px"), h("Enter", "", "aplicar"), h("Esc", "", "cancelar")],
-  transformar_sem: [h("", "arrastar", "mover a camada ativa"), h("setas", "", "empurrar 1 px (Shift 10)")],
-  colar: [h("", "arrastar", "posicionar"), h("", "arrastar canto", "escala"), h("", "arrastar fora", "girar"),
-    h("Enter", "", "aplicar"), h("Esc", "", "cancelar")],
-  com_selecao: [h("Ctrl", "arrastar", "puxar"), h("Del", "", "apagar com preenchimento"),
-    h("Ctrl+C · Ctrl+X · Ctrl+V", "", "copiar · recortar · colar")],
-  sempre: [h("Espaço", "arrastar", "mover a vista")],
 };

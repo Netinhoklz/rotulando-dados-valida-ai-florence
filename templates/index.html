@@ -55,18 +55,43 @@
         <span id="doc-versoes" class="pilula"></span>
       </div>
     </div>
-    <section id="visor" tabindex="0">
-      <canvas id="tela"></canvas>
-      <div id="vazio">Nenhuma imagem neste split.</div>
-      <div id="barra-contexto" class="barra-contexto" role="toolbar" aria-label="Ações na seleção" hidden></div>
-      <div id="ocupado" hidden><div class="giro"></div><span id="ocupado-msg">processando…</span>
-        <span id="ocupado-ia" class="dica"></span>
-        <button type="button" id="ocupado-cancelar" hidden title="Para a IA no próximo passo">Cancelar</button></div>
-      <div id="banner-trava" class="banner-trava" role="alert" hidden>
-        <span id="banner-trava-txt"></span>
-        <button type="button" id="btn-assumir" class="primario">Assumir edição</button>
-      </div>
-    </section>
+    <div class="docs-lado">
+      <!-- com o tipo "pegar de outro documento": outra imagem do mesmo split ao lado, para copiar dela (lado_a_lado.js) -->
+      <section id="doador" class="doador" aria-label="Outra imagem do split, para copiar dela" hidden>
+        <div class="doador-cab">
+          <span class="doador-tit">Copiar de</span>
+          <button id="doador-ant" class="so-icone" data-ico="anterior" title="Outra imagem doadora" aria-label="Imagem doadora anterior"></button>
+          <span id="doador-nome" class="doador-nome"></span>
+          <button id="doador-prox" class="so-icone" data-ico="proximo" title="Outra imagem doadora" aria-label="Próxima imagem doadora"></button>
+          <span id="doador-pos" class="dica"></span>
+          <span id="doador-selo" class="pilula"></span>
+          <span class="espaco"></span>
+          <span class="bc-seg" role="group" aria-label="Como selecionar na imagem doadora">
+            <button type="button" data-modo="ret" data-ico="ret" class="ativo" aria-pressed="true" title="Selecionar com retângulo" aria-label="Retângulo"></button>
+            <button type="button" data-modo="laco" data-ico="laco" aria-pressed="false" title="Selecionar com laço (à mão livre)" aria-label="Laço"></button>
+          </span>
+          <button id="doador-colar" data-ico="colar" title="Colar o trecho nas mesmas coordenadas da imagem da direita (Ctrl+Shift+V)" disabled><span>Mesmo lugar</span></button>
+          <button id="doador-fechar" class="so-icone" data-ico="fechar" title="Fechar (Exibir › Outra imagem ao lado reabre)" aria-label="Fechar a imagem ao lado"></button>
+        </div>
+        <div id="doador-visor" class="doador-visor">
+          <canvas id="doador-tela"></canvas>
+          <div id="doador-carregando" class="doador-carregando" hidden><div class="giro pequeno"></div></div>
+          <p id="doador-dica" class="doador-dica">Arraste para selecionar o trecho · arraste a seleção até a imagem da direita (duplo clique: mesmo lugar) · roda: zoom</p>
+        </div>
+      </section>
+      <section id="visor" tabindex="0">
+        <canvas id="tela"></canvas>
+        <div id="vazio">Nenhuma imagem neste split.</div>
+        <div id="barra-contexto" class="barra-contexto" role="toolbar" aria-label="Ações na seleção" hidden></div>
+        <div id="ocupado" hidden><div class="giro"></div><span id="ocupado-msg">processando…</span>
+          <span id="ocupado-ia" class="dica"></span>
+          <button type="button" id="ocupado-cancelar" hidden title="Para a IA no próximo passo">Cancelar</button></div>
+        <div id="banner-trava" class="banner-trava" role="alert" hidden>
+          <span id="banner-trava-txt"></span>
+          <button type="button" id="btn-assumir" class="primario">Assumir edição</button>
+        </div>
+      </section>
+    </div>
   </section>
 
   <aside id="painel">

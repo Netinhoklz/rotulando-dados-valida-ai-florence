@@ -1,5 +1,5 @@
-"""Motor do OCR: PP-OCRv6 (detector) + latino PP-OCRv5 (reconhecedor), baixados do Hugging Face na primeira vez, com
-o RapidOCR antigo de reserva. Sem rede: o download é simulado (falha ou arquivo errado)."""
+"""Motor do OCR: PP-OCRv6 (detector) + latino PP-OCRv5 (reconhecedor), baixados do ModelScope na primeira vez (nunca
+do Hugging Face), com o RapidOCR antigo de reserva. Sem rede: o download é simulado (falha ou arquivo errado)."""
 import io
 import json
 import tempfile
@@ -59,6 +59,23 @@ class TestReserva(MotorIsolado):
             self.assertEqual(ocr.motor(), ocr.MOTOR_RESERVA)
         self.assertIn("sha256", err.getvalue())
         self.assertEqual(list(vazio.rglob("*.onnx*")), [])
+        self.assertEqual(list(vazio.rglob("*.yml*")), [])  # o .yml também é conferido
+
+    def test_baixa_do_modelscope_e_nunca_do_hugging_face(self):
+        """A empresa proíbe o Hugging Face: os modelos vêm da conta oficial da PaddlePaddle no ModelScope."""
+        ocr._motor = ocr._nome_motor = None
+        pedidos = []
+
+        def abrir(url, *a, **k):
+            pedidos.append(url)
+            raise OSError("sem rede")
+        with mock.patch.object(ocr, "MODELOS", self.dir / "modelos"), mock.patch("urllib.request.urlopen", side_effect=abrir), \
+                mock.patch("sys.stderr", io.StringIO()):
+            ocr.motor()
+        self.assertTrue(pedidos)
+        for url in pedidos:
+            self.assertTrue(url.startswith("https://www.modelscope.cn/models/PaddlePaddle/"), url)
+            self.assertNotIn("huggingface", url.lower())
 
     def test_reserva_le_e_grava_o_nome_no_cache(self):
         ocr._motor = ocr._nome_motor = None

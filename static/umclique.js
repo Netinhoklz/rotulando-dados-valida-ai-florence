@@ -64,6 +64,13 @@ export function instalarUmClique(g) {
       fora: Array.isArray(s.fora) ? s.fora.map(String) : [],  // documentos desmarcados em "escolher documentos…"
       variacoes: limitar(s.variacoes ?? 3),
       metodo: METODOS.includes(s.metodo) ? s.metodo : "profissional",
+      // FSTS: como uma pessoa (padrão) ou como o artigo; as categorias do editor ligadas; a região dos valores novos
+      fsts: {
+        modo: s.fsts?.modo === "artigo" ? "artigo" : "pessoa",
+        categorias: Array.isArray(s.fsts?.categorias) && s.fsts.categorias.length ? s.fsts.categorias
+          : ["copiar e colar", "pegar de outro documento", "apagar e substituir"],
+        regiao: typeof s.fsts?.regiao === "string" ? s.fsts.regiao : "CE",
+      },
       oque: OQUE.includes(s.oque) ? s.oque : "extras",
       campos: (Array.isArray(s.campos) ? s.campos : ["nome", "endereço"]).filter(existe),
       estilo: typeof s.estilo === "string" ? s.estilo : "recomendado",  // estilo pronto (o servidor diz quais existem)
@@ -152,9 +159,14 @@ export function instalarUmClique(g) {
   // ------------------------------------------------------------------ o que mudar
   function desenharOque() {
     for (const r of document.querySelectorAll('input[name="uc-metodo"]')) r.checked = r.value === U.metodo;
-    const fsts = U.metodo === "fsts";  // o método do artigo escolhe sozinho os campos e as técnicas
+    const fsts = U.metodo === "fsts";  // o FSTS escolhe sozinho os campos e as técnicas
     document.querySelector("#um-clique .uc-oque").hidden = fsts;
     document.querySelector("#um-clique .uc-estilo").hidden = fsts;
+    document.querySelector("#um-clique .uc-fsts").hidden = !fsts;
+    for (const r of document.querySelectorAll('input[name="uc-fsts-modo"]')) r.checked = r.value === U.fsts.modo;
+    document.querySelector("#um-clique .uc-fsts-pessoa").hidden = U.fsts.modo !== "pessoa";
+    for (const c of document.querySelectorAll("[data-fsts-cat]")) c.checked = U.fsts.categorias.includes(c.dataset.fstsCat);
+    $("uc-fsts-regiao").value = U.fsts.regiao;
     for (const r of document.querySelectorAll('input[name="uc-oque"]')) r.checked = r.value === U.oque;
     $("uc-variacoes").value = U.variacoes;
     const c = $("uc-campos");
@@ -182,7 +194,12 @@ export function instalarUmClique(g) {
     const comum = { variacoes: U.variacoes,
       documentos: { splits, ids: docs.length === todos.length ? null : docs.map((d) => d.id), so_pendentes: false },
       operador: quem ? `gerador automático (${quem})` : "gerador automático" };
-    if (U.metodo === "fsts") return { nome: "gerar fraudes (um clique, método FSTS)", perfil: "fsts", ...comum };
+    if (U.metodo === "fsts") {
+      const cfg = U.fsts.modo === "artigo" ? { modo: "artigo" }
+        : { modo: "pessoa", regiao: U.fsts.regiao, categorias: Object.fromEntries(U.fsts.categorias.map((c) => [c, 1])) };
+      return { nome: `gerar fraudes (um clique, FSTS ${U.fsts.modo === "artigo" ? "como o artigo" : "como uma pessoa"})`,
+        perfil: "fsts", fsts: cfg, ...comum };
+    }
     const r = { nome: "gerar fraudes (um clique)", perfil: "profissional", extras: U.oque === "extras", ...comum };
     if (U.oque === "escolher") r.categorias_base = [...U.campos];
     if (L.estilos) r.estilo = U.estilo;
@@ -249,11 +266,23 @@ export function instalarUmClique(g) {
       return el("ul", {}, ...Object.entries(obj).sort((a, b) => b[1] - a[1]).map(([k, p]) =>
         el("li", {}, nomeDe(k), el("span", { class: "dica" }, ` ${Math.round(100 * (Number(p) || 0) / tot)}%`))));
     };
-    if (U.metodo === "fsts") {
+    if (U.metodo === "fsts" && U.fsts.modo === "artigo") {
       por(corpo, el("p", {}, "Método do artigo FSTS (Yu et al., NeurIPS 2025): em cada versão, de 1 a 12 campos de texto; "
         + "em cada um, o tipo de adulteração (cópia interna, colagem de outro documento, remoção, inserção ou substituição) "
         + "e as operações com os parâmetros, sorteados das tabelas 8–12 do artigo."),
       el("p", { class: "dica" }, "O pós-processamento das tabelas não é aplicado. O rótulo de cada edição traz o tipo e as operações."));
+      return;
+    }
+    if (U.metodo === "fsts") {
+      por(corpo, el("p", {}, "FSTS como uma pessoa: em cada versão, o nome, o endereço ou os dois (o detector diz qual campo é "
+        + "qual), em todos os lugares onde aparecem e com o mesmo valor novo. A rua nova vem com o bairro e o CEP dela; "
+        + "quando só o número muda, o CEP fica. Às vezes o CPF muda junto com o nome."),
+      el("p", {}, "Cada campo sai numa das categorias marcadas: ", ou(U.fsts.categorias), ", com a ferramenta de apagar, o "
+        + "recorte e a suavização do texto sorteados das tabelas do artigo."),
+      el("p", { class: "dica" }, U.fsts.regiao === "CE"
+        ? "Nomes com o peso que têm no Ceará (Censo do IBGE e candidaturas do TSE); ruas, bairros e CEPs reais de lá (CNEFE). "
+          + "O endereço só vai para o Ceará quando o documento é de lá ou quando a linha da cidade pode mudar junto."
+        : "Nomes e endereços do Brasil inteiro, na cidade do documento."));
       return;
     }
     if (L.motor === "antigo") {
@@ -277,7 +306,8 @@ export function instalarUmClique(g) {
             + Object.keys(ex.grupos || {}).map((k) => GRUPO_EXTRA[k] || k).join(", ") : "", "."),
         el("p", { class: "dica" }, Number(x.mistura.humano) > 0
           ? `Em ${Math.round(100 * Number(x.mistura.humano))}% das versões a edição é feita como uma pessoa faria num `
-            + "editor: seleção em volta do texto, a ferramenta de apagar dela, conta-gotas, tamanho e posição no olho, "
+            + "editor: seleção em volta do texto, a ferramenta de apagar dela, conta-gotas, posição no olho (o tamanho e o "
+            + "traço saem iguais aos do documento), "
             + "retoques e o “Salvar como” do programa; nas outras, com acabamento perfeito."
           : "Todas as versões com acabamento perfeito: só as letras mudam, com cor, grão e desfoque iguais aos do documento."),
         x.canal ? el("p", { class: "dica" }, `Depois da edição, ${Math.round(100 * Number(x.canal.prob ?? 1))}% das versões `
@@ -633,6 +663,15 @@ export function instalarUmClique(g) {
   $("uc-variacoes").onchange = (e) => { U.variacoes = limitar(e.target.value); mudou(); };
   for (const r of document.querySelectorAll('input[name="uc-oque"]')) r.onchange = () => { U.oque = r.value; mudou(); conhecerMotor(); };
   for (const r of document.querySelectorAll('input[name="uc-metodo"]')) r.onchange = () => { U.metodo = r.value; mudou(); conhecerMotor(); };
+  for (const r of document.querySelectorAll('input[name="uc-fsts-modo"]')) r.onchange = () => { U.fsts.modo = r.value; mudou(); desenharDetalhes(); };
+  for (const c of document.querySelectorAll("[data-fsts-cat]")) {
+    c.onchange = () => {
+      const marcadas = [...document.querySelectorAll("[data-fsts-cat]")].filter((x) => x.checked).map((x) => x.dataset.fstsCat);
+      if (!marcadas.length) { c.checked = true; return; }  // pelo menos uma categoria
+      U.fsts.categorias = marcadas; mudou(); desenharDetalhes();
+    };
+  }
+  $("uc-fsts-regiao").onchange = (e) => { U.fsts.regiao = e.target.value; mudou(); desenharDetalhes(); };
   $("uc-escolher-docs").onclick = abrirDocs;
   $("uc-gerar").onclick = gerar;
   $("uc-exemplo-btn").onclick = verExemplo;

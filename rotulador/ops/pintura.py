@@ -1,4 +1,4 @@
-"""Pincel, borracha que devolve o original e balde de tinta."""
+"""Pincel, borracha que devolve o original, balde de tinta e a seleção preenchida com uma cor."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ import numpy as np
 
 from ..selecao import Selecao
 from ..sessao import ErroOperacao, Resultado
-from .base import alpha_selecao, compor, cor, inteiro, num, pontos, recortar_selecao, traco
+from .base import (alpha_selecao, compor, cor, exigir_selecao, inteiro, num, pontos, recortar_selecao,
+                   resultado_selecao, traco)
 
 
 def _alpha_traco(img, p, sel):
@@ -58,3 +59,12 @@ def balde(img: np.ndarray, p: dict, sel: Selecao, **_) -> Resultado:
         alpha *= alpha_selecao(sel, (y0, y1, x0, x1))
     novo = compor(img[y0:y1, x0:x1], cor(p), alpha)
     return Resultado(y0, y1, x0, x1, novo, alpha > 0)
+
+
+def cor_na_selecao(img: np.ndarray, p: dict, sel: Selecao, **_) -> Resultado:
+    """A seleção inteira pintada de uma cor (o Alt+Backspace / Ctrl+Backspace do Photoshop: cor de frente / de fundo)."""
+    exigir_selecao(sel)
+    y0, y1, x0, x1 = sel.bbox
+    opacidade = num(p, "opacidade", 1.0, 0, 1)
+    novo = compor(img[y0:y1, x0:x1], cor(p), np.full(sel.alpha.shape, opacidade, np.float32))
+    return resultado_selecao(img, sel, novo)

@@ -18,7 +18,8 @@ tabelas da população, e é delas que se sorteia aqui.
   11,91% e 10,47%); passos com o mesmo índice são alternativas exclusivas (o resto da probabilidade é "nenhuma");
 - ``configurar``: a configuração de UMA região (tipo, operações principais, pós-processamento, parâmetros);
 - ``habito_humano``: as escolhas do processamento principal que o operador humano (``rotulador.humano``) executa
-  (ferramenta de apagar, suavização do texto, conta-gotas ou cor segura, escala ±5%, rotação);
+  (ferramenta de apagar, suavização do texto, conta-gotas ou cor segura, escala ajustada à região, rotação). A escala
+  "ajustada à região" deixa o texto novo do tamanho do antigo (até 05/11/2026 era ±5%, uma faixa que o artigo não dá);
 - o pós-processamento das tabelas (a fase "pos": filtros e estilos de camada depois da edição) NÃO é aplicado: as
   regiões saem só com o processamento principal, e o rótulo diz "Pós-processamento: nenhum".
 
@@ -195,15 +196,38 @@ def _nucleo(g: np.random.Generator) -> dict:
             return {"valores": [int(v) for v in k], "escala": int(k.sum())}
 
 
+# Os dois jeitos de gerar. "pessoa" (o padrão): o que uma pessoa de verdade edita num comprovante — o NOME e/ou o
+# ENDEREÇO do cliente, em todo lugar onde aparecem, com o resto do endereço junto (bairro, CEP e, se a rua nova é de
+# outra cidade, a cidade) e às vezes o CPF; valores que existem na região escolhida (no Ceará: nomes com o peso de
+# lá, ruas, bairros e CEPs reais). Cada campo sai numa das CATEGORIAS ligadas, com o processamento principal sorteado
+# das tabelas do artigo. "artigo": a eq. 8 à risca (de 1 a 12 regiões de texto quaisquer, um tipo por região).
+MODOS = ("pessoa", "artigo")
+# as categorias do editor (rotulador.catalogo.CATEGORIAS_EDITOR) e o tipo do artigo de cada uma
+CATEGORIAS = {"copiar e colar": "copy_move", "pegar de outro documento": "splicing", "apagar e substituir": "replacement"}
+REGIAO_PADRAO = "CE"
+
+
 def normalizar(cfg) -> dict:
-    """A configuração da receita (``fsts``): {"tipos": {tipo: peso}} — o a_k de cada tipo (eq. 5); o tipo que não vem
-    fica de fora. O artigo coletou o mesmo número de cada tipo; sem pesos, os cinco por igual."""
+    """A configuração da receita (``fsts``):
+
+    - ``modo``: "pessoa" (padrão) ou "artigo";
+    - ``tipos``: {tipo: peso}, o a_k de cada tipo (eq. 5), no modo "artigo"; o tipo que não vem fica de fora (o
+      artigo coletou o mesmo número de cada tipo; sem pesos, os cinco por igual);
+    - ``categorias``: {categoria do editor: peso}, no modo "pessoa" (sem pesos, as três por igual);
+    - ``regiao``: a UF dos nomes e endereços novos no modo "pessoa" (padrão "CE"; vazio = o país todo)."""
     cfg = cfg if isinstance(cfg, dict) else {}
+    modo = cfg.get("modo") if cfg.get("modo") in MODOS else "pessoa"
     pesos = cfg.get("tipos") if isinstance(cfg.get("tipos"), dict) else {}
     tipos = {t: max(0.0, float(pesos.get(t, 0.0) if pesos else 1.0)) for t in TIPOS}
-    if not any(tipos.values()):
+    if modo == "artigo" and not any(tipos.values()):
         raise ValueError("fsts: ligue pelo menos um tipo de adulteração")
-    return {"tipos": tipos}
+    pc = cfg.get("categorias") if isinstance(cfg.get("categorias"), dict) else {}
+    categorias = {c: max(0.0, float(pc.get(c, 0.0) if pc else 1.0)) for c in CATEGORIAS}
+    if modo == "pessoa" and not any(categorias.values()):
+        raise ValueError("fsts: ligue pelo menos uma categoria (copiar e colar, pegar de outro documento, apagar e substituir)")
+    regiao = cfg.get("regiao", REGIAO_PADRAO)
+    regiao = str(regiao).strip().upper()[:2] if regiao else None
+    return {"modo": modo, "tipos": tipos, "categorias": categorias, "regiao": regiao}
 
 
 # ------------------------------------------------------------------------------- uma região
@@ -239,21 +263,19 @@ def configurar(tipo: str, rng: random.Random) -> dict:
 def habito_humano(cfg: dict, caixa, rng: random.Random) -> dict:
     """O processamento principal da região como hábitos do operador humano (``rotulador.humano``), que as técnicas já
     sabem executar: a seleção da região de texto (retângulo, como a caixa do OCR), a ferramenta de apagar, a suavização
-    do texto, a cor (conta-gotas ou segura), a escala adaptada à região ±5% e a rotação. O texto sai nítido como foi
-    digitado: o desfoque, quando há, é o do pós-processamento. Na remoção, a "escala da região" é a folga da seleção
-    (ela nunca fica menor que o texto). O que o artigo não mede e o operador precisa (a amostra do conta-gotas, o
-    capricho no olho, o zoom) é sorteado como no operador humano."""
+    do texto, a cor (conta-gotas ou segura), a escala ajustada à região e a rotação. A escala ajustada deixa o texto
+    novo do tamanho exato do antigo (escala 1). O texto sai nítido como foi digitado: o desfoque, quando há, é o do
+    pós-processamento. Na remoção, a "escala da região" é a folga da seleção (ela nunca fica menor que o texto). O que
+    o artigo não mede e o operador precisa (a amostra do conta-gotas, o capricho no olho, o zoom) é sorteado como no
+    operador humano."""
     pr = cfg["principal"]
     x0, y0, x1, y1 = (float(v) for v in caixa)
     h, w = max(1.0, y1 - y0), max(1.0, x1 - x0)
     folga = 0.1
     escala, margem = 1.0, [folga] * 4
-    if "escala" in pr:
-        escala = round(rng.uniform(0.95, 1.05), 4)
-        if cfg["tipo"] == "removal":
-            extra = max(0.0, escala - 1.0) / 2
-            margem = [folga + extra * w / h, folga + extra, folga + extra * w / h, folga + extra]
-            escala = 1.0
+    if "escala" in pr and cfg["tipo"] == "removal":
+        extra = max(0.0, rng.uniform(0.95, 1.05) - 1.0) / 2
+        margem = [folga + extra * w / h, folga + extra, folga + extra * w / h, folga + extra]
     fonte = pr.get("fonte") or {"suavizacao": "nitida"}
     return {"selecao": "retangulo", "apagar": cfg["apagar"], "antialias": fonte["suavizacao"],
             "cor": "segura" if "cor_segura" in pr else "conta_gotas", "amostra": rng.choice((1, 3, 5)),

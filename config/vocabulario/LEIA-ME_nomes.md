@@ -47,6 +47,22 @@ Ordem: `freq_f + freq_m` decrescente, depois `nome`.
 
 Os 20.533 cobrem 95,7% das ocorrências de sobrenome do TSE (116.592 distintos; a cauda com menos de 5 não sai daqui).
 
+### `nomes_por_uf.tsv.gz` — o peso regional dos prenomes e sobrenomes (hoje: CE)
+
+Para o gerador sortear nomes com o jeito de uma UF (`geradores.usando(regiao="CE")`, o FSTS "como uma pessoa").
+Colunas: `uf`, `lista` (`prenome` ou `sobrenome`), `nome` (sem acento, como nas outras bases), `fator` (proporção na UF
+/ proporção no país, suavizada e limitada a 0,05–20) e `n_uf` (a frequência na UF). Feito por
+`ferramentas/construir_nomes_regiao.py --uf CE` em 05/11/2026:
+
+- **prenomes (2.470):** a API de nomes do IBGE (Censo 2010, `servicodados.ibge.gov.br/api/v2/censos/nomes/<nome>?groupBy=UF`)
+  para os 2.500 prenomes mais comuns da base; fator = (proporção no CE + 5) / (proporção no país + 5), por 100 mil
+  habitantes. No Ceará: FRANCISCA ×6,7, FRANCISCO ×6,6, ANTÔNIA ×5,7, RAIMUNDO ×3,6, ANTÔNIO ×2,6, MARIA ×1,9;
+- **sobrenomes (2.048):** as candidaturas do TSE das eleições municipais de 2024 e 2020 (850.176 pessoas no país,
+  23.988 no CE, uma vez cada); só os sobrenomes de uma palavra desta base vistos 30+ vezes no país; nenhum nome
+  completo é gravado. No Ceará: SOUSA ×3,8, LIMA ×2,2, ARAÚJO ×1,9, GOMES ×1,6, ALVES ×1,4; SANTOS ×0,56.
+
+Nome fora do arquivo pesa como no país.
+
 ### `acentos.tsv.gz` — palavra sem acento → grafia com acento
 
 | coluna | conteúdo |

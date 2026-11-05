@@ -14,6 +14,7 @@ OPERACOES = {
     "pincel": pintura.pincel,
     "borracha": pintura.borracha,
     "balde": pintura.balde,
+    "cor_na_selecao": pintura.cor_na_selecao,  # Alt+Backspace / Ctrl+Backspace
     "preencher": retoque.preencher_selecao,
     "corretivo": retoque.corretivo,
     "carimbo": pro.carimbo,

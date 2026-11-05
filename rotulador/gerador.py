@@ -598,6 +598,139 @@ def _opcoes_fsts(t: catalogo.Tecnica, cfg: dict, gr: str) -> dict:
     return op
 
 
+# FSTS "como uma pessoa" (``fsts.modo`` = "pessoa"): a categoria do editor -> as técnicas que a executam, por
+# granularidade (da mais comum à menos). Copiar e colar monta o valor novo com as letras do próprio documento (ou
+# troca uma letra por outra dele); pegar de outro documento cola o campo (ou o bloco do endereço, ou uma letra) de
+# outro documento do mesmo split; apagar e substituir apaga e escreve na mesma fonte
+FSTS_PESSOA = {
+    "copiar e colar": {"campo": ("campo.letras_do_documento", "campo.copiar_interno"),
+                       "caractere": ("caractere.copiar_glifo", "caractere.transpor")},
+    "pegar de outro documento": {"campo": ("campo.colagem_externa", "bloco.colagem_externa"),
+                                 "caractere": ("caractere.glifo_externo",)},
+    "apagar e substituir": {"campo": ("campo.mesma_fonte",), "trecho": ("trecho.trocar",),
+                            "caractere": ("caractere.redesenhar",)},
+}
+# o que a pessoa troca: o nome quase sempre inteiro (às vezes só o sobrenome); no endereço, a rua toda ou só um
+# pedaço (o número); uma letra ou um dígito de vez em quando
+_GRANULARIDADE_PESSOA = {"nome": {"campo": 0.7, "trecho": 0.2, "caractere": 0.1},
+                         "endereço": {"campo": 0.5, "trecho": 0.3, "caractere": 0.2}}
+_GRANULARIDADE_OUTROS = {"campo": 0.85, "caractere": 0.15}
+# o que acompanha a rua nova sai inteiro, da mesma linha da base de lugares (um dígito trocado no CEP não é o CEP da rua)
+_GRANULARIDADE_JUNTO = {"campo": 1.0}
+_TIPO_DA_FAMILIA = {"copia_interna": "copy_move", "colagem_externa": "splicing", "remocao": "removal"}
+
+
+def _fsts_pessoa(sessao: Sessao, ctx, r: Receita, plano: Plano, rng: random.Random, editor=None, ao_falhar=None,
+                 info: dict | None = None) -> list[dict]:
+    """Uma versão como uma pessoa de verdade faria: o NOME e/ou o ENDEREÇO do cliente (o detector diz qual campo é
+    qual), em todos os lugares onde aparecem e com o mesmo valor novo; o endereço com o bairro e o CEP da rua nova (e
+    a cidade, se a rua é de outra); às vezes o CPF junto com o nome. Os valores novos são da região da receita (no
+    Ceará: nomes com o peso de lá, ruas, bairros e CEPs reais do CNEFE). Cada campo sai numa das categorias ligadas
+    (``FSTS_PESSOA``), com o processamento principal sorteado das tabelas do artigo (``fsts.configurar``)."""
+    cfg = r.fsts
+    campos = [f for f in ctx.campos if f.get("categoria") in sessao.ids_categoria]
+    com_texto = [f for f in campos if f.get("tipo", "texto") == "texto" and str(f.get("texto") or "").strip()]
+    presentes = {f["categoria"] for f in com_texto}
+    base = [c for c in ("nome", "endereço") if c in presentes]
+    if not base:
+        raise ErroOperacao("o detector não achou o nome nem o endereço do cliente neste documento")
+    classes = _subconjunto(base, rng, None)  # só o nome, só o endereço ou os dois
+    regiao = cfg["regiao"]
+    # a cidade do documento: a da linha da cidade ou, sem ela, a do CEP impresso
+    cidade = mod_falsificador._cidade_do_documento(campos)
+    if cidade is None:
+        cep = next((f["texto"] for f in com_texto if f["categoria"] == "cep"), None)
+        cidade = geradores.cidade_do_cep(cep) if cep else None
+    # o endereço novo é da região quando o documento já é de lá ou quando a cidade impressa muda junto (a linha da
+    # cidade foi achada); senão fica na cidade do documento: rua do Ceará com o CEP e a cidade de outro estado seria
+    # justamente a incoerência que a pessoa evita. Os nomes são sempre da região
+    # no endereço, a rua inteira ou só um pedaço (o número): decidido antes, porque o resto vem junto só com a rua nova
+    g_end = _GRANULARIDADE_PESSOA["endereço"]
+    gr_rua = rng.choices(list(g_end), weights=list(g_end.values()))[0] if "endereço" in classes else None
+    troca_cidade = bool(regiao and gr_rua == "campo" and "cidade/uf" in presentes
+                        and (cidade is None or cidade[1] != regiao))
+    extras = []
+    if gr_rua == "campo":  # a rua nova vem com o bairro e o CEP dela (a mesma linha da base de lugares)
+        extras += [c for c in ("bairro", "cep") if c in presentes]
+        if troca_cidade:
+            extras.append("cidade/uf")
+    # só o número (ou uma letra) da rua mudou: a rua é a mesma, e o bairro e o CEP também
+    if "nome" in classes and "cpf/cnpj" in presentes and rng.random() < 0.15:
+        extras.append("cpf/cnpj")
+    escolha = _cpf_do_cliente([f for f in com_texto if f["categoria"] in classes + extras], campos)
+    cats = [c for c, w in cfg["categorias"].items() if w > 0]
+    pesos = [cfg["categorias"][c] for c in cats]
+    escolhas: dict = {}  # (campo, técnica) -> (categoria do editor, granularidade)
+
+    def tecnicas(f: dict, imposto: bool) -> list:
+        g = (_GRANULARIDADE_JUNTO if f.get("categoria") in ("bairro", "cep", "cidade/uf")
+             else _GRANULARIDADE_PESSOA.get(f.get("categoria"), _GRANULARIDADE_OUTROS))
+        cat = rng.choices(cats, weights=pesos)[0]
+        if imposto:  # o dado repetido que já mudou noutro lugar (ou a cidade nova): só o que ESCREVE o valor inteiro
+            grs = ["campo"]
+        else:
+            gr = gr_rua if f.get("categoria") == "endereço" else rng.choices(list(g), weights=list(g.values()))[0]
+            grs = [gr] + [x for x in ("campo", "trecho", "caractere") if x != gr and x in g]
+            if f.get("categoria") == "endereço" and gr_rua != "campo":  # só o número: a rua inteira não, sem o CEP junto
+                grs = [x for x in grs if x != "campo"]
+        out = []
+        for c in [cat] + [x for x in cats if x != cat]:
+            for gr in grs:
+                for tid in FSTS_PESSOA[c].get(gr, ()):
+                    t = catalogo.TECNICAS.get(tid)
+                    if t is None or t in out or not aplicavel(t, f) or not catalogo.compativel(t, f.get("categoria")):
+                        continue
+                    if imposto and t.familia == "colagem_externa":
+                        continue  # a colagem traz o texto do doador, não o valor que tem de se repetir aqui
+                    out.append(t)
+                    escolhas[(f.get("id"), tid)] = (c, gr)
+        if imposto and not out:  # nenhuma categoria ligada escreve o valor: a mesma fonte, para não deixar o velho
+            t = catalogo.TECNICAS["campo.mesma_fonte"]
+            if aplicavel(t, f):
+                out.append(t)
+                escolhas[(f.get("id"), t.id)] = ("apagar e substituir", "campo")
+        return out[:4]
+
+    def parametros(t, f: dict, texto) -> dict:
+        cat, gr = escolhas.get((f.get("id"), t.id), ("apagar e substituir", "campo"))
+        tipo = _TIPO_DA_FAMILIA.get(t.familia, "replacement")
+        conf = fsts.configurar(tipo, rng)
+        # como uma pessoa: o texto novo sai do tamanho e na inclinação do antigo. A escala do recorte é sempre ajustada
+        # à região e nada é girado além da linha (no modo "artigo" os dois seguem a tabela)
+        conf["principal"].pop("rotacao", None)
+        if tipo in ("copy_move", "splicing"):
+            conf["principal"].setdefault("escala", {})
+        hab = fsts.habito_humano(conf, f["caixa"], rng) if tipo in _FSTS_COM_TEXTO_OU_APAGADOR else None
+        p = _params(t, f, rng, r, None, texto, hab)
+        p["habitos"] = {**(p.get("habitos") or {}), "fsts": {**conf, "granularidade": gr, "categoria_editor": cat,
+                                                             "modo": "pessoa"}}
+        p["opcoes"] = {**p["opcoes"], **_opcoes_fsts(t, conf, gr)}
+        return p
+
+    antigas: list[dict] = []
+    n0 = len(sessao.historico_)
+    with geradores.usando(regiao=regiao or None, cidade=None if troca_cidade else cidade):
+        feitos = editar_campos(sessao, ctx, escolha + _ocorrencias(ctx, escolha, sessao.base), r, plano, rng,
+                               editor=editor, ao_falhar=ao_falhar, antigas=antigas, tecnicas_fn=tecnicas,
+                               params_fn=parametros)
+    if feitos and not any(x["categoria"] in classes for x in feitos):  # só o bairro ou o CEP: não é a fraude pedida
+        with sessao.lock:
+            while len(sessao.historico_) > n0:
+                sessao.desfazer()
+        feitos = []
+    if info is not None:
+        info["classes"] = classes + extras
+        info["ocorrencias_antigas"] = antigas
+        regioes = [{"campo": x.get("campo"), "categoria": x.get("categoria"), "tecnica": x.get("tecnica"),
+                    "tipo": _TIPO_DA_FAMILIA.get(x.get("familia"), "replacement"),
+                    "categoria_editor": catalogo.CATEGORIA_DA_FAMILIA.get(x.get("familia"), "apagar e substituir")}
+                   for x in feitos]
+        info["fsts"] = {"metodo": fsts.ARTIGO, "modo": "pessoa", "regiao": regiao, "classes": classes + extras,
+                        "endereco_da_regiao": bool(regiao and (troca_cidade or cidade is None or cidade[1] == regiao)),
+                        "regioes_pedidas": len(escolha), "regioes": regioes}
+    return feitos
+
+
 def aplicar_fsts(sessao: Sessao, ctx, r: Receita, plano: Plano, rng: random.Random, editor=None, ao_falhar=None,
                  info: dict | None = None) -> list[dict]:
     """Uma versão pelo método do FSTS (eq. 8 do artigo, que sorteia da população): de 1 a 12 regiões; em cada uma, o
@@ -606,7 +739,9 @@ def aplicar_fsts(sessao: Sessao, ctx, r: Receita, plano: Plano, rng: random.Rand
     e parâmetros dentro das faixas; o pós-processamento não é aplicado). A máscara é a de sempre
     (a diferença exata). O que uma edição tocou (a caixa do campo e a área que mudou: a colagem do
     bloco de endereço cobre as linhas vizinhas, a sombra e o traçado passam da caixa) não recebe outra edição por cima.
-    ``info`` recebe ``fsts`` (as regiões pedidas e as feitas)."""
+    ``info`` recebe ``fsts`` (as regiões pedidas e as feitas). No modo "pessoa" (o padrão), ``_fsts_pessoa``."""
+    if r.fsts.get("modo", "pessoa") == "pessoa":
+        return _fsts_pessoa(sessao, ctx, r, plano, rng, editor=editor, ao_falhar=ao_falhar, info=info)
     campos = [f for f in ctx.campos if f.get("categoria") in r.categorias and f.get("tipo", "texto") == "texto"
               and str(f.get("texto") or "").strip()]
     n = rng.randint(*fsts.REGIOES)
@@ -627,7 +762,7 @@ def aplicar_fsts(sessao: Sessao, ctx, r: Receita, plano: Plano, rng: random.Rand
         hab = fsts.habito_humano(cfg, f["caixa"], rng) if tipo in _FSTS_COM_TEXTO_OU_APAGADOR else None
         for gr, t in tentativas:
             p = _params(t, f, rng, r, None, None, hab)
-            p["habitos"] = {**(p.get("habitos") or {}), "fsts": {**cfg, "granularidade": gr}}
+            p["habitos"] = {**(p.get("habitos") or {}), "fsts": {**cfg, "granularidade": gr, "modo": "artigo"}}
             p["opcoes"] = {**p["opcoes"], **_opcoes_fsts(t, cfg, gr)}
             try:
                 res, ent = _executar_edicao(sessao, ctx, p, rng, r, editor)
@@ -644,7 +779,7 @@ def aplicar_fsts(sessao: Sessao, ctx, r: Receita, plano: Plano, rng: random.Rand
         else:
             falhou.add((f.get("id"), tipo))
     if info is not None:
-        info["fsts"] = {"metodo": fsts.ARTIGO, "regioes_pedidas": n, "regioes": regioes}
+        info["fsts"] = {"metodo": fsts.ARTIGO, "modo": "artigo", "regioes_pedidas": n, "regioes": regioes}
     return feitos
 
 
@@ -1017,7 +1152,8 @@ def _tecnica_do_campo(f: dict, r: Receita, rng: random.Random) -> catalogo.Tecni
 
 
 def editar_campos(sessao: Sessao, ctx, campos: list[dict], r: Receita, plano, rng: random.Random, editor=None,
-                  ao_falhar=None, antigas: list | None = None, humano_hab: dict | None = None) -> list[dict]:
+                  ao_falhar=None, antigas: list | None = None, humano_hab: dict | None = None,
+                  tecnicas_fn=None, params_fn=None) -> list[dict]:
     """Edita EXATAMENTE os ``campos`` dados, de cima para baixo, um de cada vez. O mesmo dado repetido no documento
     (o nome no envelope e no boleto) recebe o mesmo valor novo, no formato de cada lugar. Campo que não dá para
     editar (nenhuma técnica serve, a conferência do OCR recusou) fica como está e vai para ``ao_falhar``.
@@ -1025,7 +1161,9 @@ def editar_campos(sessao: Sessao, ctx, campos: list[dict], r: Receita, plano, rn
     As ocorrências achadas em outras linhas (``ocorrencia``, de ``_ocorrencias``) vão depois dos campos, com o valor
     novo que eles já definiram. ``antigas`` (lista) recebe o lugar de cada dado que MUDOU em algum lugar da versão e
     ficou com o valor antigo aqui ({texto, caixa, categoria, motivo}): o rótulo diz onde sobrou dado velho.
-    ``humano_hab``: o operador humano da versão (apaga sempre com a mesma ferramenta, seleciona do mesmo jeito)."""
+    ``humano_hab``: o operador humano da versão (apaga sempre com a mesma ferramenta, seleciona do mesmo jeito).
+    ``tecnicas_fn(campo, imposto)`` e ``params_fn(tecnica, campo, texto)`` (o FSTS "pessoa"): escolhem as técnicas a
+    tentar e montam os parâmetros de cada uma no lugar das do perfil."""
     feitos, usados, novos_em = [], [], []  # novos_em[i]: o texto novo da edição que ocupa usados[i]
     pendentes = []  # (campo, chave, motivo, edição que ocupa o lugar) que ficaram como estavam
     trocados: dict[str, tuple[str, str]] = {}  # chave do dado antigo -> (texto antigo, texto novo)
@@ -1040,6 +1178,7 @@ def editar_campos(sessao: Sessao, ctx, campos: list[dict], r: Receita, plano, rn
     cidade_versao = nova_cidade or mod_falsificador._cidade_do_documento(getattr(ctx, "campos", None) or campos)
     # perfil profissional: a ferramenta da versão (quem apaga, como cola) e se o PDF tem texto e a IA está ligada
     perfil = getattr(r, "perfil", None) == "profissional"
+    rigor = perfil or tecnicas_fn is not None  # recusar o dado que não mudou e o acento que sobra
     vetorial = bool(getattr(ctx, "vetorial", False))
     ia_online = perfil and "ia.reescrever" in r.tecnicas and bool(ia.status().get("online"))
     ferramentas = {"apagar": rng.choices(list(APAGAR_PROFISSIONAL), weights=list(APAGAR_PROFISSIONAL.values()))[0],
@@ -1064,8 +1203,9 @@ def editar_campos(sessao: Sessao, ctx, campos: list[dict], r: Receita, plano, rn
         elif nova_cidade and f.get("categoria") == "cep":
             with geradores.usando(rng, getattr(ctx, "split", None)):
                 texto = geradores.trocar_cidade_no_texto(geradores.parecido("cep", f["texto"], cidade=nova_cidade), *nova_cidade)
-        tentativas = _tentativas(f, r, rng, texto is not None, vetorial, ia_online,
-                                 fonte_ok=lambda f=f: _fonte_identificada(sessao.atual, ctx, f))
+        tentativas = (tecnicas_fn(f, texto is not None) if tecnicas_fn else
+                      _tentativas(f, r, rng, texto is not None, vetorial, ia_online,
+                                  fonte_ok=lambda f=f: _fonte_identificada(sessao.atual, ctx, f)))
         if not tentativas:
             if ao_falhar:
                 ao_falhar("", f, "nenhuma técnica da receita serve para este campo")
@@ -1073,7 +1213,7 @@ def editar_campos(sessao: Sessao, ctx, campos: list[dict], r: Receita, plano, rn
             continue
         erros = []  # (técnica, motivo) de cada tentativa que não ficou
         for t in tentativas:
-            p = _params(t, f, rng, r, None, texto, humano_hab)
+            p = params_fn(t, f, texto) if params_fn else _params(t, f, rng, r, None, texto, humano_hab)
             if perfil:
                 p["opcoes"] = {**p["opcoes"], **_opcoes_profissionais(t, f, ferramentas)}
             try:
@@ -1085,10 +1225,10 @@ def editar_campos(sessao: Sessao, ctx, campos: list[dict], r: Receita, plano, rn
             motivo = None
             if f.get("linha") and _invade_linha(sessao.base, res, f):  # o valor novo não coube no trecho: desfaz
                 motivo = "o valor novo não coube no trecho da linha"
-            elif (perfil and texto is None
+            elif (rigor and texto is None
                   and _chave_valor(f.get("categoria") or "", res.meta.get("texto_novo") or "") == chave):
                 motivo = "o dado não mudou (só acento ou caixa)"
-            elif perfil and _acento_que_fica(res, f):
+            elif rigor and _acento_que_fica(res, f):
                 motivo = "o acento da letra apagada ficaria no lugar"
             elif (perfil and t.id == "campo.reescrever_pdf"
                   and (res.meta.get("opcoes") or {}).get("fonte_pdf") == "substituta"):
@@ -1704,7 +1844,8 @@ ESTILOS = {
         "resumo": "A maioria das versões é editada como uma pessoa faria num editor de imagem; algumas saem perfeitas.",
         "faz": ["seleciona em volta do texto e apaga com uma ferramenta de editor (preenchimento inteligente, "
                 "carimbo, pincel de recuperação, cor do papel)",
-                "escreve na mesma fonte do documento, pega a cor com o conta-gotas e acerta tamanho e posição no olho",
+                "escreve na mesma fonte do documento, no mesmo tamanho e com o mesmo traço, pega a cor com o "
+                "conta-gotas e acerta a posição no olho",
                 "às vezes desfoca, aguça ou põe ruído e salva como o programa salvaria (JPEG do Photoshop, do Paint, PNG)",
                 f"{round(100 * (1 - HUMANO_PROB))}% das versões saem com acabamento perfeito, o caso mais difícil"],
         "bom_para": "o dia a dia: treinar o detector com fraudes parecidas com as de verdade"},
@@ -1808,7 +1949,8 @@ def _expandir_perfil(d: dict, ids_categoria: dict[str, int]) -> dict:
     return {**exp, **{k: v for k, v in d.items() if k not in _CHAVES_DO_PERFIL}}
 
 
-def receita_fsts(ids_categoria: dict[str, int], categorias=None, tipos: dict | None = None) -> dict:
+def receita_fsts(ids_categoria: dict[str, int], categorias=None, tipos: dict | None = None,
+                 cfg: dict | None = None) -> dict:
     """A receita do método FSTS (``aplicar_fsts``): qualquer campo de texto (o artigo sorteia regiões de texto do OCR;
     ``categorias`` restringe), as técnicas de ``TECNICAS_FSTS``, os pesos dos cinco tipos (``tipos``; padrão: iguais,
     como na coleta do artigo) e nenhum acabamento automático (o pós-processamento do artigo não é aplicado). Sem canal,
@@ -1816,10 +1958,11 @@ def receita_fsts(ids_categoria: dict[str, int], categorias=None, tipos: dict | N
     ``{"perfil": "fsts", ...}`` nesta receita."""
     validas = [c for c in ids_categoria if c != "outro" and catalogo.TIPO_DA_CATEGORIA.get(c, "texto") == "texto"]
     cats = [c for c in (categorias or validas) if c in validas] or validas
-    return {"perfil": "fsts", "tecnicas": {tid: 1 for g in TECNICAS_FSTS.values() for ts in g.values() for tid in ts},
+    usadas = [tid for g in (*TECNICAS_FSTS.values(), *FSTS_PESSOA.values()) for ts in g.values() for tid in ts]
+    return {"perfil": "fsts", "tecnicas": {tid: 1 for tid in dict.fromkeys(usadas)},
             "categorias": {c: 1 for c in cats}, "edicoes": [1, 10], "distribuicao": "pesos",
             "acabamento": {"ruido": "nunca", "disfarce": "nunca", "jpeg": 0, "requantizar": "nunca"},
-            "fsts": fsts.normalizar({"tipos": tipos} if tipos else None)}
+            "fsts": fsts.normalizar(cfg if cfg is not None else ({"tipos": tipos} if tipos else None))}
 
 
 # o que o perfil FSTS define (o resto da receita — documentos, variações, nome, formato, operador — continua valendo)
@@ -1830,8 +1973,8 @@ _CHAVES_DO_FSTS = ("perfil", "tecnicas", "categorias", "tipos", "exato", "subcon
 def _expandir_fsts(d: dict, ids_categoria: dict[str, int]) -> dict:
     cats = d.get("categorias")
     cats = list(cats) if isinstance(cats, (list, tuple, dict)) else None
-    tipos = (d.get("fsts") or {}).get("tipos") if isinstance(d.get("fsts"), dict) else None
-    return {**receita_fsts(ids_categoria, cats, tipos), **{k: v for k, v in d.items() if k not in _CHAVES_DO_FSTS}}
+    cfg = d.get("fsts") if isinstance(d.get("fsts"), dict) else None
+    return {**receita_fsts(ids_categoria, cats, cfg=cfg), **{k: v for k, v in d.items() if k not in _CHAVES_DO_FSTS}}
 
 
 def receita_padrao(ids_categoria: dict[str, int], com_ia: bool = False) -> dict:

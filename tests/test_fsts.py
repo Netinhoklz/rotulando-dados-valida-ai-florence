@@ -13,8 +13,9 @@ from PIL import Image
 
 from app import RAIZ, carregar_categorias
 from rotulador import fsts, planilha
+from rotulador.ops import geradores
 from rotulador.contexto import Contexto
-from rotulador.gerador import TECNICAS_FSTS, Receita, _sobrepoe
+from rotulador.gerador import FSTS_PESSOA, TECNICAS_FSTS, Receita, _sobrepoe
 from rotulador.sessao import ErroOperacao
 from tests.test_planilha import BaseApp
 
@@ -125,7 +126,11 @@ class TestReceita(unittest.TestCase):
     def test_perfil_fsts(self):
         r = Receita({"perfil": "fsts"}, IDS)
         self.assertEqual(r.perfil, "fsts")
-        self.assertEqual(set(r.tecnicas), {t for g in TECNICAS_FSTS.values() for ts in g.values() for t in ts})
+        self.assertEqual(set(r.tecnicas), {t for g in (*TECNICAS_FSTS.values(), *FSTS_PESSOA.values())
+                                           for ts in g.values() for t in ts})
+        # padrão: como uma pessoa, as três categorias do editor, nomes e endereços do Ceará
+        self.assertEqual((r.fsts["modo"], r.fsts["regiao"]), ("pessoa", "CE"))
+        self.assertEqual(r.fsts["categorias"], {c: 1.0 for c in fsts.CATEGORIAS})
         self.assertFalse({"codigo barras", "qr code/pix", "outro"} & set(r.categorias))
         self.assertEqual(r.fsts["tipos"], {t: 1.0 for t in fsts.TIPOS})
         self.assertEqual(r.resumo()["fsts"], r.fsts)
@@ -133,7 +138,12 @@ class TestReceita(unittest.TestCase):
         self.assertEqual((so.fsts["tipos"]["removal"], so.fsts["tipos"]["replacement"]), (2.0, 0.0))
         self.assertEqual((list(so.categorias), so.variacoes), (["nome"], 3))
         with self.assertRaises(ErroOperacao):
-            Receita({"perfil": "fsts", "fsts": {"tipos": {"removal": 0}}}, IDS)
+            Receita({"perfil": "fsts", "fsts": {"modo": "artigo", "tipos": {"removal": 0}}}, IDS)
+        with self.assertRaises(ErroOperacao):
+            Receita({"perfil": "fsts", "fsts": {"categorias": {"apagar e substituir": 0}}}, IDS)
+        so_apagar = Receita({"perfil": "fsts", "fsts": {"categorias": {"apagar e substituir": 1}, "regiao": ""}}, IDS)
+        self.assertEqual(so_apagar.fsts["categorias"]["copiar e colar"], 0.0)
+        self.assertIsNone(so_apagar.fsts["regiao"])
 
 
 class TestVersao(BaseApp):
@@ -141,7 +151,8 @@ class TestVersao(BaseApp):
         """Versões pelo método do artigo no lote: as regiões têm o tipo, a máscara salva é a diferença, nenhuma região
         cai sobre o que outra edição tocou e o rótulo (anotação e Excel) diz o tipo e as operações."""
         it = self.doc("teste")
-        self.app.gerador.iniciar({"perfil": "fsts", "variacoes": 2, "documentos": {"splits": ["teste"], "ids": [it.doc]}})
+        self.app.gerador.iniciar({"perfil": "fsts", "fsts": {"modo": "artigo"}, "variacoes": 2,
+                                  "documentos": {"splits": ["teste"], "ids": [it.doc]}})
         self.app.gerador.thread.join(timeout=600)
         st = self.app.gerador.status()
         self.assertGreaterEqual(st["feitas"], 1, st.get("erros"))
@@ -170,6 +181,77 @@ class TestVersao(BaseApp):
         cab = [c.value for c in ws[1]]
         linhas = [dict(zip(cab, [c.value for c in row])) for row in ws.iter_rows(min_row=2)]
         self.assertTrue(linhas and all(l["Tipo FSTS"] for l in linhas))
+
+
+class TestComoUmaPessoa(BaseApp):
+    """O modo "pessoa": nome e/ou endereço do cliente (e o que vai junto), o mesmo valor novo em todo lugar, valores
+    do Ceará e só as categorias ligadas."""
+
+    def lote(self, cfg: dict, variacoes: int = 3):
+        it = self.doc("teste")
+        self.app.gerador.iniciar({"perfil": "fsts", "fsts": cfg, "variacoes": variacoes,
+                                  "documentos": {"splits": ["teste"], "ids": [it.doc]}})
+        self.app.gerador.thread.join(timeout=900)
+        st = self.app.gerador.status()
+        self.assertGreaterEqual(st["feitas"], 1, st.get("erros"))
+        return [json.loads(q.read_text(encoding="utf-8")) for q in (self.saida / "teste" / "anotacoes").glob("*.json")]
+
+    def ceps_novos(self, anots) -> list[tuple[str, str]]:
+        return [(e["texto_antigo"], e["texto_novo"]) for a in anots for e in a["edicoes"]
+                if e["categoria"] == "cep" and e.get("texto_novo") and e.get("texto_antigo")]
+
+    def test_nome_e_endereco_coerentes(self):
+        """Documento de Belo Horizonte sem a linha da cidade: os nomes vêm do Ceará, mas o endereço fica na cidade
+        do documento (rua do Ceará com o CEP e a cidade de MG impressos seria incoerente)."""
+        anots = self.lote({})
+        for anot in anots:
+            g = anot["gerador"]
+            self.assertEqual(g["fsts"]["modo"], "pessoa")
+            classes = set(g["classes"])
+            self.assertTrue(classes & {"nome", "endereço"}, classes)
+            self.assertLessEqual(classes, {"nome", "endereço", "bairro", "cep", "cidade/uf", "cpf/cnpj"})
+            novos = {}
+            for e in anot["edicoes"]:
+                self.assertIn(e["categoria"], classes)
+                if e.get("texto_antigo") and e.get("texto_novo"):  # o mesmo dado sai igual em todo lugar
+                    chave = (e["categoria"], e["texto_antigo"].upper().replace(" ", ""))
+                    if e["categoria"] in ("nome", "cep") and chave in novos:
+                        self.assertEqual(novos[chave].upper().replace(" ", "")[:8],
+                                         e["texto_novo"].upper().replace(" ", "")[:8])
+                    novos.setdefault(chave, e["texto_novo"])
+            self.assertFalse(g["fsts"]["endereco_da_regiao"])
+            for reg in g["fsts"]["regioes"]:
+                self.assertIn(reg["categoria_editor"], fsts.CATEGORIAS)
+                self.assertIn(reg["tipo"], fsts.TIPOS)
+
+        for antigo, novo in self.ceps_novos(anots):  # o CEP novo é da mesma cidade do antigo
+            self.assertEqual(geradores.cidade_do_cep(novo), geradores.cidade_do_cep(antigo), (antigo, novo))
+
+    def test_so_as_categorias_ligadas(self):
+        anots = self.lote({"categorias": {"apagar e substituir": 1}}, variacoes=2)
+        for anot in anots:
+            for reg in anot["gerador"]["fsts"]["regioes"]:
+                self.assertEqual(reg["categoria_editor"], "apagar e substituir", reg)
+            for e in anot["edicoes"]:
+                self.assertNotIn(e["familia"], ("copia_interna", "colagem_externa"), e["tecnica"])
+
+
+class TestComoUmaPessoaNoCeara(TestComoUmaPessoa):
+    """Documento de Fortaleza: o endereço novo também é do Ceará (CEP de 60000-000 a 63999-999)."""
+
+    CEP = "60150-160"
+
+    def test_nome_e_endereco_coerentes(self):
+        anots = self.lote({})
+        for a in anots:
+            self.assertTrue(a["gerador"]["fsts"]["endereco_da_regiao"])
+        for antigo, novo in self.ceps_novos(anots):
+            dig = int("".join(ch for ch in novo if ch.isdigit())[:8])
+            self.assertTrue(60000000 <= dig <= 63999999, (antigo, novo))
+            self.assertEqual(geradores.cidade_do_cep(novo)[1], "CE", novo)
+
+    def test_so_as_categorias_ligadas(self):
+        pass  # já coberto no documento de Belo Horizonte
 
 
 if __name__ == "__main__":

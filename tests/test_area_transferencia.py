@@ -83,12 +83,43 @@ class TestColarPeloServidor(unittest.TestCase):
         estado = r.get_json()["estado"]
         self.assertEqual([c["categoria"] for c in estado["camadas"]], ["pegar de outro documento"])
 
+    def test_doadora_usada_fica_marcada(self):
+        """A imagem posta ao lado (lado a lado) é uma que ainda não serviu de doadora: /api/doadores conta os usos."""
+        doc, doador = (it.doc for it in self.reg.por_split["treino"])
+        antes = self.c.get(f"/api/doadores?id={doc}").get_json()
+        self.assertEqual([(d["id"], d["usos"], d["versoes"]) for d in antes], [(doador, 0, 0)])
+        p = {"doador": doador, "origem": ORIGEM, "destino": DESTINO, "selecao_doador": ELIPSE}
+        self.assertEqual(self.op(doc, tipo="colar", params=p, categoria="pegar de outro documento").status_code, 200)
+        r = self.c.post("/api/salvar", data=json.dumps({"id": doc}), content_type="application/json")
+        self.assertEqual(r.status_code, 200, r.get_json())
+        depois = self.c.get(f"/api/doadores?id={doc}").get_json()
+        self.assertEqual([(d["id"], d["usos"]) for d in depois], [(doador, 1)])
+        # visto da doadora: a imagem editada tem 1 versão salva e nunca serviu de doadora
+        outro = self.c.get(f"/api/doadores?id={doador}").get_json()
+        self.assertEqual([(d["id"], d["usos"], d["versoes"]) for d in outro], [(doc, 0, 1)])
+
     def test_ctrl_v_de_outro_split_e_recusado(self):
         doc, doador = self.reg.por_split["treino"][0].doc, self.reg.por_split["teste"][0].doc
         p = {"doador": doador, "origem": ORIGEM, "destino": DESTINO, "selecao_doador": ELIPSE}
         r = self.op(doc, tipo="colar", params=p, categoria="pegar de outro documento")
         self.assertEqual(r.status_code, 400)
         self.assertIn("proibido", r.get_json()["erro"])
+
+    def test_preencher_com_cor_e_ir_para_um_passo(self):
+        """Alt+Backspace (a seleção na cor de frente) e o clique no Histórico (/api/historico/ir)."""
+        doc = self.reg.por_split["teste"][0].doc
+        sel = {"formas": [{"tipo": "ret", "x0": 20, "y0": 20, "x1": 60, "y1": 40, "modo": "novo"}]}
+        for cor in ("#ff0000", "#00ff00"):
+            r = self.op(doc, tipo="cor_na_selecao", selecao=sel, categoria="apagar e substituir", params={"cor": cor})
+            self.assertEqual(r.status_code, 200, r.get_json())
+        e = r.get_json()["estado"]
+        self.assertEqual((len(e["historico"]), e["refazer"]), (2, []))
+        self.assertTrue(all(c["auto"] for c in e["camadas"]))  # direto no Fundo: nenhuma camada no painel
+        r = self.c.post("/api/historico/ir", data=json.dumps({"id": doc, "passo": 0}), content_type="application/json")
+        e = r.get_json()["estado"]
+        self.assertEqual((len(e["historico"]), len(e["refazer"])), (0, 2))
+        r = self.c.post("/api/historico/ir", data=json.dumps({"id": doc, "passo": "x"}), content_type="application/json")
+        self.assertEqual(r.status_code, 400)
 
     def test_puxar_a_selecao_preenche_o_buraco(self):
         doc = self.reg.por_split["teste"][0].doc

@@ -1,8 +1,10 @@
 """Exercita TODAS as ferramentas pela interface, como um usuário, num documento realista (300 dpi).
 
-Uso (servidor já rodando com os dados de gerar_amostras.py --realista):
-    python tests_ui/ui_todas.py E:/rotulador/real [--ia]
+Uso (servidor já rodando com os dados de gerar_amostras.py --realista, log em PASTA/servidor.log):
+    python app.py --dados E:/rotulador/real/dados --saida E:/rotulador/real/saida --porta 5098 --sem-navegador
+    python tests_ui/ui_todas.py E:/rotulador/real [--porta 5098] [--ia]
 
+A porta 5077 é de outro projeto nesta máquina: use outra (padrão 5098).
 Para cada caso registra: efeito esperado, avisos de erro na tela, erros de JavaScript, tracebacks
 no log do servidor (PASTA/servidor.log) e o tempo. --ia inclui a edição por IA (~2-3 min).
 """
@@ -24,7 +26,7 @@ from selenium.webdriver.support.ui import Select
 sys.stdout.reconfigure(encoding="utf-8")
 PASTA = Path(sys.argv[1])
 COM_IA = "--ia" in sys.argv
-URL = "http://127.0.0.1:5077"
+URL = "http://127.0.0.1:" + (sys.argv[sys.argv.index("--porta") + 1] if "--porta" in sys.argv else "5098")
 LOG = PASTA / "servidor.log"
 E = 2  # documento a 300 dpi: coordenadas do layout de 150 dpi x2
 
@@ -112,9 +114,28 @@ def tecla(*ks):
     ac.perform()
 
 
+# a caixa de ferramentas é em grupos: o botão mostra a última usada do grupo; as outras vêm pelo clique direito
+NA_GAVETA = {"transformar": ("transformar", "Mover / puxar"), "colar": ("transformar", "Colar de outro documento"),
+             "ret": ("ret", "Seleção retangular"), "elipse": ("ret", "Seleção elíptica"),
+             "varinha": ("varinha", "Varinha mágica"), "pincelsel": ("varinha", "Pincel de seleção"),
+             "corretivo": ("corretivo", "Pincel corretivo"), "recuperacao": ("corretivo", "Pincel de recuperação"),
+             "remendo": ("corretivo", "Remendo"), "texto": ("texto", "Texto"), "substituir": ("texto", "Substituir texto")}
+
+
 def ferramenta(fid):
-    d.find_element(By.CSS_SELECTOR, f'#ferramentas button[data-f="{fid}"]').click()
+    botao = d.find_elements(By.CSS_SELECTOR, f'#ferramentas button[data-f="{fid}"]')
+    if botao:
+        botao[0].click()
+    else:
+        grupo, nome = NA_GAVETA[fid]
+        ActionChains(d).context_click(d.find_element(By.CSS_SELECTOR, f'#ferramentas button[data-g="{grupo}"]')).perform()
+        time.sleep(0.3)
+        itens = [b for b in d.find_elements(By.CSS_SELECTOR, ".gaveta button")
+                 if b.find_element(By.CSS_SELECTOR, ".g-nome").text == nome]
+        assert itens, f"'{nome}' não está na gaveta"
+        itens[0].click()
     time.sleep(0.3)
+    assert js("return window.rotulador.idFerramenta") == fid, f"a ferramenta não virou {fid}"
 
 
 def opcao(chave, valor):
@@ -135,9 +156,30 @@ def opcao(chave, valor):
     time.sleep(0.3)
 
 
+COPIAR, PEGAR, APAGAR = "copiar e colar", "pegar de outro documento", "apagar e substituir"
+
+
 def categoria(v):
-    Select(d.find_element(By.ID, "categoria")).select_by_value(v)
+    """O tipo da edição, clicado no painel da direita."""
+    d.find_element(By.CSS_SELECTOR, f'#lista-categorias li[data-c="{v}"]').click()
     time.sleep(0.4)
+    assert js("return window.rotulador.categoria") == v, f"o tipo não virou {v}"
+
+
+def menu(nome, item):
+    """Um item de um menu do alto (Arquivo, Editar…), pelo começo do rótulo."""
+    for b in d.find_elements(By.CSS_SELECTOR, "#menus .menu-topo"):
+        if b.text.strip() == nome:
+            b.click()
+            break
+    time.sleep(0.3)
+    for b in d.find_elements(By.CSS_SELECTOR, ".menu-lista .menu-item"):
+        if b.find_element(By.CSS_SELECTOR, ".menu-rot").text.startswith(item):
+            assert b.is_enabled(), f"{nome} › {item} desligado"
+            b.click()
+            time.sleep(0.5)
+            return
+    raise AssertionError(f"{nome} › {item} não existe")
 
 
 def sessao():
@@ -170,10 +212,6 @@ def botao_opcoes(texto):
             return b
     raise AssertionError(f"botão '{texto}' não está na barra de opções")
 
-
-def acao_barra(titulo):
-    d.find_element(By.CSS_SELECTOR, f'#ferramentas button[title^="{titulo}"]').click()
-    time.sleep(0.5)
 
 
 def selecionar(a, b):
@@ -225,19 +263,29 @@ def caso(nome):
     return deco
 
 
+def abrir(trecho, limite=8):
+    """Passa de imagem (PageDown) até a de nome com ``trecho`` (sem lista de documentos, como a pessoa faz)."""
+    for _ in range(limite):
+        if trecho in sessao()["nome"]:
+            return
+        tecla(Keys.PAGE_DOWN)
+        ocioso()
+    raise AssertionError(f"nenhuma imagem com '{trecho}' neste split")
+
+
 d.get(URL)
-# este teste usa o editor completo: entra direto no modo avançado, tutorial já visto
-d.execute_script("localStorage.setItem('rotulador.modoSimples','false');localStorage.setItem('rotulador.tutorialVisto','true');localStorage.setItem('rotulador.operador', JSON.stringify('Teste UI'))")
+# tutorial já visto; nenhum tipo marcado; começa no treino
+d.execute_script("localStorage.clear(); localStorage.setItem('rotulador.tutorialEditorVisto','true');"
+                 "localStorage.setItem('rotulador.operador', JSON.stringify('Teste UI'));"
+                 "localStorage.setItem('rotulador.split', JSON.stringify('treino'))")
 d.get(URL)
-espera("window.rotulador && window.rotulador.sessao && document.getElementById('vazio').hidden", 120)
-d.find_element(By.CSS_SELECTOR, '[data-sp="treino"]').click()
+espera("!!(window.rotulador && window.rotulador.sessao && document.getElementById('vazio').hidden)", 120)
 ocioso()
-d.find_elements(By.CSS_SELECTOR, "#lista-docs li")[0].click()
-ocioso()
+abrir("conta_01")
 print("documento:", sessao()["nome"], sessao()["largura"], "x", sessao()["altura"])
 
 
-@caso("zoom: clique, Alt+clique, 0 e 1")
+@caso("zoom: clique, Alt+clique, Ctrl+0 e Ctrl+1")
 def _():
     ferramenta("zoom")
     e0 = js("return window.rotulador.visor.escala")
@@ -246,9 +294,9 @@ def _():
     assert e1 > e0, "zoom não aproximou"
     clique((600, 800), mods=(Keys.ALT,))
     assert js("return window.rotulador.visor.escala") < e1, "Alt+clique não afastou"
-    tecla("1")
-    assert abs(js("return window.rotulador.visor.escala") - 1) < 1e-6, "1 não foi a 100%"
-    tecla("0")
+    tecla(Keys.CONTROL, "1")
+    assert abs(js("return window.rotulador.visor.escala") - 1) < 1e-6, "Ctrl+1 não foi a 100%"
+    tecla(Keys.CONTROL, "0")
 
 
 @caso("mão e Espaço+arrastar")
@@ -257,7 +305,7 @@ def _():
     ox = js("return window.rotulador.visor.ox")
     arrastar((600, 800), (400, 700))
     assert js("return window.rotulador.visor.ox") != ox, "a mão não moveu a vista"
-    tecla("0")
+    tecla(Keys.CONTROL, "0")
 
 
 @caso("roda do mouse dá zoom")
@@ -268,7 +316,7 @@ def _():
           c.dispatchEvent(new WheelEvent('wheel',{deltaY:-300, clientX:arguments[0], clientY:arguments[1], bubbles:true, cancelable:true}));""", x, y)
     time.sleep(0.3)
     assert js("return window.rotulador.visor.escala") > e0, "a roda não deu zoom"
-    tecla("0")
+    tecla(Keys.CONTROL, "0")
 
 
 @caso("seleção retangular + somar + subtrair")
@@ -399,7 +447,7 @@ def _():
 
 @caso("pincel (B) com categoria")
 def _():
-    categoria("valor")
+    categoria(APAGAR)
     tecla("b")
     n = len(hist())
     arrastar((300, 1000), (700, 1000))
@@ -472,7 +520,7 @@ def _():
 
 @caso("carimbo (S): Alt+clique + traço")
 def _():
-    categoria("endereço")
+    categoria(COPIAR)
     tecla("s")
     clique((340, 318), mods=(Keys.ALT,))
     time.sleep(0.3)
@@ -506,27 +554,33 @@ def _():
     assert ultimo() == "recuperacao", f"recuperação não aplicou ({ultimo()})"
 
 
-@caso("pincel corretivo (J)")
+@caso("pincel corretivo (J; Shift+J alterna)")
 def _():
-    tecla("j")
+    tecla(Keys.SHIFT, "j")  # recuperação → remendo → corretivo, como no Photoshop
+    assert js("return window.rotulador.idFerramenta") == "remendo", "Shift+J não alternou o grupo"
+    tecla(Keys.SHIFT, "j")
+    assert js("return window.rotulador.idFerramenta") == "corretivo", "Shift+J não voltou ao corretivo"
+    tecla("b")
+    tecla("j")  # a letra escolhe a visível do grupo
+    assert js("return window.rotulador.idFerramenta") == "corretivo", "J não escolheu a visível do grupo"
     arrastar((340, 474), (600, 474))
     ocioso(600)
     assert ultimo() == "corretivo", f"corretivo não aplicou ({ultimo()})"
 
 
-@caso("remendo (Y): origem")
+@caso("remendo (grupo do J): origem")
 def _():
     selecionar((325, 520), (520, 548))
-    tecla("y")
+    ferramenta("remendo")
     arrastar((420, 534), (420, 1000))
     ocioso(600)
     assert ultimo() == "remendo", f"remendo não aplicou ({ultimo()})"
 
 
-@caso("remendo (Y): destino")
+@caso("remendo (grupo do J): destino")
 def _():
     selecionar((325, 570), (520, 600))
-    tecla("y")
+    ferramenta("remendo")
     opcao("modo", "destino")
     arrastar((420, 585), (420, 1250))
     ocioso(600)
@@ -540,7 +594,8 @@ for _modo in ("desfocar", "nitidez", "borrar", "clarear", "escurecer", "saturar"
         desmarcar()
         tecla("o")
         opcao("modo", m)
-        y = 20 if m in ("saturar", "dessaturar") else 1500
+        # borrar só muda pixel onde há textura: em y=1500 o caso do balde (antes) pinta o papel de uma cor lisa
+        y = 20 if m in ("saturar", "dessaturar") else 320 if m == "borrar" else 1500
         x0 = {"desfocar": 60, "nitidez": 220, "borrar": 380, "clarear": 540, "escurecer": 700,
               "saturar": 200, "dessaturar": 700}[m]
         n = len(hist())
@@ -551,7 +606,7 @@ for _modo in ("desfocar", "nitidez", "borrar", "clarear", "escurecer", "saturar"
 
 @caso("texto (T): clicar, digitar, Enter")
 def _():
-    categoria("nome")
+    categoria(APAGAR)
     tecla("t")
     clique((800, 1150))
     campo = d.find_element(By.ID, "op-texto")
@@ -569,11 +624,14 @@ def _():
     opcao("negrito", 1)
     opcao("rotacao", 5)
     opcao("largura", 90)
-    d.find_element(By.CSS_SELECTOR, '#opcoes-ferramenta button[title^="Valor aleatório"]').click()
-    time.sleep(1)
+    desmarcar()
+    tecla("t")
+    clique((335, 598))  # na linha de base do "SET/2026"
+    js("window.rotulador.opcoes('texto').texto = ''; document.getElementById('op-texto').value = ''")
+    d.find_element(By.CSS_SELECTOR, '#opcoes-ferramenta button[title^="Valor novo parecido"]').click()
+    espera("!!document.getElementById('op-texto').value.trim()", 180)  # a 1ª vez lê o documento (OCR)
     gerado = d.find_element(By.ID, "op-texto").get_attribute("value")
-    assert gerado.strip(), "🎲 não gerou valor"
-    clique((800, 1250))
+    assert gerado.strip() and "/" in gerado, f"🎲 não gerou um mês parecido ({gerado!r})"
     assert esperar_previa(30), "sem prévia"
     botao_opcoes("Aplicar").click()
     ocioso()
@@ -582,10 +640,12 @@ def _():
         opcao(k, v)
 
 
-@caso("substituir texto (R)")
+@caso("substituir texto (T; Shift+T alterna)")
 def _():
-    categoria("valor")
-    tecla("r")
+    categoria(APAGAR)
+    tecla("t")
+    tecla(Keys.SHIFT, "t")
+    assert js("return window.rotulador.idFerramenta") == "substituir", "Shift+T não foi ao substituir"
     arrastar((790, 770), (1090, 835))
     ocioso()
     espera("window.rotulador.F.substituir.ancora !== null", 30)
@@ -600,10 +660,10 @@ def _():
 
 @caso("mover (V) com seleção: duplicar")
 def _():
-    categoria("cep")
+    categoria(COPIAR)
     selecionar((325, 412), (520, 450))
     tecla("v")
-    opcao("modo", "duplicar")
+    opcao("acao", "duplicar")
     arrastar((420, 430), (420, 1300))
     assert esperar_previa(60), "transformar sem prévia"
     tecla(Keys.ENTER)
@@ -615,7 +675,7 @@ def _():
 def _():
     selecionar((325, 412), (520, 450))
     tecla("v")
-    opcao("modo", "mover")
+    opcao("acao", "mover")
     opcao("origem", "preencher")
     arrastar((420, 430), (900, 1000))
     bb = sel()["bbox"]
@@ -629,21 +689,31 @@ def _():
     tecla(Keys.ENTER)
     ocioso(600)
     assert ultimo() == "transformar" and hist()[-1]["params"]["modo"] == "mover", f"mover não aplicou ({ultimo()})"
-    opcao("modo", "duplicar")
 
 
-@caso("mover (V) sem seleção move a camada")
+@caso("mover (V) sem seleção move a camada; o Fundo não se move")
 def _():
     desmarcar()
+    d.find_element(By.ID, "cam-nova").click()  # sem camada criada, a edição vai direto no Fundo
+    ocioso()
+    tecla("b")
+    arrastar((300, 1300), (500, 1300))
+    ocioso()
     tecla("v")
     arrastar((420, 1300), (440, 1320))
     ocioso()
     assert hist()[-1]["tipo"] == "mover_camada", f"não moveu a camada ({ultimo()})"
+    d.find_element(By.CSS_SELECTOR, '#lista-camadas li[data-cam="fundo"]').click()
+    ocioso()
+    n = len(hist())
+    arrastar((420, 1300), (440, 1320))
+    ocioso()
+    assert len(hist()) == n, "o Fundo se moveu"
 
 
-@caso("colar de outro documento (⧉)")
+@caso("colar de outro documento (gaveta do Mover)")
 def _():
-    categoria("nome")
+    categoria(PEGAR)
     ferramenta("colar")
     time.sleep(1.5)
     botoes = d.find_elements(By.CSS_SELECTOR, ".grade-doadores button")
@@ -659,10 +729,97 @@ def _():
     assert ultimo() == "colar", f"colar não aplicou ({ultimo()})"
 
 
+def tela_doador(x, y):
+    return js("const v=window.rotulador.visorDoador, r=v.canvas.getBoundingClientRect();"
+              "const s=v.imgParaTela(arguments[0],arguments[1]); return [r.left+s.x, r.top+s.y];", x * E, y * E)
+
+
+def arrastar_tela(p0, p1, passos=10):
+    ab = ActionBuilder(d)
+    ab.pointer_action.move_to_location(int(p0[0]), int(p0[1]))
+    ab.pointer_action.pointer_down()
+    for i in range(1, passos + 1):
+        ab.pointer_action.move_to_location(int(p0[0] + (p1[0] - p0[0]) * i / passos), int(p0[1] + (p1[1] - p0[1]) * i / passos))
+    ab.pointer_action.pointer_up()
+    ab.perform()
+
+
+@caso("lado a lado: pegar da outra imagem e soltar nesta")
+def _():
+    desmarcar()
+    categoria(PEGAR)
+    assert espera("!document.getElementById('doador').hidden && !!window.rotulador.visorDoador.img"
+                  " && document.getElementById('doador-carregando').hidden", 60), "a outra imagem não apareceu ao lado"
+    doador = js("return document.getElementById('doador-nome').textContent")
+    assert doador and doador != sessao()["nome"], f"ao lado está a própria imagem ({doador})"
+    arrastar_tela(tela_doador(325, 205), tela_doador(628, 244))  # o nome, na doadora
+    assert espera("!!window.rotulador.clip && !document.getElementById('doador-colar').disabled", 10), "a seleção na doadora não pegou"
+    n = len(hist())
+    x0, y0 = tela_doador(470, 225)
+    arrastar_tela((x0, y0), tela(800, 1260), passos=16)  # arrasta até a imagem da direita
+    assert espera("window.rotulador.idFerramenta === 'colar' && !!window.rotulador.F.colar.solto()", 10), "soltar não colou"
+    assert esperar_previa(60), "colagem sem prévia"
+    tecla(Keys.ENTER)
+    ocioso()
+    assert len(hist()) == n + 1 and ultimo() == "colar", f"lado a lado não aplicou ({ultimo()})"
+    assert hist()[-1]["categoria"] == PEGAR, "a colagem não ficou no tipo 'pegar de outro documento'"
+    assert "usada nesta imagem" in d.find_element(By.ID, "doador-selo").text, "o selo da doadora não mudou"
+    categoria(APAGAR)
+    assert espera("document.getElementById('doador').hidden", 5), "a imagem ao lado não fechou com outro tipo"
+
+
+@caso("menus e gaveta de ferramentas")
+def _():
+    menu("Exibir", "Caber na tela")
+    menu("Selecionar", "Tudo")
+    ocioso()
+    assert sel()["pixels"] == 2480 * 3508, "Selecionar › Tudo falhou"
+    menu("Selecionar", "Desmarcar")
+    ocioso()
+    assert not sel(), "Selecionar › Desmarcar falhou"
+    ferramenta("elipse")
+    ferramenta("ret")
+
+
+@caso("apagar com preenchimento (Delete) e outra variação")
+def _():
+    categoria(APAGAR)
+    selecionar((325, 676), (440, 712))
+    n = len(hist())
+    tecla(Keys.DELETE)
+    ocioso(600)
+    assert len(hist()) == n + 1 and ultimo() == "preencher", f"Delete não apagou ({ultimo()})"
+    b = [x for x in d.find_elements(By.CSS_SELECTOR, "#barra-contexto button") if "Outra variação" in (x.get_attribute("title") or "")]
+    assert b, "a barra não oferece outra variação"
+    b[0].click()
+    ocioso(600)
+    assert len(hist()) == n + 1 and ultimo() == "preencher", "outra variação mudou o número de passos"
+
+
+@caso("Ctrl+arrastar puxa a seleção; Ctrl+X recorta e Enter apaga")
+def _():
+    categoria(COPIAR)
+    selecionar((325, 362), (446, 401))
+    ferramenta("pincel")
+    arrastar((380, 380), (800, 380), mods=(Keys.CONTROL,))
+    assert js("return window.rotulador.idFerramenta") == "transformar", "Ctrl+arrastar não puxou"
+    assert esperar_previa(120), "puxar sem prévia"
+    tecla(Keys.ENTER)
+    ocioso(600)
+    assert ultimo() == "transformar" and hist()[-1]["params"]["modo"] == "mover", f"puxar não aplicou ({ultimo()})"
+    selecionar((325, 206), (628, 244))  # o nome (a linha do nº da instalação já foi apagada pelo remendo)
+    tecla(Keys.CONTROL, "x")
+    time.sleep(0.4)
+    assert js("return window.rotulador.ferramenta.solto().recorte"), "Ctrl+X não soltou o trecho"
+    tecla(Keys.ENTER)
+    ocioso(600)
+    assert ultimo() == "preencher", f"recortar + Enter não apagou ({ultimo()})"
+
+
 for _amostra in ("auto", "documento", "margem"):
     @caso(f"preencher por similaridade: {_amostra}")
     def _(a=_amostra):
-        categoria("cidade/uf")
+        categoria(APAGAR)
         selecionar((325, 465), (700, 500))
         tecla(Keys.SHIFT, Keys.F5)
         time.sleep(0.5)
@@ -680,7 +837,7 @@ _AJ = {"brilho_contraste", "niveis", "matiz_saturacao", "desfoque", "nitidez", "
 for _aj in sorted(_AJ):
     @caso(f"ajuste: {_aj}")
     def _(a=_aj):
-        categoria("consumo/leitura")
+        categoria(APAGAR)
         if a == "matiz_saturacao":
             selecionar((40, 10), (600, 140))
         elif a == "cinza":
@@ -689,7 +846,7 @@ for _aj in sorted(_AJ):
             selecionar((310, 1190), (490, 1220))  # dentro do retângulo liso das formas: sem grão
         else:
             selecionar((325, 670), (600, 710))
-        acao_barra("Ajustes")
+        menu("Imagem", "Outros ajustes")
         Select(d.find_elements(By.CSS_SELECTOR, "#modal-corpo select")[1]).select_by_value(a)
         time.sleep(0.4)
         if a in ("brilho_contraste", "niveis", "desfoque", "nitidez", "ruido", "jpeg", "matiz_saturacao"):
@@ -704,9 +861,9 @@ for _aj in sorted(_AJ):
 
 @caso("código de barras (🎲 + aplicar + copiar linha)")
 def _():
-    categoria("codigo barras")
+    categoria(APAGAR)
     selecionar((60, 1555), (1180, 1665))
-    acao_barra("Código de barras")
+    menu("Imagem", "Código de barras")
     d.find_element(By.XPATH, "//div[@id='modal-corpo']//button[@title='Gerar código válido']").click()
     time.sleep(1)
     assert esperar_previa(60), "código de barras sem prévia"
@@ -719,9 +876,9 @@ def _():
 
 @caso("QR code (🎲 PIX)")
 def _():
-    categoria("qr code/pix")
+    categoria(APAGAR)
     selecionar((900, 900), (1150, 1150))
-    acao_barra("QR code")
+    menu("Imagem", "QR code")
     d.find_element(By.XPATH, "//button[contains(., 'PIX aleatório')]").click()
     assert esperar_previa(60), "QR sem prévia"
     botao_modal("Aplicar").click()
@@ -732,9 +889,9 @@ def _():
 if COM_IA:
     @caso("IA (Qwen) na seleção")
     def _():
-        categoria("data")
+        categoria(APAGAR)
         selecionar((325, 620), (560, 655))
-        acao_barra("Editar a seleção com IA")
+        menu("Imagem", "Editar a seleção com IA")
         espera("document.querySelector('#modal-corpo') && /online|OFFLINE/.test(document.querySelector('#modal-corpo').innerText)", 20)
         txt = d.find_element(By.CSS_SELECTOR, "#modal-corpo textarea")
         txt.clear()
@@ -747,7 +904,7 @@ if COM_IA:
 @caso("camadas: nova, duplicar, mesclar, opacidade, ocultar, renomear, excluir")
 def _():
     desmarcar()
-    categoria("bairro")
+    categoria(COPIAR)
     n = len(sessao()["camadas"])
     d.find_element(By.ID, "cam-nova").click()
     ocioso()
@@ -786,6 +943,49 @@ def _():
     assert len(sessao()["camadas"]) == n, "excluir falhou"
 
 
+@caso("Ctrl+J camada via cópia (Mover leva) e Ctrl+Shift+J via recorte, no Fundo")
+def _():
+    desmarcar()
+    categoria(COPIAR)
+    d.find_element(By.CSS_SELECTOR, '#lista-camadas li[data-cam="fundo"]').click()
+    ocioso()
+    da_pessoa = lambda: [c for c in sessao()["camadas"] if not c["auto"]]
+    n, n_cam = len(hist()), len(da_pessoa())
+    selecionar((900, 1000), (1100, 1080))
+    tecla(Keys.CONTROL, "j")
+    ocioso()
+    assert len(da_pessoa()) == n_cam + 1, "Ctrl+J não criou a camada"
+    nova = next((c for c in da_pessoa() if c["ativa"]), None)
+    assert nova, "a camada nova não ficou ativa"
+    assert ultimo() == "Camada via cópia", f"histórico: {ultimo()}"
+    assert not sel(), "a seleção não saiu depois do Ctrl+J"
+    assert js("return !!document.querySelector('#lista-camadas li[data-cam=\"' + arguments[0] + '\"].ativa')", nova["id"]), \
+        "a camada nova não aparece ativa no painel"
+    y0 = nova["bbox"][1]
+    tecla("v")
+    assert js("return window.rotulador.idFerramenta") == "transformar", "V não escolheu o Mover"
+    arrastar((1000, 1040), (1000, 1240))
+    ocioso()
+    movida = next(c for c in sessao()["camadas"] if c["id"] == nova["id"])
+    assert movida["bbox"][1] - y0 > 300, f"o Mover não levou a camada ({y0} → {movida['bbox'][1]})"
+    tecla(Keys.CONTROL, "z")
+    ocioso()
+    tecla(Keys.CONTROL, "z")
+    ocioso()
+    assert len(hist()) == n and len(da_pessoa()) == n_cam, "Ctrl+Z não desfez o mover e a camada via cópia"
+    selecionar((900, 1000), (1100, 1080))
+    tecla(Keys.CONTROL, Keys.SHIFT, "j")
+    ocioso()
+    assert ultimo() == "Camada via recorte" and len(hist()) == n + 1, f"Ctrl+Shift+J: {ultimo()} ({len(hist()) - n} passos)"
+    assert len(da_pessoa()) == n_cam + 1 and not sel(), "Ctrl+Shift+J não criou a camada (ou não desmarcou)"
+    tecla(Keys.CONTROL, "z")
+    ocioso()
+    assert len(hist()) == n and len(da_pessoa()) == n_cam, "um Ctrl+Z não desfez o recorte inteiro"
+    tecla(Keys.CONTROL, "y")  # refaz (a pilha de refazer fica vazia para os casos seguintes)
+    ocioso()
+    assert len(hist()) == n + 1 and not sessao()["refazer"], "Ctrl+Y não refez o recorte"
+
+
 @caso("desfazer/refazer em sequência")
 def _():
     n = len(hist())
@@ -797,6 +997,61 @@ def _():
         tecla(Keys.CONTROL, "y")
         ocioso()
     assert len(hist()) == n, "Ctrl+Y x3 falhou"
+
+
+@caso("atalhos do Photoshop: números, dureza, Alt+Backspace, Ctrl+Shift+D, Tab, Ctrl+H, Ctrl+L")
+def _():
+    categoria(APAGAR)
+    tecla("b")
+    tecla("5")
+    assert abs(js("return window.rotulador.opcoes('pincel').opacidade") - 0.5) < 1e-6, "5 não deu 50% de opacidade"
+    time.sleep(0.6)  # "5" e "0" rápidos seriam 50%, como no Photoshop
+    tecla("0")
+    assert js("return window.rotulador.opcoes('pincel').opacidade") == 1, "0 não deu 100%"
+    d0 = js("return window.rotulador.opcoes('pincel').dureza")
+    tecla(Keys.SHIFT, "[")
+    assert js("return window.rotulador.opcoes('pincel').dureza") < d0, "Shift+[ não amoleceu o pincel"
+    tecla(Keys.SHIFT, "]")
+    selecionar((900, 1000), (1000, 1050))
+    n = len(hist())
+    tecla(Keys.ALT, Keys.BACKSPACE)
+    ocioso()
+    assert len(hist()) == n + 1 and ultimo() == "cor_na_selecao", f"Alt+Backspace não preencheu ({ultimo()})"
+    desmarcar()
+    assert not sel(), "Ctrl+D não desmarcou"
+    tecla(Keys.CONTROL, Keys.SHIFT, "d")
+    ocioso()
+    assert sel(), "Ctrl+Shift+D não reselecionou"
+    tecla(Keys.TAB)
+    assert js("return document.body.classList.contains('sem-paineis')"), "Tab não escondeu os painéis"
+    tecla(Keys.TAB)
+    assert not js("return document.body.classList.contains('sem-paineis')"), "Tab não trouxe os painéis"
+    tecla(Keys.CONTROL, "h")
+    assert js("return window.rotulador.visor.semBordas"), "Ctrl+H não escondeu a borda"
+    tecla(Keys.CONTROL, "h")
+    tecla(Keys.CONTROL, "l")
+    time.sleep(0.5)
+    assert d.find_elements(By.CSS_SELECTOR, "#modal-corpo select")[1].get_attribute("value") == "niveis", "Ctrl+L não abriu Níveis"
+    botao_modal("Cancelar").click()
+    time.sleep(0.3)
+    desmarcar()
+
+
+@caso("histórico: clicar num passo volta até ele (como no Photoshop)")
+def _():
+    n = len(hist())
+    assert n >= 2, "poucos passos para o teste"
+    d.find_element(By.CSS_SELECTOR, f'#historico li[data-passo="{n - 2}"]').click()
+    ocioso()
+    assert len(hist()) == n - 2 and len(sessao()["refazer"]) == 2, "o clique não voltou dois passos"
+    assert len(d.find_elements(By.CSS_SELECTOR, "#historico li.futuro")) == 2, "os passos à frente não ficaram apagados"
+    d.find_element(By.CSS_SELECTOR, f'#historico li[data-passo="{n}"]').click()
+    ocioso()
+    assert len(hist()) == n and not sessao()["refazer"], "o clique não avançou de volta"
+    assert d.find_element(By.CSS_SELECTOR, "#historico li.atual").get_attribute("data-passo") == str(n)
+    assert not [c for c in sessao()["camadas"] if c["auto"] and js(
+        "return !!document.querySelector('#lista-camadas li[data-cam=\"' + arguments[0] + '\"]')", c["id"])], \
+        "uma camada interna apareceu no painel"
 
 
 @caso("ver original (\\) e máscara (K)")
@@ -818,7 +1073,7 @@ for _fmt in ("jpeg", "webp", "tiff", "pdf", "png"):
     @caso(f"salvar em {_fmt}")
     def _(f=_fmt):
         if not sessao()["pode_salvar"]:
-            categoria("valor")
+            categoria(APAGAR)
             tecla("b")
             arrastar((900, 1420), (1100, 1420))
             ocioso()
@@ -829,35 +1084,25 @@ for _fmt in ("jpeg", "webp", "tiff", "pdf", "png"):
         d.find_element(By.ID, "btn-salvar").click()
         ocioso(300)
         assert sessao()["historico"] == [], "não salvou (histórico não zerou)"
-        anot = sorted((PASTA / "saida" / "treino" / "anotacoes").glob("*.json"))
-        a = json.loads(anot[-1].read_text(encoding="utf-8"))
+        anot = max((PASTA / "saida" / "treino" / "anotacoes").glob("*.json"), key=lambda p: p.stat().st_mtime)
+        a = json.loads(anot.read_text(encoding="utf-8"))
         assert a["formato"] == f, f"formato salvo {a['formato']}"
 
 
 @caso("documentos: PageDown, foto EXIF, PDF, outro split")
 def _():
-    tecla(Keys.PAGE_DOWN)
-    ocioso()
-    for li in d.find_elements(By.CSS_SELECTOR, "#lista-docs li"):
-        if "conta_04" in li.text:
-            li.click()
-            break
-    ocioso()
+    abrir("conta_04")
     s = sessao()
     assert (s["largura"], s["altura"]) == (2480, 3508), f"foto EXIF com tamanho {s['largura']}x{s['altura']}"
     d.find_element(By.CSS_SELECTOR, '[data-sp="teste"]').click()
     ocioso()
-    for li in d.find_elements(By.CSS_SELECTOR, "#lista-docs li"):
-        if "pdf" in li.text:
-            li.click()
-            break
-    ocioso()
+    abrir("pdf")
     assert "pdf" in sessao()["nome"], "PDF não abriu"
 
 
 @caso("descartar com confirmação")
 def _():
-    categoria("valor")
+    categoria(APAGAR)
     tecla("b")
     arrastar((300, 1000), (500, 1000))
     ocioso()

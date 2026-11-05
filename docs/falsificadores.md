@@ -234,7 +234,7 @@ gerador. Desde 11/10/2026, em **85%** das versões (`gerador.HUMANO_PROB`; recei
 | apagar | Content-Aware Fill, cor sólida, fundo clonado, carimbo, pincel de recuperação | 61,7 / 9,6 / 9,5 / 10,4 / 8,8% | `patchmatch`, `chapado`, `carimbo`, `recuperar` (novo: textura de um retalho vizinho no tom do entorno) |
 | suavização do texto | Nítida, Precisa, Forte, Suave, Nenhuma | uma delas em 100% | rasterizadores `ps_nitida`, `ps_precisa`, `ps_forte`, `ps_suave`, `aliasado` |
 | cor | conta-gotas no texto original / cor escura "segura" | 88,4 / 11,6% | um ponto (ou 3x3, 5x5) no miolo do traço; a segura só em tinta preta, perto do tom dela |
-| tamanho e posição | ajusta no olho | ±5% de escala em 43,5% | escala ±1,5% × capricho, camada no pixel inteiro, ±1 px na linha de base, ±2 px no começo |
+| tamanho e posição | ajusta no olho | ±5% de escala em 43,5% | desde 05/11/2026 o tamanho é o do texto antigo (escala 1; antes ±1,5% × capricho) e o traço é corrigido até casar; a posição fica no olho: camada no pixel inteiro, ±1 px na linha de base, ±2 px no começo. A conferência da fonte (`tecnicas._conferir_fonte`) descarta o que sair com a altura das letras fora de ±4% (ou ±1 px) ou o traço fora de ±10% |
 | nitidez | desfoca até parecer o scan, deixa nítido, ou Desfoque Gaussiano na seleção | 11,9% gaussiano | `casada` 50%, `nitida` 30%, `manual` 20% (raio = desfoque do documento × o excesso da pessoa, 0,9–1,4, até 1 px) |
 | retoques | aguçar, Adicionar Ruído, Desfoque de Superfície | 12,7 / 10,5 / 7,6% | fixos na versão; desfoque de movimento, brilho externo, traçado e sombra projetada ficam de fora (efeitos de cartaz, visíveis à toa num campo de conta) |
 | salvar | JPEG do editor, PNG, mesmas tabelas da origem | estimado 55/25/20% (origem JPEG) | Photoshop (presets do Pillow: "Salvar como" e "Salvar para Web"), GIMP, Paint, app, Photopea |
@@ -264,8 +264,19 @@ sintéticas, olhadas uma a uma.
 
 Até aqui o FSTS entrava em pedaços: as frequências da **substituição** (tabela 12) no operador humano e as do disfarce
 em `_DISFARCES`. Agora o método do artigo está inteiro em `rotulador/fsts.py`, como um **perfil do gerador**
-(`{"perfil": "fsts"}`) e um **método da tela Gerar fraudes** ("Artigo FSTS (NeurIPS 2025)"). O perfil profissional
+(`{"perfil": "fsts"}`) e um **método da tela Gerar fraudes** ("FSTS (artigo do NeurIPS 2025)"). O perfil profissional
 continua sendo o padrão.
+
+**Desde 05/11/2026 o FSTS tem dois modos** (`fsts.modo`):
+- **"pessoa"** (o padrão, `gerador._fsts_pessoa`) escolhe os campos como uma pessoa de verdade. Pelo detector de
+  campos, o nome e/ou o endereço do cliente, em todo lugar onde aparecem (`_ocorrencias`) e com o mesmo valor novo
+  (`editar_campos`). A rua nova vem com o bairro e o CEP dela; a cidade muda junto quando a rua é de outra. Os
+  valores são da região da receita (`fsts.regiao`, padrão CE, ver o README). Cada campo sai numa das três categorias
+  do editor ligadas (`fsts.categorias` → `gerador.FSTS_PESSOA`), e o tipo do artigo é o da família da técnica
+  (cópia interna, colagem, substituição).
+- **"artigo"** é a eq. 8 à risca, descrita abaixo.
+
+Nos dois modos, o processamento principal de cada região sai das tabelas, e o pós-processamento não é aplicado.
 
 | Peça do artigo | Onde está o quê |
 |---|---|
@@ -299,10 +310,16 @@ Como cada tipo vira as técnicas daqui (`gerador.TECNICAS_FSTS`):
 O processamento principal entra pelas técnicas:
 
 - a extração do texto (Varinha Mágica ou Canais/Níveis) cola só a tinta; sem ela, a região inteira;
-- sem o passo "escala", o recorte vai no tamanho de origem;
-- a rotação de 0–5° gira o recorte colado, e a de −5° a 5° gira o texto escrito;
+- sem o passo "escala", o recorte vai no tamanho de origem (só no modo "artigo");
+- a rotação de 0–5° gira o recorte colado, e a de −5° a 5° gira o texto escrito (só no modo "artigo");
 - a ferramenta de apagar (preenchimento sensível ao conteúdo, cor sólida, fundo clonado, Carimbo, Pincel de
-  Recuperação), a suavização do texto, o conta-gotas ou a cor segura e a escala ±5% vão pelo operador humano.
+  Recuperação), a suavização do texto e o conta-gotas ou a cor segura vão pelo operador humano. A "escala ajustada à
+  região" deixa o texto novo do tamanho do antigo (até 05/11/2026 era ±5%, faixa nossa).
+
+No modo **"como uma pessoa"** (05/11/2026) o texto novo é igual ao antigo em tamanho, traço e inclinação: a escala do
+recorte é sempre ajustada, nada é girado além da linha e a conferência da fonte (`tecnicas._conferir_fonte`,
+`rotulador/fidelidade.py`) descarta a edição com a altura das letras fora de ±4% (ou ±1 px) ou o traço fora de ±10%.
+No modo "artigo" a conferência só mede (o rótulo leva a medida).
 
 O texto novo sai nítido, como foi digitado. A conferência por OCR vale para o texto escrito.
 

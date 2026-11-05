@@ -28,12 +28,14 @@ NOMES = {"treino": "MARIA DOS SANTOS SILVA", "teste": "LUCAS PINTO GOMES", "vali
 class BaseApp(unittest.TestCase):
     """Um documento sintético por split, o OCR no cache e o app."""
 
+    CEP = "30123-456"  # o CEP impresso nos documentos (o padrão é de Belo Horizonte)
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.dados, self.saida = self.tmp / "dados", self.tmp / "saida"
         linhas = {}
         for i, sp in enumerate(SPLITS):
-            img, linhas[sp] = documento(nome=NOMES[sp], semente=i + 1)
+            img, linhas[sp] = documento(nome=NOMES[sp], semente=i + 1, cep=self.CEP)
             (self.dados / sp).mkdir(parents=True)
             Image.fromarray(img).save(self.dados / sp / f"conta_{sp}.png")
         self.reg = Registro(self.dados, self.saida, log=lambda *_: None)

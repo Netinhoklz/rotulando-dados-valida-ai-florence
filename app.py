@@ -5,7 +5,9 @@ Rode com:  python app.py
   --saida PASTA     saída, separada por split                (padrão: a da pasta escolhida, ou ./saida)
   --dpi N           resolução da rasterização de PDF         (padrão: 200)
   --porta N         porta HTTP                               (padrão: 5000 ou $PORT)
-  --sem-navegador   não abre o navegador
+  --navegador       abre no navegador (padrão: numa janela própria do Windows, onde os atalhos do Photoshop
+                    chegam todos ao editor; sem o pywebview instalado, abre no navegador)
+  --sem-navegador   só o servidor, sem janela nem navegador (lançador, testes)
 
 O servidor recusa subir se achar o mesmo documento em dois splits.
 """
@@ -19,6 +21,7 @@ import json
 import os
 import random
 import re
+import socket
 import sys
 import threading
 import time
@@ -36,6 +39,7 @@ except ModuleNotFoundError as erro:
 
 from rotulador import (automatico, canal, campos as mod_campos, catalogo, documentos, entradas, exportar, falsificador,
                        fsts, identificar_fonte, ocr, perito, planilha, qualidade, selecao)
+from rotulador import janela
 from rotulador.contexto import Contexto, cache_ocr
 from rotulador.equipe import ANONIMO, Equipe, Travas, operador_da_requisicao, progresso
 from rotulador.gerador import (CATEGORIAS_FOCO, PESOS_CATEGORIA, Gerador, Plano, _perito_por_edicao, aplicar_receita,
@@ -288,8 +292,11 @@ def criar_app(registro: Registro, raiz_saida: Path, categorias: list[dict]) -> F
     @app.get("/api/doadores")
     def api_doadores():
         s = sessao(request.args.get("id", ""))
-        return jsonify([{"id": it.doc, "nome": it.nome, "largura": it.largura, "altura": it.altura}
-                        for it in registro.por_split[s.item.split] if it.doc != s.item.doc])
+        sp = s.item.split
+        usos, cont = exportar.usos_como_doador(raiz_saida, sp), contagem_versoes(sp)
+        return jsonify([{"id": it.doc, "nome": it.nome, "largura": it.largura, "altura": it.altura,
+                         "usos": usos.get(it.doc, 0), "versoes": cont.get(it.doc, 0)}
+                        for it in registro.por_split[sp] if it.doc != s.item.doc])
 
     @app.post("/api/abrir")
     def api_abrir():
@@ -406,6 +413,19 @@ def criar_app(registro: Registro, raiz_saida: Path, categorias: list[dict]) -> F
         exigir_trava(s)
         return recorte_composicao(s, s.refazer())
 
+    @app.post("/api/historico/ir")
+    def api_historico_ir():
+        """O clique num estado do painel Histórico (como no Photoshop): ``passo`` = quantos passos ficam aplicados
+        (0 = a imagem como abriu); os passos à frente continuam lá até a próxima edição."""
+        d = corpo()
+        s = sessao(d.get("id", ""))
+        exigir_trava(s)
+        try:
+            n = int(d.get("passo"))
+        except (TypeError, ValueError):
+            raise ErroOperacao("passo do histórico inválido")
+        return recorte_composicao(s, s.ir_para(n))
+
     @app.post("/api/camada")
     def api_camada():
         d = corpo()
@@ -415,11 +435,27 @@ def criar_app(registro: Registro, raiz_saida: Path, categorias: list[dict]) -> F
         kw = {k: d[k] for k in ("nome", "categoria", "descricao", "visivel", "opacidade", "posicao") if k in d}
         if acao == "mover":  # deslocar o conteúdo da camada (ferramenta Mover sem seleção)
             return recorte_composicao(s, s.deslocar_camada(d.get("camada"), d.get("dx", 0), d.get("dy", 0)))
+        if acao in ("via_copia", "via_recorte"):  # Ctrl+J / Ctrl+Shift+J: "Camada via cópia" / "via recorte"
+            with s.lock:
+                sel = selecao.rasterizar(d["selecao"], s.atual) if d.get("selecao") else None
+                res, params = None, dict(d.get("preencher") or {})
+                no_fundo = s.ativa not in s.ordem or s.camadas[s.ativa].auto
+                if acao == "via_recorte" and no_fundo and sel is not None and not sel.vazia:
+                    with geradores.usando(split=s.item.split):  # o buraco no Fundo: o apagar com preenchimento
+                        res = executar("preencher", s.atual, params, sel, base=s.base, documento=contexto(s))
+                return recorte_composicao(s, s.camada_via(sel, acao == "via_recorte", d.get("categoria"), res, params))
         return recorte_composicao(s, s.acao_camada(acao, d.get("camada") or None, **kw))
 
     @app.get("/api/camada_mini/<doc>/<cid>.png")
     def api_camada_mini(doc, cid):
         s = sessao(doc)
+        if cid == "fundo":  # o Fundo com as edições feitas direto nele (a imagem como está)
+            with s.lock:
+                esc = min(1.0, 96 / max(s.H, s.W))
+                mini = cv2.resize(s.atual, (max(1, int(s.W * esc)), max(1, int(s.H * esc))), interpolation=cv2.INTER_AREA)
+            r = send_file(io.BytesIO(png(mini)), mimetype="image/png")
+            r.headers["Cache-Control"] = "no-store"
+            return r
         cam = s.camadas.get(cid)
         if cam is None:  # pedido atrasado de uma camada que acabou de sumir (salvar, desfazer): imagem vazia
             r = send_file(io.BytesIO(png(np.zeros((1, 1, 4), np.uint8))), mimetype="image/png")
@@ -788,9 +824,12 @@ def criar_app(registro: Registro, raiz_saida: Path, categorias: list[dict]) -> F
                 "revisao": l.get("revisao") or "pendente", "revisor": l.get("revisor", ""),
                 "falsificador": l.get("falsificador", ""), "motivo": l.get("motivo", ""),
                 "pericia": l.get("pericia") or "auto", "edicoes": []})
-            v["edicoes"].append({k: l[k] for k in ("ordem", "categoria", "tecnica", "nome_tecnica", "familia", "nivel",
-                                                  "granularidade", "texto_antigo", "texto_novo", "descricao",
-                                                  "pixels", "bbox")})
+            v["edicoes"].append({**{k: l[k] for k in ("ordem", "categoria", "tecnica", "nome_tecnica", "familia", "nivel",
+                                                     "granularidade", "texto_antigo", "texto_novo", "descricao",
+                                                     "pixels", "bbox")},
+                                 # a fidelidade do texto novo (altura e grossura ÷ o antigo) e a fonte, para a revisão
+                                 **{k: l.get(k) or "" for k in ("fid_altura", "fid_grossura", "fid_fora",
+                                                               "semelhanca_fonte", "fornecedores")}})
         return sorted(por.values(), key=lambda v: (v["data"], v["nome"]), reverse=True)
 
     @app.get("/api/catalogo/resumo")
@@ -1034,6 +1073,7 @@ def criar_app(registro: Registro, raiz_saida: Path, categorias: list[dict]) -> F
         for sp in SPLITS:
             if (raiz_saida / sp / "anotacoes").is_dir():
                 exportar.reconstruir_indices(raiz_saida, sp)
+        exportar.sincronizar_treinamento(raiz_saida)
         planilha.agendar(raiz_saida, registro, ids_categoria)
         return jsonify(ok=True)
 
@@ -1161,7 +1201,8 @@ def main() -> None:
     ap.add_argument("--porta", type=int, default=int(os.environ.get("PORT", 5000)))
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--categorias", default=str(RAIZ / "config" / "categorias.json"))
-    ap.add_argument("--sem-navegador", action="store_true")
+    ap.add_argument("--sem-navegador", action="store_true", help="só o servidor")
+    ap.add_argument("--navegador", action="store_true", help="abre no navegador em vez da janela do Windows")
     a = ap.parse_args()
     lembrada = pasta_lembrada() if a.dados is None and a.saida is None else {}
     if lembrada.get("dados") and Path(lembrada["dados"]).is_dir() and lembrada.get("saida"):
@@ -1191,6 +1232,8 @@ def main() -> None:
         app = criar_app(r, r.raiz_saida, categorias)
         app.config["TROCAR_PASTA"] = trocar_pasta
         despachante.app = app
+        # a pasta do treino do modelo (saida/_treinamento) recebe as versões salvas antes de ela existir
+        threading.Thread(target=exportar.sincronizar_treinamento, args=(r.raiz_saida,), daemon=True).start()
 
     def trocar_pasta(dados: Path) -> dict:
         """A pasta escolhida na tela (POST /api/pasta/usar): registro novo (ErroVazamento: fica a de antes) e app novo."""
@@ -1206,18 +1249,43 @@ def main() -> None:
     montar(reg)
     endereco = f"http://{a.host}:{a.porta}"
     print(f"Rotulador rodando em {endereco}  (Ctrl+C para sair)")
-    if not a.sem_navegador:
-        threading.Timer(1.0, webbrowser.open, [endereco]).start()
-    try:
-        try:  # servidor de produção (várias pessoas ao mesmo tempo); sem ele, o do Flask
-            from waitress import serve
-        except ImportError:
-            from werkzeug.serving import run_simple
-            run_simple(a.host, a.porta, despachante, threaded=True)
-        else:
-            serve(despachante, host=a.host, port=a.porta, threads=12, channel_timeout=3600)
-    except OSError as erro:
-        sys.exit(f"Não consegui usar a porta {a.porta} ({erro}). Tente: python app.py --porta 5001")
+    erro_porta: list[OSError] = []
+
+    def servir() -> None:
+        try:
+            try:  # servidor de produção (várias pessoas ao mesmo tempo); sem ele, o do Flask
+                from waitress import serve
+            except ImportError:
+                from werkzeug.serving import run_simple
+                run_simple(a.host, a.porta, despachante, threaded=True)
+            else:
+                serve(despachante, host=a.host, port=a.porta, threads=12, channel_timeout=3600)
+        except OSError as erro:
+            erro_porta.append(erro)
+
+    def sair_se_falhou() -> None:
+        if erro_porta:
+            sys.exit(f"Não consegui usar a porta {a.porta} ({erro_porta[0]}). Tente: python app.py --porta 5001")
+
+    if a.sem_navegador or a.navegador or not janela.disponivel():
+        if not a.sem_navegador:
+            if not a.navegador:
+                print("aviso: sem o pywebview (pip install pywebview), o editor abre no navegador, onde alguns atalhos do"
+                      " Photoshop (Ctrl+Tab, Ctrl+W, Ctrl+R, F5) são do navegador")
+            threading.Timer(1.0, webbrowser.open, [endereco]).start()
+        servir()
+        sair_se_falhou()
+        return
+    # janela do Windows: o servidor roda ao lado e acaba junto quando a última janela fecha
+    threading.Thread(target=servir, daemon=True).start()
+    for _ in range(100):  # espera o servidor responder (ou falhar) antes de abrir a janela
+        sair_se_falhou()
+        try:
+            with socket.create_connection((a.host, a.porta), timeout=0.2):
+                break
+        except OSError:
+            time.sleep(0.1)
+    janela.abrir(endereco)
 
 
 if __name__ == "__main__":

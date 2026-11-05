@@ -13,7 +13,8 @@ faz, nas frequências que o FSTS (NeurIPS 2025, 67 pessoas, tabela 12: "Replacem
 - **ferramenta de apagar**: preenchimento com reconhecimento de conteúdo 61,7%, cor sólida 9,6%, fundo clonado
   9,5%, carimbo 10,4%, pincel de recuperação 8,8%;
 - **texto**: suavização do Photoshop (nenhuma, nítida, precisa, forte, suave), cor pelo conta-gotas (88,4%) ou uma
-  cor escura "segura" (11,6%), tamanho e posição ajustados no olho (inteiro de pixel, ± 1 px; ±5% de escala);
+  cor escura "segura" (11,6%), posição ajustada no olho (inteiro de pixel, ± 1 px). O tamanho e a grossura do traço
+  são os do texto antigo, sem erro: a pessoa iguala até ficar idêntico (05/11/2026; antes, ±5% de escala no olho);
 - **nitidez**: a pessoa desfoca o texto até parecer o do scan, deixa nítido como digitou, ou passa um Desfoque
   Gaussiano na seleção inteira (11,9%; o FSTS mediu 0,5–1,2 px em fotos de cena; num documento o raio acompanha o
   desfoque dele, com o excesso de cada pessoa, até 1 px);
@@ -115,7 +116,7 @@ def sortear(rng: random.Random, cfg: dict | None, origem_jpeg: bool) -> dict | N
            "antialias": _escolher(rng, ANTIALIAS), "cor": _escolher(rng, COR),
            "amostra": rng.choice((1, 3, 5)),  # tamanho da amostra do conta-gotas (ponto, 3x3, 5x5)
            "margem": [round(rng.uniform(0.08, 0.35), 3) for _ in range(4)],  # folga da seleção (fração da altura)
-           "capricho": round(rng.uniform(0.4, 1.4), 2),  # quanto erra no olho (posição, tamanho, desfoque)
+           "capricho": round(rng.uniform(0.4, 1.4), 2),  # quanto erra no olho (posição e desfoque; o tamanho, não)
            "nitidez": nitidez, "retoques": retoques, "salvar": salvar}
     if nitidez == "manual":  # quanto a pessoa passa do ponto ao desfocar a seleção (1 = igual ao documento)
         hab["excesso"] = round(rng.uniform(0.9, 1.4), 2)
@@ -259,11 +260,12 @@ def selecionar(velho: np.ndarray, tinta: np.ndarray, forma: str, margem, h: floa
 
 # ------------------------------------------------------------------------------------------- texto
 def texto(h: dict, rng: random.Random, desfoque_scan: float, altura: float) -> dict:
-    """Como a pessoa ajusta o texto novo NESTE campo: escala (no olho), deslocamento da linha de base e do começo
-    (inteiros: a camada de texto fica no pixel), suavização, desfoque e rotação. ``h["escala"]`` e ``h["rotacao"]``
-    (graus), quando vêm (o FSTS: rotulador.fsts.habito_humano), valem no lugar da escala no olho e da rotação zero."""
+    """Como a pessoa ajusta o texto novo NESTE campo: deslocamento da linha de base e do começo (inteiros: a camada de
+    texto fica no pixel), suavização, desfoque e rotação. O tamanho é o do texto antigo (escala 1): ela iguala até a
+    altura das letras ficar a mesma. ``h["escala"]`` e ``h["rotacao"]`` (graus), quando vêm (o FSTS:
+    rotulador.fsts.habito_humano), valem no lugar da escala 1 e da rotação zero."""
     k = float(h.get("capricho", 1.0))
-    escala = float(h["escala"]) if "escala" in h else 1.0 + float(np.clip(rng.gauss(0.0, 0.015 * k), -0.05, 0.05))
+    escala = float(h["escala"]) if "escala" in h else 1.0
     # o clique que põe o texto erra alguns pixels de TELA; as setas (1 px, 10 px com Shift) empurram até parecer
     # alinhado: sobra o erro que a pessoa não vê naquele zoom (gesto.setas)
     tela = 1.0 / max(0.25, float(h.get("zoom") or 1.0))

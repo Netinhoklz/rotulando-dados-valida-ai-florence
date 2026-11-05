@@ -15,3 +15,6 @@ teste_ia_saida*.png
 config/pasta_escolhida.json
 # modelos do OCR, baixados do Hugging Face na primeira leitura (rotulador/ocr.py)
 modelos/
+
+# perfil da janela do Windows (pywebview/WebView2): o que a página guarda entre execuções
+.janela/

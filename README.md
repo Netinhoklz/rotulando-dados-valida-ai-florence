@@ -22,7 +22,8 @@ python -m venv .venv
 ### OCR
 
 O texto do documento é lido pelo **detector PP-OCRv6 small** + **reconhecedor latino PP-OCRv5 mobile** (ONNX
-oficiais da PaddlePaddle no Hugging Face), em CPU, pelo `rapidocr_onnxruntime` (só o detector e o reconhecedor são
+oficiais da PaddlePaddle, baixados pelo próprio Python da conta dela no **ModelScope**, numa revisão fixa e conferidos
+pelo sha256; nada vem do Hugging Face), em CPU, pelo `rapidocr_onnxruntime` (só o detector e o reconhecedor são
 trocados; sem o classificador 0/180°, que virava a linha digitável de cabeça para baixo). Lê acentos, cedilha e
 espaços ("JOSÉ CARLOS RIBEIRO", "MÊS REFERÊNCIA: AGO/2026") e a caixa de cada linha cobre a tinta toda.
 
@@ -54,8 +55,13 @@ número sublinhado vira LaTeX) e o *spotting* de uma página inteira passou de 1
 
 ## O editor (a página principal)
 
-Usa-se como o Photoshop; o visual (cinzas neutros, painéis com aba, dicas na barra de status) segue o
-[Graphite](https://github.com/GraphiteEditor/Graphite). No alto, os **menus** (Arquivo, Editar, Selecionar, Camada,
+Usa-se como o Photoshop (os atalhos são os dele); o visual segue o do [Graphite](https://github.com/GraphiteEditor/Graphite)
+(código MIT/Apache-2.0): os mesmos cinzas (#111 abas e campos, #222 vãos e visor, #333 painéis, #444 botões), a
+fonte Source Sans Pro (em `static/fontes/`, licença SIL OFL 1.1), controles de 24 px com cantos de 2 px, painéis com
+aba arredondada, a ferramenta ativa e o botão principal em claro com o desenho escuro, e o azul só no que é desenhado
+sobre a imagem. Os **ícones** (`static/icones.js`) são nossos, desenhados no estilo dos do Graphite (dois tons, grade
+de 24 px): os do Graphite são proprietários ("Graphite Branding License": proibido copiar ou usar fora do programa
+oficial), então nenhum foi copiado. No alto, os **menus** (Arquivo, Editar, Selecionar, Camada,
 Imagem, Exibir, Ajuda), com os atalhos ao lado de cada item. Embaixo deles, a **barra de opções** da ferramenta ativa
 e o zoom. À esquerda, as **ferramentas em grupos**: o botão mostra a última usada do grupo, e o clique direito (ou
 segurar o botão) abre as outras. No centro, o documento. À direita, só três painéis. Na **barra de status**, o que
@@ -75,6 +81,12 @@ uma barra de tarefas (como a barra contextual do Photoshop):
   arrastar. Em **outra imagem do mesmo split**, ele vem do original daquela imagem, só no formato da seleção
   (laço, elipse, varinha), nas mesmas coordenadas. Colar numa imagem de outro split é recusado: misturaria os
   splits. `Ctrl+Shift+V` escolhe o trecho de outro documento numa lista.
+- **Lado a lado** (com o tipo *pegar de outro documento*): outra imagem do mesmo split aparece à esquerda da que
+  você edita, de preferência uma que **ainda não serviu de doadora** em nenhuma versão salva do split (o selo diz
+  "ainda não usada", "usada nesta imagem" ou em quantas versões já foi usada; ‹ › trocam de doadora). Selecione o
+  trecho nela (retângulo ou laço) e **arraste-o até a imagem da direita**: ele é colado onde você soltar, solto para
+  ajustar, e `Enter` aplica. Duplo clique na seleção, **Mesmo lugar** ou `Ctrl+V` colam nas mesmas coordenadas.
+  Fechar (✕) esconde a doadora; **Exibir › Outra imagem do split ao lado** a traz de volta.
 - **Apagar** (`Delete`): o selecionado some, refeito com o papel em volta (preenchimento por similaridade), sem
   diálogo. O botão do dado refaz o mesmo Apagar com outra variação. `Shift+F5` abre o preenchimento com opções.
 - **Substituir texto** (`R`) e **Ajustes** também estão na barra; **Inverter** e **Desmarcar** no fim dela.
@@ -93,7 +105,9 @@ tipo marcado, a regra continua: nada é aplicado antes de escolher.
 - **Histórico:** os passos (Puxar, Apagar com preenchimento, Colar de outro documento…), com desfazer e refazer.
 
 **Salvar** (`Ctrl+S`) grava a imagem editada, as máscaras e a anotação em `saida/<split>/`, no MESMO split da imagem
-de origem, e abre a próxima imagem ainda sem versão. Nada passa de um split para outro: a colagem de outro
+de origem, e abre a próxima imagem ainda sem versão. O dado para o treino do modelo vai também para uma pasta à parte,
+`saida/_treinamento/<split>/`: só a imagem editada (`imagens/`) e a máscara de onde foi editado (`mascaras/`), com o
+mesmo nome (ver "Saída"). Nada passa de um split para outro: a colagem de outro
 documento só aceita doador do mesmo split (o servidor recusa os outros), e a auditoria da partida recusa o mesmo
 documento em dois splits. ◀ ▶ (`PageUp`/`PageDown`) passam de imagem, e o topo diz em qual está ("3 de 40 · 1
 salva(s)"). **Gerador** (no alto, ou Arquivo › Gerador automático) abre a geração em lote (próxima seção). Na primeira vez, um tutorial curto explica o fluxo.
@@ -105,15 +119,22 @@ completa (modos exato, fácil e avançado, abaixo) fica em **▸ Opções avanç
 
 ### ▶ Gerar fraudes (um clique, padrão)
 
-- **Método**: "Edições profissionais" (padrão, abaixo) ou "Artigo FSTS (NeurIPS 2025)" (no fim desta seção).
+- **Método**: "Edições profissionais" (padrão, abaixo) ou "FSTS (artigo do NeurIPS 2025)" (no fim desta seção).
 - **Documentos**: um chip por split (vêm marcados os que têm documento sem versão); "escolher documentos…" abre
   a lista. **Versões por documento**: − / +. **O que mudar**: "Nome e endereço — às vezes também CPF, CEP, datas
   ou valores" (padrão), "Só nome e endereço" ou "Escolher campos…".
 - **Estilo das fraudes** (estilos prontos, `gerador.ESTILOS`; cada cartão diz o que faz, para que serve e o que muda
   na imagem):
   - ⭐ **Como gente de verdade** (padrão): 85% das versões editadas por um operador humano (`rotulador/humano.py`:
-    seleção em volta do texto, ferramenta de apagar, suavização do Photoshop, conta-gotas, ajuste no olho, retoques
+    seleção em volta do texto, ferramenta de apagar, suavização do Photoshop, conta-gotas, posição no olho, retoques
     e o "Salvar como" do programa, aplicado também à original); 15% com acabamento perfeito;
+
+  Em todos os estilos o texto novo sai **igual ao antigo em fonte, tamanho e traço**: a fonte é a identificada no
+  campo, a escala é 1 (o operador humano não erra o tamanho, a letra colada não é esticada) e o negrito é corrigido
+  até o traço casar. A **conferência da fonte** (`tecnicas._conferir_fonte`, `rotulador/fidelidade.py`) mede o texto
+  novo contra o antigo na imagem que sai e descarta a edição com a altura das letras fora de ±4% (ou ±1 px) ou o traço
+  fora de ±10% (o gerador tenta outra técnica); a medida vai para a anotação (`fidelidade` de cada edição) e para a
+  aba Revisar;
   - 🎯 **Perfeccionista**: só acabamento perfeito (só a tinta muda; cor, grão e desfoque do documento) — o caso mais
     difícil;
   - 🧑 **Só como pessoas**: 100% operador humano — um conjunto de teste parecido com fraude real;
@@ -142,16 +163,40 @@ completa (modos exato, fácil e avançado, abaixo) fica em **▸ Opções avanç
   "documentos": {...}}}` em `/api/gerador/iniciar` e `/api/gerador/previa`; `GET /api/gerador/estilos` lista os
   estilos; `GET /api/gerador/receita_profissional?estilo=...` mostra a mistura.
   A anotação traz `gerador.estilo` (classes, extras, técnica e granularidade de cada campo).
-- **Método "Artigo FSTS (NeurIPS 2025)"**: gera pelo método do artigo *Toward Real-world Text Image Forgery
-  Localization* (`rotulador/fsts.py`). Em cada versão, de 1 a 12 campos de texto; em cada um, o tipo (cópia interna,
-  colagem de outro documento, remoção, inserção ou substituição) e as operações do processamento principal com os
-  parâmetros, sorteados da população das tabelas 8–12. O pós-processamento das tabelas não é aplicado (o rótulo diz
-  "Pós-processamento: nenhum"). Com ele, "O que mudar" e o estilo somem da tela: o método escolhe os campos sozinho.
+- **Método "FSTS (artigo do NeurIPS 2025)"**: as operações do artigo *Toward Real-world Text Image Forgery
+  Localization* (`rotulador/fsts.py`): em cada região, o processamento principal (ferramenta de apagar, recorte com ou
+  sem o fundo, suavização do texto, conta-gotas, escala, rotação) sorteado da população das tabelas 8–12; o
+  pós-processamento das tabelas não é aplicado (o rótulo diz "Pós-processamento: nenhum"). Com ele, "O que mudar" e o
+  estilo somem da tela e aparece o bloco **FSTS**, com dois jeitos:
+  - **Como uma pessoa** (padrão): o que uma pessoa de verdade edita num comprovante. O detector de campos diz qual é
+    qual, e cada versão troca o **nome**, o **endereço** ou os dois, do cliente (o CPF da empresa e o endereço do
+    emissor ficam), em todos os lugares onde aparecem e com o mesmo valor novo. A **rua nova** vem com o bairro e o
+    CEP dela (a mesma linha da base de lugares); quando só o **número** da casa muda, o CEP e o bairro ficam. O CPF
+    do cliente muda junto com o nome em 15% das versões.
+    - **Categorias** (cada campo sai numa das marcadas, com a técnica dela): *copiar e colar* (o valor novo montado
+      com as letras do próprio documento, ou uma letra trocada por outra dele), *pegar de outro documento* (o campo,
+      o bloco do endereço ou uma letra colados de outro documento do mesmo split) e *apagar e substituir* (apagado e
+      reescrito na mesma fonte, inteiro ou só um trecho, como o sobrenome). O nome sai inteiro em 70% das vezes; o
+      endereço, inteiro em 50%, só um pedaço em 30% e um caractere em 20%.
+    - **Nomes e endereços novos do Ceará** (padrão): os nomes pesam como no Ceará (FRANCISCO, FRANCISCA, ANTÔNIA,
+      RAIMUNDO; SOUSA, LIMA, ARAÚJO, pelo Censo do IBGE e pelas candidaturas do TSE, em
+      `config/vocabulario/nomes_por_uf.tsv.gz`) e as ruas, bairros e CEPs são reais dos 184 municípios de lá (CNEFE
+      2022: 14.367 ruas, 14.741 bairros). O endereço só vai para o Ceará quando o documento já é de lá (pela cidade
+      ou pelo CEP) ou quando a linha da cidade foi achada e muda junto; senão fica na cidade do documento (rua do
+      Ceará com o CEP e a cidade de outro estado seria a incoerência que a pessoa evita). "do Brasil inteiro" usa a
+      base do país.
+  - **Como o artigo**: a eq. 8 à risca, de 1 a 12 campos de texto quaisquer, com o tipo (cópia interna, colagem de
+    outro documento, remoção, inserção ou substituição) sorteado em cada um.
+
   Detalhes em [docs/falsificadores.md](docs/falsificadores.md#4d-o-método-de-geração-do-fsts-inteiro-29102026).
-  Na API é outro perfil: `{"receita": {"perfil": "fsts", "variacoes": 3, "documentos": {...}}}`.
-  `"fsts": {"tipos": {"replacement": 2, "removal": 1}}` muda o peso dos tipos (o tipo que não vem fica de fora), e
-  `"categorias": ["nome", ...]` restringe os campos. A anotação traz `gerador.fsts` (regiões pedidas e feitas); cada
-  edição traz `fsts` (tipo, operações e parâmetros).
+  Na API é outro perfil: `{"receita": {"perfil": "fsts", "variacoes": 3, "documentos": {...}}}`, com
+  `"fsts": {"modo": "pessoa", "categorias": {"copiar e colar": 1, "apagar e substituir": 1}, "regiao": "CE"}` (a
+  categoria que não vem fica de fora; `"regiao": ""` = o país) ou `"fsts": {"modo": "artigo", "tipos":
+  {"replacement": 2, "removal": 1}}` (o peso dos tipos; o que não vem fica de fora; `"categorias": ["nome", ...]`
+  restringe os campos). A anotação traz `gerador.fsts` (modo, classes da versão, região e, de cada região, o campo,
+  a técnica, o tipo do artigo e a categoria do editor); cada edição traz `fsts` (tipo, operações e parâmetros), e o
+  `categorias.csv` do split, a categoria de cada versão. Os pesos regionais refazem-se com
+  `ferramentas\construir_nomes_regiao.py --uf CE` (outra UF entra no mesmo arquivo).
 
 ### 🎯 Modo exato: marque o que editar
 
@@ -460,11 +505,17 @@ threads) quando ele está instalado (`requirements.txt`).
   - um pedido pela API sem o cabeçalho `X-Operador` (um script) não pega trava nem é barrado por uma.
 - **Lista de documentos.** Mostra 🔒 (com outra pessoa), ★ (atribuído a você) e → (atribuído a
   outra pessoa). Tem busca e "só os meus", e desenha aos poucos (150 por vez) quando há milhares.
-- **Aba ✔ Revisar** (no gerador): a fila das versões pendentes, das mais antigas para as mais novas.
-  - `A` aprova;
-  - `R` reprova; precisa de motivo (`1`–`6`) ou comentário;
-  - `→` e `←` pulam e voltam;
-  - clicar numa edição amplia.
+- **Aba ✔ Revisar** (no gerador): a fila das versões pendentes, das mais antigas para as mais novas (ou
+  **suspeitas primeiro**; **só com ⚠** deixa só elas).
+  - cada edição mostra o trecho **antes** e **depois**, um sobre o outro na mesma escala, e a **fidelidade** do texto
+    novo medida no gerador: altura das letras, traço e a fonte usada (com a semelhança). Verde = igual ao original; ⚠
+    vermelho = diferente (altura fora de ±4% ou ±1 px, traço fora de ±10%, fonte abaixo de 0,90). O topo da versão
+    diz quantas edições ficaram diferentes;
+  - `A` aprova; `R` reprova (precisa de motivo, `1`–`6`, ou comentário); `→` e `←` pulam e voltam;
+  - `Z` / `Shift+Z` ampliam a edição seguinte / anterior (`Esc` volta à página inteira); segurar `O` mostra a
+    original na imagem grande;
+  - **Em grade**: várias versões de uma vez, cada uma com o antes e o depois. Clique nas ruins para marcar;
+    **✔ Aprovar** aprova as outras e reprova as marcadas (pede o motivo uma vez). Duplo clique abre a versão.
 
   A decisão fica na anotação (`revisao`: estado, motivos, comentário, quem, quando) e nas colunas
   `revisao` e `revisor` dos índices.
@@ -483,13 +534,19 @@ threads) quando ele está instalado (`requirements.txt`).
    valem; `validação`, com acento, também), ou use outra pasta com essas subpastas (`--dados`).
    Formatos aceitos: JPG, PNG, TIFF (inclusive multipágina), BMP, WEBP, HEIC e PDF.
    Cada página vira um item; PDF é rasterizado a 200 DPI (`--dpi`).
-2. `.venv\Scripts\python.exe app.py` abre o navegador em http://127.0.0.1:5000.
-   Opções: `--dados`, `--saida`, `--porta`, `--dpi`, `--sem-navegador`. Sem `--dados` nem `--saida`, vale a
+2. `.venv\Scripts\python.exe app.py` abre o editor numa **janela própria do Windows** (pywebview + WebView2, o
+   motor do Edge que já vem no Windows). Na janela, todos os atalhos do Photoshop chegam ao editor; no navegador,
+   alguns são do próprio navegador (`Ctrl+Tab`, `Ctrl+W`, `Ctrl+R`, `F5`). O servidor roda junto e fecha com a
+   janela. Opções: `--dados`, `--saida`, `--porta`, `--dpi`, `--navegador` (abre no navegador, como antes),
+   `--sem-navegador` (só o servidor). Sem o `pywebview` instalado, abre no navegador. O que a página guarda (nome,
+   último tipo, opções) fica em `.janela/` (ou em `ROTULADOR_JANELA_PERFIL`). Sem `--dados` nem `--saida`, vale a
    última pasta trocada por `POST /api/pasta/usar` (`config/pasta_escolhida.json`), se houver.
+   Com o servidor do lançador (abaixo) já rodando, `.venv\Scripts\pythonw.exe janela.py` abre só a janela.
 3. Para cada documento:
    1. Escolha o **tipo da edição** à direita: copiar e colar, pegar de outro documento ou apagar e
       substituir (`Alt+1..3`). Na próxima imagem, o último já vem marcado.
-   2. Edite. A primeira edição de cada tipo cria **uma camada só dela** (ver "Camadas").
+   2. Edite. A edição vai direto na imagem (o **Fundo**), como no Photoshop; camada só quando você criar uma
+      (ver "Camadas"). O **Histórico** volta a qualquer passo com um clique.
    3. Salve com **Salvar** (`Ctrl+S`): a próxima imagem abre.
 
    O botão só libera quando há edição e toda camada visível tem tipo. Para fazer outra variação
@@ -511,71 +568,92 @@ bash lancador/parar.sh        # para os dois
 As edições ficam em rascunho no disco (`saida/<split>/_rascunhos`). Se o servidor cair, o
 trabalho volta quando você reabre o documento.
 
-## Camadas
+## Camadas e Histórico
 
-Funciona como no Photoshop. O original é o **Fundo** (travado) e cada edição vai para uma camada.
+Funciona como no Photoshop.
 
-- **Cada tipo tem a sua camada.** Escolher "copiar e colar" e editar cria a camada "copiar e colar 1";
-  escolher "apagar e substituir" cria outra. Escolher de novo um tipo que já tem camada volta a editar
-  nela. Clicar numa camada a ativa e marca o tipo dela no painel.
-- **Painel:** a opacidade da camada ativa no alto; em cada camada, o olho oculta/mostra, a miniatura, o nome
-  (duplo clique renomeia) e a caixa do tipo, que define o que vai para a máscara; arrastar reordena. No pé do
-  painel: nova camada, duplicar, mesclar com a de baixo e excluir (também no menu Camada).
-- **Atalhos:** `Ctrl+Shift+N` nova, `Ctrl+J` duplicar, `Ctrl+E` mesclar, `Ctrl+[` e `Ctrl+]` mudam a
-  posição na pilha.
-- **Como as ferramentas usam as camadas:** elas enxergam a imagem composta (todas as camadas
-  visíveis) e gravam na camada ativa. A **borracha** apaga da camada ativa e revela o que está
-  embaixo. **Mover (V) sem seleção** arrasta a camada inteira; as setas empurram 1 px (com `Shift`,
-  10 px).
-- **Rótulos:**
-  - a categoria por pixel é a da camada visível **mais alta**;
-  - camadas **ocultas não entram** no salvamento, e o painel avisa quando há alguma;
-  - o JSON salvo lista as camadas.
-- Desfazer/refazer cobre pixels e mudanças na pilha. Criar a camada e pintar nela é **um** passo
-  só no `Ctrl+Z`.
+- **Fundo:** é a imagem. Sem uma camada sua ativa, as edições vão **direto nela**; nenhuma camada aparece sozinha.
+  Por baixo, o rotulador guarda cada tipo da edição numa camada interna, que não aparece no painel, só para a
+  máscara de classes; a última edição sempre aparece por cima, como numa imagem sem camadas. O original fica
+  guardado à parte, para a comparação e as máscaras. A miniatura do Fundo mostra a imagem como está.
+  - A **borracha** no Fundo devolve o original onde passa.
+  - O Fundo não se move nem some, como o Plano de fundo travado do Photoshop.
+- **Camadas suas:** `Ctrl+Shift+N` cria uma, acima do Fundo, no tipo marcado; a partir daí as edições vão para ela
+  até você clicar no Fundo (ou `Alt+[`). No painel: a opacidade no alto; em cada camada, o olho, a miniatura, o nome
+  (duplo clique renomeia) e a caixa do tipo, que vai para a máscara; arrastar reordena. No pé do painel: nova,
+  duplicar, mesclar com a de baixo e excluir (também no menu Camada). Mesclar a última camada sua desce a edição
+  para o Fundo.
+- **Camada via cópia (`Ctrl+J`) e via recorte (`Ctrl+Shift+J`)**, como no Photoshop: o trecho selecionado da camada
+  ativa (ou do Fundo) vira uma camada nova no mesmo lugar, logo acima, e a seleção sai; com o Mover (`V`) você leva a
+  camada — é o "copiar e colar" do jeito do Photoshop. Sem seleção, o `Ctrl+J` duplica a camada ativa (no Fundo,
+  "Fundo cópia"). O recorte do Fundo preenche o buraco embaixo (como o `Delete`), no mesmo passo do Histórico. Do
+  Fundo, a camada nova é do tipo "copiar e colar" (ou "apagar e substituir", se for o marcado). Uma cópia parada no
+  mesmo lugar não é edição: a máscara só marca onde ela muda a imagem (ou onde for editada ou movida).
+- **Atalhos:** os do Photoshop (ver "Ferramentas"): `Ctrl+Shift+N`, `Ctrl+J`, `Ctrl+Shift+J`, `Ctrl+E`, `Ctrl+]`/`Ctrl+[`,
+  `Ctrl+Shift+]`/`Ctrl+Shift+[`, `Alt+]`/`Alt+[`, `Ctrl+,`, e os números (`5` = 50% de opacidade da camada).
+- **Ferramentas e camadas:** elas enxergam a imagem composta e gravam na camada ativa (ou no Fundo). A **borracha**
+  numa camada sua apaga dela e revela o que está embaixo. **Mover (V) sem seleção** arrasta a camada sua inteira;
+  as setas empurram 1 px (com `Shift`, 10 px).
+- **Rótulos:** a categoria por pixel é a da camada visível **mais alta**; camadas **ocultas não entram** no
+  salvamento (o painel avisa); o JSON salvo lista as camadas (as internas com `auto: true`).
+- **Histórico:** como o do Photoshop. A primeira linha é a imagem como foi aberta; cada edição é um passo. **Clicar
+  num passo** volta a imagem até ele, e os passos de depois ficam apagados, ainda dá para clicar neles e avançar,
+  até a próxima edição, que os descarta. `Ctrl+Z` e `Ctrl+Shift+Z` andam um passo. Criar a camada e pintar nela é
+  **um** passo só.
 
-## Ferramentas
+## Ferramentas e atalhos (os do Photoshop)
+
+As ferramentas ficam nos grupos do Photoshop. A letra escolhe a ferramenta visível do grupo e `Shift`+letra
+alterna dentro dele.
 
 | Atalho | Ferramenta |
 |---|---|
-| `M` / `Shift+M` | seleção retangular / elíptica |
+| `V` · `Shift+V` | **mover / puxar** e colar de outro documento. Com seleção, arrastar puxa os pixels (o buraco é preenchido); `Alt+arrastar` duplica; o canto escala (`Shift` mantém a proporção, `Ctrl` faz perspectiva); fora do contorno gira; `Enter` aplica, `Esc` cancela. Sem seleção, move a **camada** sua ativa (o Fundo não se move) |
+| `M` · `Shift+M` | seleção retangular · elíptica |
 | `L` | laço (marque "Poligonal" para clicar ponto a ponto) |
-| `W` | varinha mágica (tolerância, contígua ou por cor) |
-| | Seleção: `Shift` soma, `Alt` subtrai, `Shift+Alt` intersecta. Também: expandir/contrair, suavizar, `Ctrl+A`, `Ctrl+D`, `Ctrl+Shift+I` (inverter) |
-| `B` | pincel (`Alt+clique` pega a cor; `[` `]` mudam o tamanho) |
-| `E` | borracha: apaga da **camada** ativa e revela o que está embaixo (não precisa de categoria) |
-| `G` | balde de tinta |
+| `W` · `Shift+W` | varinha mágica (tolerância, contígua ou por cor) · pincel de seleção |
+| `Q` | pincel de seleção (pinte a seleção, `Alt` tira), no papel da máscara rápida |
+| | Seleção: `Shift` soma, `Alt` subtrai, `Shift+Alt` intersecta. "Só a tinta" reduz a seleção aos traços do texto |
 | `I` | conta-gotas (lê o pixel no servidor) |
-| `S` | carimbo de clonagem: `Alt+clique` na origem, depois pinte. Mostra sob o cursor o que vai ser copiado. Opções: copiar da imagem atual ou do **original**, escala, rotação, alinhado, modo de mescla (normal, escurecer, clarear, multiplicar, tela) |
-| `Shift+J` | pincel de recuperação: como o carimbo, mas a cor e a luz vêm do destino (mescla Poisson) |
-| `J` | pincel corretivo pontual: reconstrói o traço a partir do entorno |
-| `Y` | remendo: com a área ruim selecionada, arraste a seleção até uma área boa; a textura vem de lá, mesclada. Modo "destino" leva a seleção para lá |
-| `O` | pincel de retoque: desfocar, nitidez, borrar (dedo), clarear, escurecer, saturar, dessaturar |
-| `U` | formas: retângulo, elipse, linha (`Shift` deixa quadrado/círculo/reta), com preenchimento e contorno |
-| `Q` | pincel de seleção: pinte a seleção (`Alt` tira) |
-| | "Só a tinta" (nas ferramentas de seleção) reduz a seleção aos traços de texto/tinta dentro dela |
-| `T` | texto: clique na linha de base, digite e dê `Enter`. Ajustes: fonte do sistema ou da pasta `fontes/`, tamanho, espaçamento, largura, negrito, rotação, desfoque, suavização |
-| `R` | **substituir texto**: arraste sobre o texto antigo. O servidor estima posição, tamanho e cor, apaga o antigo com preenchimento inteligente e escreve o novo. 🎲 sorteia um valor plausível da categoria |
-| `V` | **mover / puxar**: com seleção, arrastar puxa os pixels (o buraco é preenchido); `Alt+arrastar` duplica; o canto escala (`Shift` mantém a proporção, `Ctrl` faz perspectiva); fora do contorno gira; `Enter` aplica, `Esc` cancela. Sem seleção: move a **camada** ativa |
+| `J` · `Shift+J` | pincel corretivo pontual · pincel de recuperação (cor e luz do destino) · remendo (arraste a seleção até uma área boa; modo "destino" leva a seleção para lá) |
+| `B` | pincel (`Alt+clique` pega a cor) |
+| `S` | carimbo de clonagem: `Alt+clique` na origem, depois pinte (prévia sob o cursor; da imagem atual ou do **original**; escala, rotação, alinhado, modo de mescla) |
+| `E` | borracha: na camada sua, revela o que está embaixo; no Fundo, devolve o original |
+| `G` | balde de tinta |
+| `O` | retoque: desfocar, nitidez, borrar (dedo), clarear, escurecer, saturar, dessaturar |
+| `T` · `Shift+T` | texto (clique na linha de base, digite, `Enter`) · **substituir texto** (arraste sobre o antigo: posição, tamanho e cor estimados, o antigo apagado com preenchimento inteligente). 🎲 sugere um valor novo **parecido com o texto antigo** |
+| `U` | formas: retângulo, elipse, linha (`Shift`: quadrado, círculo, reta) |
+| `H` · `Z` | mão · zoom (`Alt+clique` afasta) |
+
+| Atalho | O que faz |
+|---|---|
+| `Ctrl+S` | salvar e ir para a próxima imagem |
+| `Ctrl+Tab` · `Ctrl+Shift+Tab` (ou `PageDown` · `PageUp`) | próxima · anterior imagem |
+| `Ctrl+Q` | sair (na janela do Windows) |
+| `Ctrl+Z` · `Ctrl+Shift+Z` (`Ctrl+Y`) | desfazer · refazer (e o clique no Histórico) |
+| `Ctrl+X` · `Ctrl+C` · `Ctrl+V` · `Ctrl+Shift+V` | recortar (o trecho fica solto para arrastar) · copiar · colar (no meio da vista) · colar no mesmo lugar, nesta imagem ou em outra do mesmo split |
+| `Ctrl+T` | transformação livre (puxar a seleção) |
 | `Ctrl+arrastar` | puxar a seleção com qualquer ferramenta |
-| `Ctrl+X` / `Ctrl+C` / `Ctrl+V` | recortar (o trecho fica solto para arrastar) / copiar / colar, nesta imagem ou em outra do mesmo split |
-| `Ctrl+Shift+V` | colar um trecho de **outro documento do mesmo split** escolhido numa lista (splicing; no grupo do Mover) |
 | `Delete` | **apagar com preenchimento**: o selecionado some, refeito com o papel em volta |
-| `Shift+F5` | **preenchimento por similaridade** (PatchMatch), com prévia ao vivo. Escolha de onde amostrar (automático, documento inteiro ou faixa em px), tamanho do patch e 🎲 outra variação |
-| Imagem › Ajustes | ajustes na seleção: brilho/contraste, níveis, matiz/saturação, desfoque, nitidez, ruído, recompressão JPEG local, cinza e **igualar ruído ao papel** (deixa a área editada com o mesmo grão do entorno; testado: a razão de ruído dentro/fora fica em 1 ± 0,12) |
-| Imagem › Código de barras | código de barras ITF-25. 🎲 gera um código válido de arrecadação (contas, começa com 8) ou de boleto, junto com a linha digitável |
-| Imagem › QR code | QR code. 🎲 gera um PIX "copia e cola" válido (CRC conferido) |
-| Imagem › Editar com IA | edição por IA da seleção (ver abaixo) |
-| `Ctrl+Z` / `Ctrl+Y` | desfazer / refazer |
-| `\` (segurar) | ver o original |
-| `K` | sobrepor a máscara de pixels alterados |
-| `X` / `D` | trocar as cores / cores padrão |
-| Roda, `Espaço`+arrastar, `0`, `1` | zoom, mover a vista, ajustar à tela, 100% |
-| `PageUp` / `PageDown` | documento anterior / próximo |
+| `Shift+F5` | **preencher…** (similaridade/PatchMatch, com prévia; amostra automática, documento inteiro ou faixa; patch; 🎲 outra variação) |
+| `Alt+Backspace` · `Ctrl+Backspace` | preencher a seleção com a cor de frente · de fundo |
+| `Ctrl+A` · `Ctrl+D` · `Ctrl+Shift+D` · `Ctrl+Shift+I` | tudo · desmarcar · reselecionar · inverter |
+| `Shift+F6` | difusão (suavizar a borda), expandir, contrair |
+| `Ctrl+L` · `Ctrl+U` · `Ctrl+Shift+U` | níveis · matiz/saturação · dessaturar (na seleção; os outros ajustes, em Imagem › Outros ajustes: brilho/contraste, desfoque, nitidez, ruído, JPEG local, cinza e **igualar ruído ao papel**, que deixa a área editada com o grão do entorno: razão de ruído dentro/fora 1 ± 0,12) |
+| Imagem › Código de barras · QR code · Editar com IA | ITF-25 com 🎲 de código válido e linha digitável · QR/PIX com CRC conferido · IA na seleção (ver abaixo) |
+| `[` · `]` · `Shift+[` · `Shift+]` | pincel menor · maior · mais mole · mais duro |
+| `1` … `9` · `0` | opacidade 10 … 90% · 100% (dois números seguidos: `4` `5` = 45%); com uma ferramenta sem opacidade, a da camada |
+| `X` · `D` | trocar as cores · preto e branco |
+| `Ctrl++` · `Ctrl+−` · `Ctrl+0` · `Ctrl+1` | aproximar · afastar · caber na tela · 100% |
+| roda · `Espaço`+arrastar · `Ctrl+Espaço`+clique | zoom · mão · aproximar (com `Alt`, afastar) |
+| `Ctrl+H` · `Tab` · `Shift+Tab` · `F` | esconder a borda da seleção · os painéis e as ferramentas · só os painéis da direita · tela cheia |
+| `\` (segurar) · `K` | ver o original · a máscara do que mudou (estes dois são do rotulador) |
+| `Alt+1` · `Alt+2` · `Alt+3` | tipo da edição (do rotulador) |
+| `F1` · `Ctrl+Alt+Shift+K` | como editar · a lista de atalhos |
 
-`?` mostra todos os atalhos.
+`?` também mostra a lista de atalhos.
 
-**🔍 Qual é a fonte?** (nas ferramentas `T` e `R`) descobre a fonte de um texto selecionado.
+**🔍 Qual é a fonte?** (nas ferramentas de texto, `T` e `Shift+T`) descobre a fonte de um texto selecionado.
 
 - **Como compara:** o rotulador desenha o mesmo texto em **todas as fontes instaladas**, mais as da
   pasta `fontes/`. Ficam de fora as fontes sem alguma letra do texto e as que precisariam ser
@@ -638,6 +716,12 @@ saida/<split>/
                                    colar, pegar de outro documento ou apagar e substituir; as do gerador
                                    pela família da técnica), editada, original, máscara, anotação e
                                    origem (manual ou gerador). Caminhos relativos à pasta do split
+saida/_treinamento/<split>/        o dado para o treino do modelo, à parte: a cada versão salva (no editor
+  imagens/<doc>__v01.png           ou pelo gerador), a imagem editada, no formato da saída
+  mascaras/<doc>__v01.png          e a máscara de onde foi editado (a mesma "mascara", 0/1), com o mesmo
+                                   nome. São links físicos dos arquivos de saida/<split>/ (não ocupam
+                                   disco a mais; noutro disco, cópias). Excluir a versão no catálogo tira
+                                   as duas; a partida do app e o "reindexar" põem as salvas antes
 saida/catalogo.json                legenda dos números das máscaras de técnica e de classe (as classes de
                                    campo e as 3 categorias do editor, ids 201–203)
 saida/dataset.xlsx                 a planilha do dataset (Resumo, Versões, Edições, Documentos, Legenda),
@@ -731,8 +815,8 @@ passar disso.
    rascunho) num split aparecer em outro, por exemplo se alguém mover o arquivo depois.
 3. **Colar de outro documento** só aceita doador do mesmo split. A UI só lista esses doadores
    e o servidor recusa os outros.
-4. **Valores falsos**: o 🎲 sorteia nomes, CPF/CNPJ válidos, endereços, datas, valores,
-   códigos de barras etc. Assim o operador não repete o mesmo "JOÃO DA SILVA" no treino e no
+4. **Valores falsos**: o 🎲 (nas ferramentas de texto, imitando o texto selecionado ou o campo onde se clicou) e o
+   gerador sorteiam nomes, CPF/CNPJ válidos, endereços, datas, valores, códigos de barras etc. Assim o operador não repete o mesmo "JOÃO DA SILVA" no treino e no
    teste, que o modelo decoraria.
    - O vocabulário aberto (prenomes, sobrenomes, ruas, bairros, cidades) é **repartido entre os
      splits**: um núcleo dos mais comuns (MARIA, JOSÉ, SILVA, as capitais) vale em todos; a cauda é

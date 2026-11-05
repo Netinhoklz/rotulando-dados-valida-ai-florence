@@ -41,7 +41,7 @@ def F(nome, tam):
 
 
 def documento(nome="MARIA DOS SANTOS SILVA", valor="R$ 158,37", consumo="183 kWh", semente=1,
-              endereco="RUA DAS FLORES, 101"):
+              endereco="RUA DAS FLORES, 101", cep="30123-456"):
     """(imagem, linhas do OCR) de uma conta sintética; as linhas têm o texto exato."""
     im = Image.new("RGB", (1240, 760), (252, 252, 250))
     d = ImageDraw.Draw(im)
@@ -55,7 +55,7 @@ def documento(nome="MARIA DOS SANTOS SILVA", valor="R$ 158,37", consumo="183 kWh
     rot, val = F("arialbd.ttf", 22), F("arial.ttf", 30)
     y = 80
     for r, v in [("NOME", nome), ("CPF", "123.456.789-09"), ("ENDERECO", endereco),
-                 ("CEP", "30123-456"), ("VENCIMENTO", "10/10/2026"), ("LEITURA", "05/09/2026"), ("CONSUMO", consumo)]:
+                 ("CEP", cep), ("VENCIMENTO", "10/10/2026"), ("LEITURA", "05/09/2026"), ("CONSUMO", consumo)]:
         escrever(60, y + 4, r, rot)
         escrever(330, y, v, val)
         y += 70
@@ -284,8 +284,11 @@ class TestCaractere(Base):
 class TestCampoETrecho(Base):
     def test_reescrever(self):
         c = self.campo("cep")
-        res = self.rodar("campo.reescrever", c, opcoes={"alinhamento": "esquerda"})
+        # sem o disfarce de desfoque (ele engrossa o texto novo e a conferência da fonte descarta)
+        res = self.rodar("campo.reescrever", c, opcoes={"alinhamento": "esquerda"}, acabamento={"disfarce": "nunca"})
         self.confere_rotulo(res, "campo.reescrever")
+        self.assertLessEqual(abs(res.meta["peso_traco"] - 1), 0.04)  # o negrito corrigido até o traço casar
+        self.assertTrue(res.meta["fidelidade"] and not res.meta["fidelidade"]["fora"])
         self.so_perto(res, c["caixa"], dir_=40)
         self.confere_ocr(res, c["caixa"], folga_dir=40)
 
@@ -317,8 +320,9 @@ class TestCampoETrecho(Base):
 
     def test_colagem_externa_so_do_mesmo_split(self):
         c = self.campo("nome")
-        for semente in range(3):
-            res = self.rodar("campo.colagem_externa", c, semente, opcoes={"colagem": "tinta"})
+        for semente in range(3):  # sem o disfarce de desfoque: o texto borrado não passa na conferência da fonte
+            res = self.rodar("campo.colagem_externa", c, semente, opcoes={"colagem": "tinta"},
+                             acabamento={"disfarce": "nunca"})
             self.assertEqual(res.meta["origem_campo"]["doc"], "bbbb2222")
             self.assertEqual(res.meta["texto_novo"], "PEDRO ALVES COSTA")
 

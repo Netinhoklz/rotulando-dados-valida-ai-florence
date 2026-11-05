@@ -1,7 +1,7 @@
 """Leitura do texto do documento (OCR): detector PP-OCRv6 small + reconhecedor latino PP-OCRv5 (ONNX, CPU).
 
-Os modelos são os ONNX oficiais da PaddlePaddle no Hugging Face, baixados na primeira leitura para ``MODELOS``
-(~18 MB) e rodados pelo RapidOCR do projeto (só o detector e o reconhecedor são trocados). Lê acentos, cedilha e
+Os modelos são os ONNX oficiais da PaddlePaddle, baixados do ModelScope (conta oficial PaddlePaddle; nada vem do
+Hugging Face) na primeira leitura para ``MODELOS`` (~18 MB), pelo próprio Python (urllib), e rodados pelo RapidOCR do projeto (só o detector e o reconhecedor são trocados). Lê acentos, cedilha e
 espaços ("JOSÉ CARLOS", "MÊS REFERÊNCIA") e as caixas cobrem a tinta toda (com o acento). Sem rede ou sem o
 modelo, cai no OCR antigo (``MOTOR_RESERVA``: o PP-OCRv3 chinês que vem no rapidocr_onnxruntime), que come os
 espaços ("MARIADOSSANTOS01", recuperados pelos vãos de tinta em ``recuperar_espacos``) e tira acentos.
@@ -34,14 +34,18 @@ _lock_carga = threading.Lock()
 _motor = None
 _nome_motor: str | None = None
 
-# Modelos ONNX oficiais (PaddlePaddle no Hugging Face), num commit fixo e conferidos pelo sha256. Ficam na pasta do
-# projeto (fora do git): vão junto se o projeto mudar de disco e somem com ele; os testes usam os mesmos.
+# Modelos ONNX oficiais da PaddlePaddle no ModelScope (modelscope.cn/models/PaddlePaddle/...), num commit fixo e
+# conferidos pelo sha256 (os mesmos arquivos, byte a byte, que a PaddlePaddle publica no Hugging Face, de onde o
+# projeto NÃO baixa nada). Ficam na pasta do projeto (fora do git): vão junto se o projeto mudar de disco e somem com
+# ele; os testes usam os mesmos.
 MODELOS = Path(__file__).resolve().parents[1] / "modelos" / "ocr"
-_HF = "https://huggingface.co/PaddlePaddle/{repo}/resolve/{rev}/{arq}"
-_DET = {"repo": "PP-OCRv6_small_det_onnx", "rev": "28fe5895c24fd108c19eb3e8479f4ab385fbfc62",
-        "sha256": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e", "mb": 10}
-_REC = {"repo": "latin_PP-OCRv5_mobile_rec_onnx", "rev": "89d3a50e2c27e2e7cceeab0e944c25c807d5db4f",
-        "sha256": "7888113072263cb471b93f66dd5e2ad70548dc526fa1ace760d0d973dd121498", "mb": 8}
+_FONTE = "https://www.modelscope.cn/models/PaddlePaddle/{repo}/resolve/{rev}/{arq}"
+_DET = {"repo": "PP-OCRv6_small_det_onnx", "rev": "37b02eded8dbca659f8ee5d51f822ea1ebd9bcba", "mb": 10,
+        "sha256": {"inference.onnx": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e",
+                   "inference.yml": "193f435274bf9f0b5f71a929bbfbcf148282df7e633b34e7c373e8f44741b516"}}
+_REC = {"repo": "latin_PP-OCRv5_mobile_rec_onnx", "rev": "0bbca491cfc54ef5c5253b18bc4bd552dff0625c", "mb": 8,
+        "sha256": {"inference.onnx": "7888113072263cb471b93f66dd5e2ad70548dc526fa1ace760d0d973dd121498",
+                   "inference.yml": "0bbe984570f597af3638e50bdf2e8276f3ab26a61966096538b3b0d1849f5c84"}}
 # nome gravado no cache: muda quando o modelo ou o pré/pós-processamento muda (a leitura antiga é refeita)
 MOTOR_PADRAO = "PP-OCRv6_small_det+latin_PP-OCRv5_mobile_rec/2"
 MOTOR_RESERVA = "rapidocr PP-OCRv3 ch"  # o cache de antes (lista pura) é dele
@@ -52,16 +56,16 @@ class OCRIndisponivel(RuntimeError):
 
 
 def _baixar(modelo: dict) -> Path:
-    """Pasta com o inference.onnx e o inference.yml do modelo; baixa do Hugging Face na primeira vez."""
+    """Pasta com o inference.onnx e o inference.yml do modelo; baixa do ModelScope na primeira vez."""
     pasta = MODELOS / modelo["repo"]
     if (pasta / "inference.onnx").is_file() and (pasta / "inference.yml").is_file():
         return pasta
     import urllib.request
     pasta.mkdir(parents=True, exist_ok=True)
-    print(f"OCR: baixando {modelo['repo']} (~{modelo['mb']} MB, só na primeira vez) do Hugging Face para {pasta}",
+    print(f"OCR: baixando {modelo['repo']} (~{modelo['mb']} MB, só na primeira vez) do ModelScope para {pasta}",
           file=sys.stderr, flush=True)
     for arq in ("inference.yml", "inference.onnx"):  # o .onnx por último: ele presente = download completo
-        url = _HF.format(repo=modelo["repo"], rev=modelo["rev"], arq=arq)
+        url = _FONTE.format(repo=modelo["repo"], rev=modelo["rev"], arq=arq)
         tmp = pasta / f"{arq}.part"
         try:
             h = hashlib.sha256()
@@ -69,7 +73,7 @@ def _baixar(modelo: dict) -> Path:
                 while bloco := r.read(1 << 20):
                     h.update(bloco)
                     f.write(bloco)
-            if arq == "inference.onnx" and h.hexdigest() != modelo["sha256"]:
+            if h.hexdigest() != modelo["sha256"][arq]:
                 raise OSError(f"{url}: o arquivo baixado não confere (sha256)")
             os.replace(tmp, pasta / arq)
         finally:

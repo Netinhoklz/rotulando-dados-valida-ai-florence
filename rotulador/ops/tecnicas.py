@@ -36,7 +36,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from .. import catalogo, fsts, glifos, humano, identificar_fonte, ocr, pericia, selecao, vetorial
+from .. import catalogo, fidelidade, fsts, glifos, humano, identificar_fonte, ocr, pericia, selecao, vetorial
 from ..selecao import mascara_tinta
 from ..sessao import ErroOperacao, Resultado
 from . import ajustes, auto, codigos, geradores, ia, texto
@@ -878,35 +878,38 @@ def _fonte_substituta(c: _C) -> str | None:
     return disponiveis[0]
 
 
-PESO_CORRIGIR, PESO_MAXIMO = 0.12, 0.25  # diferença de espessura do traço que se corrige / que descarta a edição
+# diferença de espessura do traço que se corrige / que descarta a edição. A grossura tem de ser a do texto antigo:
+# até 05/11/2026 eram 0,12 / 0,25 (o texto novo saía até 25% mais fino ou mais grosso que o do documento)
+PESO_CORRIGIR, PESO_MAXIMO = 0.04, 0.10
 # abaixo desta semelhança a fonte do campo NÃO foi identificada: escrever na "mais parecida" do top 10 dá outra letra
 # (o "DEZ/2025" em Verdana num JAN/2026 de fonte geométrica, semelhança 0,47; o 0 oval da Tahoma num 0 redondo, 0,57).
 # A mesma fonte recusa e o gerador vai para as letras do próprio documento
 SEMELHANCA_MINIMA = 0.60
 
 
-def _peso_na_imagem(rec: np.ndarray, mascara: np.ndarray | None = None) -> float:
-    """Espessura média do traço (px) da tinta de ``rec``: o alfa pela luminância (papel = p90, tinta = p3) e
-    glifos.peso_traco; ``mascara`` limita a tinta contada (a pegada da edição, sem a vizinha intacta)."""
-    lum = rec.astype(np.float32) @ np.float32([0.299, 0.587, 0.114])
-    papel, tinta = float(np.percentile(lum, 90)), float(np.percentile(lum, 3))
-    if papel - tinta < 25:
-        return 0.0
-    a = np.clip((papel - lum) / (papel - tinta), 0, 1)
-    a[a < 0.1] = 0
-    if mascara is not None:
-        a = a * mascara
-    return glifos.peso_traco(a)
+def _linha_antes_depois(c: _C, res: Resultado):
+    """(antes, depois, caixa antiga, caixa nova) num recorte só: a linha do campo antes e com a edição aplicada, e as
+    caixas do texto antigo e do novo (a do campo esticada até onde a edição foi) nas coordenadas do recorte."""
+    x0, y0, x1, y1 = c.caixa
+    nova = (min(x0, res.x0), y0, max(x1, res.x1), y1)
+    R = (min(nova[0], res.x0), min(y0, res.y0), max(nova[2], res.x1), max(y1, res.y1))
+    antes = c.img[R[1]:R[3], R[0]:R[2]]
+    depois = antes.copy()
+    sub = depois[res.y0 - R[1]:res.y1 - R[1], res.x0 - R[0]:res.x1 - R[0]]
+    sub[:] = np.where(res.pegada[..., None], res.recorte, sub)
+
+    def desl(b):
+        return b[0] - R[0], b[1] - R[1], b[2] - R[0], b[3] - R[1]
+    return antes, depois, desl(c.caixa), desl(nova)
 
 
 def _razao_peso(c: _C, res: Resultado) -> tuple[float, float] | None:
-    """(espessura do traço do texto antigo, do texto novo) em px, medidas igual; None se não dá para medir."""
-    x0, y0, x1, y1 = c.caixa
-    antigo = _peso_na_imagem(c.img[max(0, y0 - 2):y1 + 2, max(0, x0 - 2):x1 + 2])  # folga: letra cortada na borda
-    rec = c.img[res.y0:res.y1, res.x0:res.x1].copy()
-    rec[res.pegada] = res.recorte[res.pegada]
-    novo = _peso_na_imagem(rec, _dilatar(res.pegada, 1).astype(np.float32))
-    return (antigo, novo) if antigo > 0 and novo > 0 else None
+    """(espessura do traço do texto antigo, do texto novo) em px, medidas como a conferência da fonte mede
+    (``fidelidade.medir``: a linha inteira, antes e depois); None se não dá para medir. Até 05/11/2026 a medida era
+    outra (só a pegada da edição) e deixava passar texto ~15% mais grosso que a conferência e o olho viam."""
+    antes, depois, ca, cn = _linha_antes_depois(c, res)
+    a, b = fidelidade.medir(antes, ca, c.texto), fidelidade.medir(depois, cn, c.texto)
+    return (a["grossura"], b["grossura"]) if a and b and a["grossura"] > 0 and b["grossura"] > 0 else None
 
 
 def _t_campo_reescrever(c: _C, extra_p: dict | None = None) -> Resultado:
@@ -970,15 +973,19 @@ def _t_campo_reescrever(c: _C, extra_p: dict | None = None) -> Resultado:
          "apagar": apagar, "fonte_params": fonte_params, **extra_p}
     res = auto.trocar_campo(c.img, p, selecao.vazia(c.H, c.W), base=c.base, chave_cache=c.chave)
     # o peso do traço: a fonte parecida pode ser mais leve ou mais pesada que a do papel ("DEZ/2025" em Verdana Bold
-    # mais grosso que o "JAN/2026" do original). Corrige o negrito uma vez; o que continua fora descarta a edição
+    # mais grosso que o "JAN/2026" do original). Corrige o negrito em até duas passadas (a espessura não anda 1:1 com
+    # ele); o que continua fora descarta a edição
     pesos = _razao_peso(c, res)
-    if pesos and abs(pesos[1] / pesos[0] - 1) > PESO_CORRIGIR:
+    for _ in range(2):
+        if not pesos or abs(pesos[1] / pesos[0] - 1) <= PESO_CORRIGIR:
+            break
         neg = float(fonte_params.get("negrito") or 0.0) + (pesos[0] - pesos[1])
         p2 = {**p, "fonte_params": {**fonte_params, "negrito": round(max(-0.5 * pesos[1], neg), 2)}}
         res2 = auto.trocar_campo(c.img, p2, selecao.vazia(c.H, c.W), base=c.base, chave_cache=c.chave)
         pesos2 = _razao_peso(c, res2)
-        if pesos2 and abs(pesos2[1] / pesos2[0] - 1) < abs(pesos[1] / pesos[0] - 1):
-            res, pesos, fonte_params = res2, pesos2, p2["fonte_params"]
+        if not pesos2 or abs(pesos2[1] / pesos2[0] - 1) >= abs(pesos[1] / pesos[0] - 1):
+            break
+        res, pesos, fonte_params, p = res2, pesos2, p2["fonte_params"], p2
     if pesos and abs(pesos[1] / pesos[0] - 1) > PESO_MAXIMO:
         raise ErroOperacao(f"o traço do texto novo não casa com o do documento ({pesos[1] / pesos[0]:.2f}x a "
                            "espessura do original)")
@@ -2384,8 +2391,9 @@ def _t_copiar_glifo(c: _C, externo: bool = False) -> Resultado:
                 continue
             _, origem, img_src, s = min(achados, key=lambda t: t[0])
             escala = h_esp / s.altura if abs(h_esp / s.altura - 1) > 0.03 and fsts.escala_da_colagem(c.habitos) else 1.0
-            # quem cola no Paint arrasta o canto e deforma a letra na horizontal (desleixo)
-            escala_x = c.rng.uniform(0.88, 1.12) if modo == "retangulo" and float(c.habitos.get("capricho", 1.0)) > 1.0 else 1.0
+            # a letra colada não é deformada: o tamanho e a proporção são os das letras do campo (até 05/11/2026 o
+            # desleixo esticava ±12% na horizontal, como quem arrasta o canto no Paint)
+            escala_x = 1.0
             c.fornecedores["colagem"] = modo
             papel_src = np.asarray(glifos.cor_papel(img_src, s.caixa), np.float32)
             # em Multiplicar a tinta escurece o papel daqui: a cor que dá a do alvo é a dele na escala do papel de lá
@@ -2534,13 +2542,19 @@ def _t_copiar_campo(c: _C, externo: bool = False) -> Resultado:
         _colar(tela, caixa_p, rec, a, modo, papel_src)
         novo = f["texto"]
         de_onde = f"do documento {d.doc} (mesmo split)" if externo else "de outro campo do mesmo documento"
-        return tela.resultado(c.meta(
+        res = tela.resultado(c.meta(
             novo, [_alt(0, c.texto, novo, "campo")],
             f"'{c.texto}' apagado e coberto pela imagem de '{novo}' recortada {de_onde} (colagem: {modo}"
             f"{f', escala {escala:.2f}' if escala != 1 else ''}).",
             origem_campo={"doc": d.doc, "caixa": list(f["caixa"]), "texto": novo}, escala=round(escala, 3),
             reamostrado=escala != 1.0))
-    raise ErroOperacao("nenhum campo doador coube no lugar (altura ou espaço livre)" if externo else
+        # o traço do doador tem de ser o do campo (outro documento pode estar mais escuro, mais grosso, em negrito):
+        # senão vai o próximo doador, como uma pessoa que procura outro comprovante parecido
+        pesos = _razao_peso(c, res)
+        if pesos and abs(pesos[1] / pesos[0] - 1) > PESO_MAXIMO:
+            continue
+        return res
+    raise ErroOperacao("nenhum campo doador coube no lugar (altura, traço ou espaço livre)" if externo else
                        "nenhum campo do documento com o mesmo estilo (altura da maiúscula, tinta, caixa das letras e "
                        "nitidez) coube no lugar")
 
@@ -4061,6 +4075,34 @@ def _conferir(c: _C, res: Resultado) -> Resultado:
     return res
 
 
+# técnicas que escrevem, copiam ou colam o texto novo de uma linha: ele tem de sair com a altura das letras e a grossura
+# do traço do antigo. Fora: o amador (outra fonte de propósito) e o bloco de várias linhas (a medida é de uma linha)
+_FIDELIDADE_FAMILIAS = frozenset({"imitacao", "copia_interna", "colagem_externa", "ia"})
+_SEM_FIDELIDADE = frozenset({"campo.amador", "bloco.colagem_externa", "ia.remover"})
+
+
+def _conferir_fonte(c: _C, res: Resultado) -> Resultado:
+    """Mede o texto novo contra o antigo na imagem que sai (``rotulador.fidelidade``: a altura das letras e a grossura
+    do traço) e descarta a edição que passou da tolerância: o texto novo tem de ser igual ao antigo em tamanho e
+    grossura. A medida vai para ``meta["fidelidade"]`` (a tela de revisão mostra). O FSTS no modo "artigo" segue as
+    tabelas (escala e rotação sorteadas): ali só mede. ``p["conferir_fonte"] = False`` desliga."""
+    novo = res.meta.get("texto_novo")
+    if (c.tipo != "texto" or not novo or novo == c.texto or c.p.get("conferir_fonte") is False
+            or c.tec.familia not in _FIDELIDADE_FAMILIAS or c.tec.id in _SEM_FIDELIDADE):
+        return res
+    antes, depois, ca, cn = _linha_antes_depois(c, res)
+    m = fidelidade.comparar(antes, depois, ca, cn, c.texto, novo)
+    if m is None:
+        return res
+    res.meta["fidelidade"] = {"altura": m["altura"], "grossura": m["grossura"], "fora": m["fora"]}
+    cfg = c.habitos.get("fsts")
+    if m["fora"] and not (isinstance(cfg, dict) and cfg.get("modo") == "artigo"):
+        diz = {"altura": f"altura das letras {m['altura']:.2f}x", "grossura": f"traço {m['grossura']:.2f}x"}
+        raise ErroOperacao("conferência da fonte: o texto novo não ficou igual ao antigo ("
+                           + ", ".join(diz[k] for k in m["fora"]) + " o original; descartado)")
+    return res
+
+
 def texto_claro_em_fundo_escuro(img: np.ndarray, caixa) -> bool:
     """O campo é texto CLARO sobre fundo escuro/colorido (o CNPJ branco na faixa azul do cabeçalho)? Os apagadores e
     a cor da tinta supõem tinta escura sobre papel claro: com o recorte passando da faixa, o papel branco de fora vira
@@ -4105,8 +4147,8 @@ def tecnica(img: np.ndarray, p: dict, sel, base: np.ndarray = None, carregar_doa
     with geradores.usando(c.rng, getattr(documento, "split", None), documento=getattr(documento, "_campos", None), **kw):
         res = _IMPL[t.id](c)
         if isinstance(c.habitos.get("fsts"), dict):  # o OCR confere o texto escrito; o disfarce do artigo vem depois
-            return _acabar_fsts(c, _conferir(c, res))
-        return _conferir(c, _acabar(c, res))
+            return _acabar_fsts(c, _conferir(c, _conferir_fonte(c, res)))
+        return _conferir(c, _conferir_fonte(c, _acabar(c, res)))
 
 
 _COM_ACENTO = frozenset({"nome", "endereço", "bairro", "cidade/uf"})  # categorias cujos valores falsos têm acento

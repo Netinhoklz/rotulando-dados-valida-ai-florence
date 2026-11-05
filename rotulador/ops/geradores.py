@@ -58,6 +58,7 @@ _hoje_atual = contextvars.ContextVar("hoje_geradores", default=None)
 _cidade_atual = contextvars.ContextVar("cidade_geradores", default=None)
 _acentos_atual = contextvars.ContextVar("acentos_geradores", default=False)
 _documento_atual = contextvars.ContextVar("documento_geradores", default=None)
+_regiao_atual = contextvars.ContextVar("regiao_geradores", default=None)
 
 
 class _Sorteio:
@@ -72,7 +73,8 @@ _rng = _Sorteio()
 
 @contextlib.contextmanager
 def usando(rng: random.Random | None = None, split: str | None = None, hoje: dt.date | None = None,
-           cidade: tuple[str, str] | None = None, *, acentos: bool | None = None, documento: list | None = None):
+           cidade: tuple[str, str] | None = None, *, acentos: bool | None = None, documento: list | None = None,
+           regiao: str | None = None):
     """Sorteios desta thread saem de ``rng`` (as técnicas automáticas passam um gerador com a
     semente da edição: a prévia e a aplicação dão o mesmo valor). A semente em si é sorteada
     pelo sistema, então os valores continuam não reprodutíveis entre execuções.
@@ -87,6 +89,9 @@ def usando(rng: random.Random | None = None, split: str | None = None, hoje: dt.
     (um ciclo de datas, um fator de valor, o mesmo número novo onde o velho se repete, o código com o total novo; a
     rua, o bairro e o CEP trocados saem da mesma linha da base de logradouros, guardada em ``["lugar"]``). A
     mesma lista de novo (as técnicas repassam a do documento) mantém o que a versão já sorteou.
+    ``regiao``: a UF (``"CE"``) dos valores novos: prenomes e sobrenomes com o peso que têm lá (``nomes_por_uf.tsv.gz``:
+    Censo 2010 do IBGE e candidaturas do TSE; FRANCISCO, RAIMUNDO, SOUSA e BEZERRA sobem no Ceará) e cidades só de
+    lá, com as ruas, bairros, CEPs e DDDs delas (a base de lugares é do CNEFE 2022).
     Cada argumento None MANTÉM o valor em vigor: as técnicas chamam ``usando(rng, split)`` dentro de um
     ``usando(hoje=...)`` externo e o ``hoje`` sobrevive."""
     if documento is not None:
@@ -94,7 +99,7 @@ def usando(rng: random.Random | None = None, split: str | None = None, hoje: dt.
         documento = atual if atual is not None and atual["campos"] is documento else {
             "campos": documento, "ciclo": None, "fator": None, "valores": {}, "trocas": {}}
     pares = ((_rng_atual, rng), (_split_atual, split), (_hoje_atual, hoje), (_cidade_atual, cidade),
-             (_acentos_atual, acentos), (_documento_atual, documento))
+             (_acentos_atual, acentos), (_documento_atual, documento), (_regiao_atual, regiao))
     tokens = [(var, var.set(valor)) for var, valor in pares if valor is not None]
     try:
         yield
@@ -897,6 +902,29 @@ def __getattr__(nome: str):
     raise AttributeError(f"module {__name__!r} has no attribute {nome!r}")
 
 
+# as listas que a região (``usando(regiao=...)``) muda: os nomes de pessoa pesam como na UF, e as cidades são só dela
+_REGIONAIS = frozenset(("nomes_f", "nomes_m", "meios_f", "meios_m", "sobrenomes", "cidades"))
+
+
+def _fatores_regiao(uf: str) -> dict:
+    """{"prenome": {nome: fator}, "sobrenome": {nome: fator}} da UF (``nomes_por_uf.tsv.gz``); vazio sem o arquivo."""
+    def ler():
+        out = {}
+        for r in _tsv("nomes_por_uf.tsv.gz") or ():
+            if r[0] == uf:
+                out.setdefault(r[1], {})[r[2]] = float(r[3])
+        return out
+    return _base(f"regiao:{uf}", ler)
+
+
+def _com_regiao(nome: str, entradas: list, pesos: list, uf: str) -> tuple[list, list]:
+    if nome == "cidades":
+        par = [(e, p) for e, p in zip(entradas, pesos) if e[1] == uf]
+        return ([e for e, _ in par], [p for _, p in par]) if par else (entradas, pesos)
+    fat = _fatores_regiao(uf).get("sobrenome" if nome == "sobrenomes" else "prenome") or {}
+    return entradas, [p * fat.get(_chave(e), 1.0) for e, p in zip(entradas, pesos)]
+
+
 def _tabela(nome: str, split: str | None):
     """(entradas, pesos acumulados) do sorteio: núcleo + a cauda do split. Os prenomes, sobrenomes e cidades da base
     pesam pela frequência real; os embutidos, pela posição (Zipf: o 1º pesa 1/2, o 10º 1/11), e nas ruas o núcleo
@@ -906,7 +934,8 @@ def _tabela(nome: str, split: str | None):
     podem sair. Montada uma vez por lista e split."""
     v = _vocab()
     split = split if split in _SPLITS else None
-    t = v["sorteio"].get((nome, split))
+    regiao = _regiao_atual.get() if nome in _REGIONAIS else None
+    t = v["sorteio"].get((nome, split, regiao))
     if t is None:
         lista, pesos, fatias = v["listas"][nome], v["pesos"][nome], v["fatias"][nome]
         de_pessoa = split is not None and nome in _LISTAS_DE_NOME
@@ -918,8 +947,11 @@ def _tabela(nome: str, split: str | None):
         da_fatia = cauda if split is None else [i for i in cauda if fatias[i] == split and pode(i)]
         escala = sum(pesos[i] for i in cauda) / (sum(pesos[i] for i in da_fatia) or 1)
         idx = nucleo + da_fatia
-        t = v["sorteio"].setdefault((nome, split), ([lista[i] for i in idx], array("d", itertools.accumulate(
-            [pesos[i] for i in nucleo] + [pesos[i] * escala for i in da_fatia]))))
+        entradas = [lista[i] for i in idx]
+        ps = [pesos[i] for i in nucleo] + [pesos[i] * escala for i in da_fatia]
+        if regiao:
+            entradas, ps = _com_regiao(nome, entradas, ps, regiao)
+        t = v["sorteio"].setdefault((nome, split, regiao), (entradas, array("d", itertools.accumulate(ps))))
     return t
 
 
@@ -1110,6 +1142,12 @@ def _dono_do_cep(cep: str) -> str | None:
         i = bisect.bisect_left(L["prefixos"], d)
         d = min(L["prefixos"][max(0, i - 1):i + 1], key=lambda p: abs(int(p) - int(d)))
     return max(L["dono"][d], key=lambda c: L["mun"][c][2])
+
+
+def cidade_do_cep(cep: str) -> tuple[str, str] | None:
+    """(cidade, UF) do município que usa o CEP (pela base de lugares); None sem a base ou sem CEP."""
+    cod = _dono_do_cep(cep)
+    return None if cod is None else (_grafia(_lugares()["mun"][cod][0]), _lugares()["mun"][cod][1])
 
 
 def cep_na_cidade(cep: str, cidade) -> bool | None:

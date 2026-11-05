@@ -50,7 +50,8 @@ CAMPOS_MANIFESTO = ["split", "doc", "versao", "original", "editada", "mascara", 
 CAMPOS_CATALOGO = ["split", "doc", "versao", "nome", "largura", "altura", "editada", "anotacao", "ordem", "categoria", "tecnica",
                    "tecnica_num", "nome_tecnica", "familia", "nivel", "granularidade", "literatura", "texto_antigo",
                    "texto_novo", "pixels", "bbox", "descricao", "origem", "operador", "data", "canal", "revisao", "revisor",
-                   "falsificador", "motivo", "pericia", "fornecedores"]
+                   "falsificador", "motivo", "pericia", "fornecedores", "fid_altura", "fid_grossura", "fid_fora",
+                   "semelhanca_fonte"]
 # categorias.csv: de qual categoria do editor (catalogo.CATEGORIAS_EDITOR) é cada imagem salva; caminhos relativos à
 # pasta do split
 CAMPOS_CATEGORIAS = ["versao", "documento", "categoria", "editada", "original", "mascara", "anotacao", "origem"]
@@ -141,6 +142,37 @@ def versoes_salvas(raiz_saida: Path, split: str, doc: str) -> int:
     return proxima_versao(Path(raiz_saida) / split, doc) - 1
 
 
+_USOS_DOADOR: dict[str, tuple] = {}
+
+
+def usos_como_doador(raiz_saida: Path, split: str) -> dict[str, int]:
+    """Em quantas versões salvas do split cada documento serviu de doador (colagem de outro documento, letras ou
+    campo tirados de outro documento). O editor põe ao lado da imagem uma doadora que ainda não foi usada."""
+    pasta = Path(raiz_saida) / split / "anotacoes"
+    arqs = sorted(pasta.glob("*.json")) if pasta.is_dir() else []
+    chave = (str(pasta), len(arqs), max((a.stat().st_mtime_ns for a in arqs), default=0))
+    if split in _USOS_DOADOR and _USOS_DOADOR[split][0] == chave:
+        return dict(_USOS_DOADOR[split][1])
+    usos: dict[str, int] = {}
+    for arq in arqs:
+        try:
+            a = json.loads(arq.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        achados = set()
+        for op in a.get("operacoes", []):
+            meta = op.get("meta") or {}
+            if op.get("tipo") == "colar":
+                achados.add(meta.get("doador") or (op.get("params") or {}).get("doador"))
+            for k in ("origem_glifo", "origem_campo"):
+                if isinstance(meta.get(k), dict):
+                    achados.add(meta[k].get("doc"))
+        for doc in achados - {None, a.get("doc")}:
+            usos[doc] = usos.get(doc, 0) + 1
+    _USOS_DOADOR[split] = (chave, usos)
+    return dict(usos)
+
+
 def _caixas_por_categoria(classes: np.ndarray, ids: dict[str, int]) -> dict[str, list[int]]:
     out = {}
     for chave, i in ids.items():
@@ -220,9 +252,10 @@ def descrever(n: int, r: dict, pixels: int, bbox) -> dict:
     d["origem"] = _ORIGEM_OPERACAO.get(r.get("tipo"), "manual")
     # conferido_ocr: True = o OCR leu o valor novo; None = não deu para julgar; sem a chave = não se aplica.
     # peso_traco: espessura do traço novo ÷ a do original (1 = igual); semelhanca_fonte: o quanto a fonte usada casou;
+    # fidelidade: {altura, grossura} do texto novo ÷ o antigo, medidos na linha (rotulador.fidelidade; 1 = igual);
     # fsts: o tipo do artigo, a pessoa e as operações com os parâmetros (rotulador.fsts)
     for k in ("origem_glifo", "origem_campo", "trecho", "linha_digitavel", "conferido_ocr", "peso_traco",
-              "semelhanca_fonte", "fsts"):
+              "semelhanca_fonte", "fidelidade", "fsts"):
         if k in meta:
             d[k] = meta[k]
     return d
@@ -348,7 +381,9 @@ def _linhas_catalogo(anot: dict) -> list[dict]:
                                                "nivel", "granularidade", "literatura", "texto_antigo", "texto_novo",
                                                "pixels", "descricao")},
              "bbox": " ".join(str(v) for v in (e.get("bbox") or [])),
-             "fornecedores": ";".join(f"{k}={v}" for k, v in (e.get("fornecedores") or {}).items())}
+             "fornecedores": ";".join(f"{k}={v}" for k, v in (e.get("fornecedores") or {}).items()),
+             "fid_altura": (e.get("fidelidade") or {}).get("altura"), "fid_grossura": (e.get("fidelidade") or {}).get("grossura"),
+             "fid_fora": ";".join((e.get("fidelidade") or {}).get("fora") or []), "semelhanca_fonte": e.get("semelhanca_fonte")}
             for e in edicoes_de_anotacao(anot)]
 
 
@@ -466,6 +501,55 @@ def _apagar(caminho: Path) -> None:
     raise ErroOperacao(f"o arquivo {caminho.name} está em uso; tente de novo")
 
 
+# o dado para o treino do modelo, numa pasta à parte: só a editada e a máscara de onde foi editado (a "mascara", 0/1),
+# com o mesmo nome, por split. São links físicos dos arquivos de saida/<split>/ (não ocupam disco a mais); onde o link
+# não dá (outro disco, FAT), cópias.
+PASTA_TREINAMENTO = "_treinamento"
+
+
+def _pasta_treinamento(raiz_saida: Path, split: str) -> Path:
+    return Path(raiz_saida).resolve() / PASTA_TREINAMENTO / split
+
+
+def _ligar(origem: Path, destino: Path) -> None:
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    _apagar(destino)
+    try:
+        os.link(origem, destino)
+    except OSError:
+        _gravar(destino, origem.read_bytes())
+
+
+def sincronizar_treinamento(raiz_saida: Path) -> int:
+    """Acerta a pasta do treino com as versões salvas: põe as que faltam (as salvas antes de ela existir) e tira as de
+    versões que não existem mais. Devolve quantos arquivos mudaram."""
+    raiz_saida = Path(raiz_saida).resolve()
+    mudou = 0
+    with _lock:
+        for sp in SPLITS:
+            raiz_split, base = raiz_saida / sp, _pasta_treinamento(raiz_saida, sp)
+            nomes = set()
+            for a in _anotacoes(raiz_split):
+                arqs = a.get("arquivos") or {}
+                if not all(arqs.get(k) for k in ("anotacao", "editada", "mascara")):
+                    continue
+                nome, ed, m = Path(arqs["anotacao"]).stem, raiz_split / arqs["editada"], raiz_split / arqs["mascara"]
+                if not (ed.is_file() and m.is_file()):
+                    continue
+                nomes.add(nome)
+                for origem, destino in ((ed, base / "imagens" / f"{nome}{ed.suffix}"),
+                                        (m, base / "mascaras" / f"{nome}.png")):
+                    if not destino.is_file():
+                        _ligar(origem, destino)
+                        mudou += 1
+            for sub in ("imagens", "mascaras"):
+                for c in ((base / sub).iterdir() if (base / sub).is_dir() else ()):
+                    if c.is_file() and c.stem not in nomes:
+                        _apagar(c)
+                        mudou += 1
+    return mudou
+
+
 def excluir_versao(raiz_saida: Path, split: str, nome: str) -> dict:
     """Apaga uma versão (editada, máscaras, anotação) e refaz os índices do split. Se o documento
     fica sem nenhuma versão, o original salvo dele também sai."""
@@ -486,6 +570,9 @@ def excluir_versao(raiz_saida: Path, split: str, nome: str) -> dict:
                 _apagar(c)
                 apagados.append(rel)
         _apagar(anot_arq)  # por último: a anotação é a marca de "versão completa"
+        base = _pasta_treinamento(raiz_saida, split)  # e a cópia do treino do modelo
+        for c in (*(base / "imagens").glob(f"{nome}.*"), base / "mascaras" / f"{nome}.png"):
+            _apagar(c)
         doc = anot["doc"]
         # originais que nenhuma versão restante usa saem (a comum ou a de uma versão com canal)
         usadas = set()
@@ -742,9 +829,14 @@ def salvar(sessao: Sessao, raiz_saida: Path, formato: str = "png", qualidade: in
             **extra,
         }
         anotacao["laudo"] = mod_laudo.gerar(anotacao)  # o relatório pericial em texto (para detectores que explicam)
+        base = _pasta_treinamento(raiz_saida, it.split)  # a pasta do treino do modelo: a editada e a máscara
+        treino = {"imagem": base / "imagens" / f"{nome}{ext}", "mascara": base / "mascaras" / f"{nome}.png"}
+        _ligar(arq["editada"], treino["imagem"])
+        _ligar(arq["mascara"], treino["mascara"])
         _gravar(arq["anotacao"], json.dumps(anotacao, ensure_ascii=False, indent=1).encode("utf-8"))
         _indexar(raiz_split, anotacao)
         _legenda(raiz_saida, sessao.ids_categoria)
         sessao.recomecar()
         return {"versao": versao, "arquivos": rel, "categorias": categorias, "split": it.split,
-                "edicoes": len(edicoes), "lista_edicoes": edicoes, "largura": W, "altura": H}
+                "edicoes": len(edicoes), "lista_edicoes": edicoes, "largura": W, "altura": H,
+                "treinamento": {k: v.relative_to(Path(raiz_saida).resolve()).as_posix() for k, v in treino.items()}}

@@ -56,8 +56,29 @@
       <label class="uc-opcao"><input type="radio" name="uc-metodo" value="profissional">
         <span><b>Edições profissionais</b> — nome e endereço (às vezes outros campos), no estilo escolhido abaixo</span></label>
       <label class="uc-opcao"><input type="radio" name="uc-metodo" value="fsts">
-        <span><b>Artigo FSTS (NeurIPS 2025)</b> — de 1 a 12 campos de texto por versão, com o tipo (cópia interna,
-          colagem de outro documento, remoção, inserção ou substituição) e as operações sorteados das tabelas do artigo</span></label>
+        <span><b>FSTS (artigo do NeurIPS 2025)</b> — como uma pessoa editaria: o nome e o endereço do cliente, coerentes,
+          com as operações das tabelas do artigo; ou o sorteio do artigo, à risca</span></label>
+    </fieldset>
+    <!-- as opções do FSTS (umclique.js): só com o método FSTS -->
+    <fieldset class="uc-campo uc-fsts" hidden>
+      <legend>FSTS</legend>
+      <label class="uc-opcao"><input type="radio" name="uc-fsts-modo" value="pessoa">
+        <span><b>Como uma pessoa</b> — o nome e/ou o endereço, em todo lugar onde aparecem e com o mesmo valor novo; a rua
+          nova com o bairro e o CEP dela (a cidade junto, se a rua é de outra); às vezes o CPF</span></label>
+      <label class="uc-opcao"><input type="radio" name="uc-fsts-modo" value="artigo">
+        <span><b>Como o artigo</b> — de 1 a 12 campos de texto quaisquer, com o tipo (cópia interna, colagem, remoção,
+          inserção ou substituição) sorteado em cada um</span></label>
+      <div class="uc-fsts-pessoa">
+        <div class="uc-fsts-linha"><span class="dica">Categorias (cada campo sai numa delas):</span>
+          <label><input type="checkbox" data-fsts-cat="copiar e colar"> copiar e colar</label>
+          <label><input type="checkbox" data-fsts-cat="pegar de outro documento"> pegar de outro documento</label>
+          <label><input type="checkbox" data-fsts-cat="apagar e substituir"> apagar e substituir</label></div>
+        <label class="uc-fsts-linha"><span class="dica">Nomes e endereços novos:</span>
+          <select id="uc-fsts-regiao">
+            <option value="CE">do Ceará (nomes com o peso de lá; ruas, bairros e CEPs reais)</option>
+            <option value="">do Brasil inteiro</option>
+          </select></label>
+      </div>
     </fieldset>
     <div class="uc-escolhas">
       <fieldset class="uc-campo">
