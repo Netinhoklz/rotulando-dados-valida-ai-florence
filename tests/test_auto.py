@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import re
 import shutil
@@ -14,11 +15,7 @@ from rotulador.ops import auto, executar, geradores
 from rotulador.registro import Item
 from rotulador.sessao import Sessao
 
-try:
-    import rapidocr_onnxruntime  # noqa: F401
-    TEM_OCR = True
-except ImportError:
-    TEM_OCR = False
+TEM_OCR = importlib.util.find_spec("paddleocr") is not None  # o OCR (paddleocr) instalado
 
 IDS = {"nome": 1, "cpf/cnpj": 2, "endereço": 3, "bairro": 4, "cep": 5, "cidade/uf": 6, "data": 7,
        "mês de referência": 8, "valor": 9, "consumo/leitura": 10, "codigo barras": 11, "linha digitável": 12,
@@ -216,7 +213,7 @@ class TestTrocarCampo(Base):
         self.assertEqual(len(res.meta["digitos"]), 44)
 
 
-@unittest.skipUnless(TEM_OCR, "OCR (rapidocr_onnxruntime) não instalado")
+@unittest.skipUnless(TEM_OCR, "OCR (paddleocr) não instalado")
 class TestComOCR(Base):
     def test_detecta_campos(self):
         from rotulador import ocr
@@ -244,7 +241,7 @@ class TestComOCR(Base):
         self.assertEqual(len(self.s.historico_), len(feitas) - 1)
 
 
-@unittest.skipUnless(TEM_OCR, "OCR (rapidocr_onnxruntime) não instalado")
+@unittest.skipUnless(TEM_OCR, "OCR (paddleocr) não instalado")
 class TestAPIAutomatica(unittest.TestCase):
     def setUp(self):
         from app import RAIZ, carregar_categorias, criar_app

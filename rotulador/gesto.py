@@ -136,7 +136,8 @@ def pressao(n: int, rng: random.Random) -> np.ndarray:
     sobe = np.clip(s / max(1e-3, rng.uniform(0.08, 0.16)), 0, 1)
     cai = np.clip((1 - s) / max(1e-3, rng.uniform(0.1, 0.2)), 0, 1)
     osc = 1 + 0.05 * np.sin(2 * math.pi * rng.uniform(1, 3) * s + rng.uniform(0, 6))
-    return np.clip((0.55 + 0.45 * np.minimum(sobe, cai)) * osc, 0.3, 1.0)
+    # n valores: com um toque só (traço de comprimento zero) a curva tem 2 pontos e o carimbo quebrava
+    return np.clip((0.55 + 0.45 * np.minimum(sobe, cai)) * osc, 0.3, 1.0)[:max(1, n)]
 
 
 def toques(traco: np.ndarray, raio: float, rng: random.Random, espacamento: float = 0.25,

@@ -76,6 +76,18 @@ class TestFerramentasPro(Base):
         self.assertTrue(alt[372:388, 52:68].any())
         self.assertFalse(alt[:250].any())
 
+    def test_carimbo_copia_o_pixel_exato_com_origem_em_fracao(self):
+        """O clique com zoom cai em fração de pixel: sem escala nem giro, a cópia é o pixel da origem, como no
+        Photoshop (a interpolação borrava a cópia e tirava o grão do papel)."""
+        ruido = np.random.default_rng(1).integers(-12, 13, self.s.atual.shape)
+        self.s.atual[:] = np.clip(self.s.atual.astype(int) + ruido, 0, 255).astype(np.uint8)  # papel com grão
+        antes = self.s.atual.copy()
+        p = {"pontos": [[100, 300], [200, 300]], "tamanho": 30, "dureza": 1,
+             "origem_x": 100.5, "origem_y": 120.3, "inicio_x": 100.0, "inicio_y": 300.0}
+        self.aplicar("carimbo", p)
+        dx, dy = round(100.5 - 100.0), round(120.3 - 300.0)
+        np.testing.assert_array_equal(self.s.atual[292:309, 110:190], antes[292 + dy:309 + dy, 110 + dx:190 + dx])
+
     def test_recuperacao_mantem_cor_do_destino(self):
         p = {"pontos": [[150, 150], [220, 150]], "tamanho": 14, "origem_x": 150, "origem_y": 20,
              "inicio_x": 150, "inicio_y": 150}  # fonte = faixa azul do topo

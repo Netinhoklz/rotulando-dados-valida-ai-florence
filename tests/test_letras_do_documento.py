@@ -2,8 +2,9 @@
 
 O documento sintético é escrito na Trebuchet MS — fora das 10 fontes mais usadas, então a "mesma fonte" só sai
 aproximada —, com rótulos cinza em negrito (outro estilo, que não pode doar letra), luz desigual no papel, grão,
-desfoque e JPEG. As linhas do OCR têm o texto exato (o teste não depende do motor de OCR; com o RapidOCR instalado, o
+desfoque e JPEG. As linhas do OCR têm o texto exato (o teste não depende do motor de OCR; com o OCR (paddleocr) instalado, o
 resultado é relido)."""
+import importlib.util
 import io
 import types
 import unittest
@@ -17,11 +18,7 @@ from rotulador.ops import tecnicas
 from rotulador.selecao import mascara_tinta, vazia
 from rotulador.sessao import ErroOperacao
 
-try:
-    import rapidocr_onnxruntime  # noqa: F401
-    TEM_OCR = True
-except ImportError:
-    TEM_OCR = False
+TEM_OCR = importlib.util.find_spec("paddleocr") is not None  # o OCR (paddleocr) instalado
 
 LUMA = np.float32([0.299, 0.587, 0.114])
 CRU = {"pericia": "cru"}  # sem acabamento: a tinta colada sai como foi transferida
@@ -290,7 +287,7 @@ class TestLetrasDoDocumento(unittest.TestCase):
         # sem o maior (o da vírgula, que tem o vão dela a mais): os espaços entre palavras como os do original
         self.assertTrue(all(abs(v / espaco_original - 1) < 0.3 for v in novos[:-1]), (espaco_original, novos))
 
-    @unittest.skipUnless(TEM_OCR, "RapidOCR não instalado")
+    @unittest.skipUnless(TEM_OCR, "OCR (paddleocr) não instalado")
     def test_ocr_le_o_valor_novo(self):
         res = _rodar(self.img, self.doc, self.campo, "MARINA DE SOUSA LIMA", semente=5, acabamento=PADRAO,
                      conferir=True)
@@ -298,6 +295,58 @@ class TestLetrasDoDocumento(unittest.TestCase):
             self.skipTest("o OCR não lê nem o campo original: não há como conferir")
         self.assertIs(res.meta["conferido_ocr"], True)
         self.assertEqual(res.meta["fornecedores"].get("grao"), "espectral")
+
+
+class TestLetraNoQuadro(unittest.TestCase):
+    """Campo dentro de um quadro de boleto, com o fio encostado no pé das letras (a conta da NIO): a letra não leva o
+    fio, nem ao ser medida e apagada nem ao ser doada."""
+
+    def setUp(self):
+        W, H = 900, 260
+        rng = np.random.default_rng(4)
+        papel = 240 + cv2.GaussianBlur(rng.normal(0, 4, (H, W)).astype(np.float32), (0, 0), 0.8)
+        im = Image.fromarray(np.clip(np.stack([papel] * 3, -1) + 0.5, 0, 255).astype(np.uint8))
+        d = ImageDraw.Draw(im)
+        f = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", 30)
+        linhas = []
+        for xy, txt in (((250, 40), "RUA 58 CJ 480"), ((250, 150), "TOTAL 123 456 789 0")):
+            d.text(xy, txt, font=f, fill=(40, 40, 40))
+            x0, y0, x1, y1 = d.textbbox(xy, txt, font=f)
+            linhas.append({"caixa": [x0 - 3, y0 - 4, x1 + 3, y1 + 4], "texto": txt, "bruto": txt, "conf": 0.99})
+        self.y_fio = d.textbbox((250, 40), "8", font=f)[3]
+        d.rectangle([20, self.y_fio, 880, self.y_fio + 1], fill=(40, 40, 40))  # o fio do quadro no pé das letras
+        self.img = np.asarray(im).copy()
+        self.campo = {"id": "t1", "caixa": linhas[0]["caixa"], "texto": "RUA 58 CJ 480", "categoria": "endereço",
+                      "tipo": "texto"}
+        self.doc = types.SimpleNamespace(img=self.img, linhas=linhas, campos=[self.campo], doc="quadro", split="treino")
+        self.doc.inventario = lambda: glifos.inventario("quadro", self.img, linhas)
+
+    def test_letra_sem_o_fio(self):
+        c = tecnicas._C(self.img, {"tecnica": "caractere.copiar_glifo", "campo": self.campo}, self.img, self.doc,
+                        None, None, None)
+        digitos = [g for g in c.glifos if g.ch.isdigit()]
+        alturas = {g.ch: g.altura for g in digitos}
+        self.assertLessEqual(max(alturas.values()) - min(alturas.values()), 1, alturas)  # o "0" não leva o fio
+        self.assertTrue(all(g.y1 <= self.y_fio for g in digitos), [(g.ch, g.y1, self.y_fio) for g in digitos])
+
+    def test_apagar_a_letra_poupa_a_vizinha(self):
+        """O halo do furo do "8" (2-3 px) raspava a borda do "5" ao lado: com um "1" estreito no lugar, sobravam dois
+        pontos do "5", um ":"."""
+        c = tecnicas._C(self.img, {"tecnica": "caractere.copiar_glifo", "campo": self.campo}, self.img, self.doc,
+                        None, None, None)
+        cinco, oito = (next(g for g in c.glifos if g.ch == ch) for ch in "58")
+        tela = tecnicas._Tela(c, c.caixa)
+        furo = tecnicas._furo_glifos(tela, [oito])
+        self.assertFalse((furo & tela.mascara(cinco.caixa, cinco.tinta)).any())
+        self.assertTrue(tela.mascara(oito.caixa, oito.tinta)[~furo].sum() == 0)  # o "8" sai inteiro
+
+    def test_trocar_o_digito_nao_abre_buraco_no_fio(self):
+        p = {"tecnica": "caractere.copiar_glifo", "campo": self.campo, "semente": 2, "acabamento": CRU,
+             "conferir_ocr": False, "opcoes": {"alvo": "digito", "colagem": "tinta", "apagar": "patchmatch"}}
+        res = tecnicas.tecnica(self.img, p, vazia(*self.img.shape[:2]), base=self.img, documento=self.doc)
+        out = _aplicado(self.img, res)
+        fio = slice(self.y_fio, self.y_fio + 2), slice(250, 480)
+        self.assertLess(np.abs(out[fio].astype(int) - self.img[fio].astype(int)).max(), 40)
 
 
 if __name__ == "__main__":

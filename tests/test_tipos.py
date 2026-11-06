@@ -95,7 +95,7 @@ class TestPlanoComTipos(unittest.TestCase):
             self.assertAlmostEqual(conta_tipo["valor"] / 1000, 0.8, delta=0.05, msg=dist)  # pesos 4 : 1
 
 
-@unittest.skipUnless(TEM_OCR, "OCR (rapidocr_onnxruntime) não instalado")
+@unittest.skipUnless(TEM_OCR, "OCR (paddleocr) não instalado")
 class TestAPITipos(unittest.TestCase):
     def setUp(self):
         from app import RAIZ, carregar_categorias, criar_app

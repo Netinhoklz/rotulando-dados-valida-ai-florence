@@ -1,21 +1,46 @@
+# Python 3.10 a 3.13 (o paddlepaddle ainda não tem pacote para o 3.14). Depois deste arquivo, instale o OCR sem
+# dependências: pip install --no-deps -r requirements-ocr.txt
 flask>=3.0
 waitress>=3.0  # servidor para várias pessoas ao mesmo tempo (sem ele, app.py usa o do Flask)
 pywebview>=6.2  # o editor numa janela do Windows (WebView2), com todos os atalhos do Photoshop; sem ele, abre no navegador
-numpy>=1.26
+numpy>=1.26,<2.4  # o paddlex pede < 2.4
 pillow>=10.1
-opencv-python-headless>=4.8
+opencv-contrib-python==4.10.0.84  # a versão do paddlex, que confere este pacote pelo nome (o -headless não passa)
 pymupdf>=1.24
 pillow-heif>=0.16
 segno>=1.6
 openpyxl>=3.1  # a planilha do dataset (saida/dataset.xlsx)
-# OCR (detecção automática de campos). O rapidocr_onnxruntime pede o opencv-python "cheio",
-# que conflita com o opencv-python-headless acima: instale-o SEM dependências depois deste arquivo:
-#   pip install --no-deps rapidocr_onnxruntime==1.2.3   (rotulador/ocr.py usa o detector e o decodificador dessa versão)
-# Os modelos do OCR (detector PP-OCRv6 small + reconhecedor latino PP-OCRv5, ONNX, ~18 MB) vêm da conta oficial da
-# PaddlePaddle no ModelScope (nunca do Hugging Face), baixados pelo próprio Python na primeira leitura, para
-# modelos/ocr (rotulador/ocr.py); sem rede, lê com o modelo antigo do rapidocr.
-onnxruntime>=1.17
-pyclipper>=1.3
-shapely>=2.0
-pyyaml>=6.0
-six>=1.16
+# O OCR é o paddleocr (requirements-ocr.txt). Abaixo, as dependências dele, do paddlex e do paddlepaddle, MENOS as
+# bibliotecas do Hugging Face (huggingface-hub, que o paddlex usa só para baixar modelos de lá, e safetensors, que o
+# paddle usa só em checkpoints de treino): rotulador/ocr.py põe módulos vazios no lugar delas. Os modelos (detector
+# PP-OCRv6 small + reconhecedor latino PP-OCRv5, ~18 MB) vêm da conta oficial da PaddlePaddle no ModelScope, baixados
+# pelo próprio Python na primeira leitura para modelos/ocr, e vão ao paddleocr como pasta local.
+# paddlepaddle
+httpx
+protobuf>=3.20.2
+opt_einsum==3.3.0
+networkx
+typing_extensions
+setuptools
+# paddlex (e o extra ocr-core)
+aistudio-sdk>=0.3.5
+chardet
+colorlog
+filelock
+modelscope>=1.28.0
+packaging
+pandas>=1.3
+prettytable
+py-cpuinfo
+pydantic>=2
+PyYAML==6.0.2
+requests
+ruamel.yaml
+ujson
+imagesize
+pyclipper
+pypdfium2>=4
+python-bidi
+shapely
+# paddleocr
+aiohttp>=3.8.0

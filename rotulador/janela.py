@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-TITULO = "Rotulador UNIDOCK"
+TITULO = "Rotulador"
 PERFIL = Path(os.environ.get("ROTULADOR_JANELA_PERFIL") or Path(__file__).resolve().parents[1] / ".janela")
 
 

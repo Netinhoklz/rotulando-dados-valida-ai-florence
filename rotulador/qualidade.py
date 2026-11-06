@@ -78,17 +78,41 @@ def duplicadas(anots: list[dict]) -> dict[str, list[str]]:
     return out
 
 
+def _linha_inteira(img: np.ndarray, bbox) -> list[int]:
+    """A caixa da linha inteira em volta de ``bbox``: o texto novo é o do campo todo, e a edição de um dígito, de um
+    pedaço ou do fim do campo tem a caixa só do que mudou. Vai para os lados pelas palavras (vãos de tinta) enquanto
+    o vão for menor que 1 altura de linha (o que separa o rótulo do valor, ou uma coluna da outra, é maior)."""
+    from . import ocr
+
+    x0, y0, x1, y1 = (int(v) for v in bbox)
+    h = max(1, y1 - y0)
+    palavras = ocr.palavras_por_tinta(img, [0, y0, img.shape[1], y1])
+    # as palavras na caixa ou encostadas nela (o fim removido virou papel: o campo é o que ficou ao lado)
+    dentro = [i for i, (a, b) in enumerate(palavras) if a < x1 + h and b > x0 - h]
+    if not dentro:
+        return [x0, y0, x1, y1]
+    i, j = dentro[0], dentro[-1]
+    while i > 0 and palavras[i][0] - palavras[i - 1][1] <= h:
+        i -= 1
+    while j < len(palavras) - 1 and palavras[j + 1][0] - palavras[j][1] <= h:
+        j += 1
+    return [min(x0, palavras[i][0]), y0, max(x1, palavras[j][1]), y1]
+
+
 def _ler_ocr(editada: np.ndarray, e: dict) -> bool | None:
     """True se o reconhecedor lê o campo editado como o texto novo; None quando não dá para julgar."""
     from . import ocr
     from .ops.tecnicas import lido_igual
 
-    if not e.get("bbox") or not e.get("texto_novo"):
+    if not e.get("bbox") or not e.get("texto_novo") or " | " in e["texto_novo"]:  # o bloco: várias linhas
         return None
     t = catalogo.TECNICAS.get(e.get("tecnica") or "")
     if t is None or "texto" not in t.tipos or e["tecnica"] in _RETOQUE:
         return None
-    x0, y0, x1, y1 = (int(v) for v in e["bbox"])
+    # a caixa da edição de um pedaço (um dígito, o sobrenome, o fim removido) é só o que mudou; o texto novo é o campo
+    parcial = e.get("granularidade") in ("caractere", "trecho") or e["tecnica"] == "campo.remover"
+    caixa = _linha_inteira(editada, e["bbox"]) if parcial else [int(v) for v in e["bbox"]]
+    x0, y0, x1, y1 = ocr.caixa_da_linha(editada, caixa)  # a seleção a laço sobra papel em cima e embaixo
     H, W = editada.shape[:2]
     m = max(3, int(0.2 * (y1 - y0)))
     rec = editada[max(0, y0 - m):min(H, y1 + m), max(0, x0 - m):min(W, x1 + m)]

@@ -134,7 +134,9 @@ _DIZ_APAGAR = {"patchmatch": "apagou com o preenchimento inteligente (Content-Aw
                "carimbo": "apagou com o carimbo (clone)", "recuperar": "apagou com o pincel de recuperação"}
 _DIZ_ANTIALIAS = {"nitida": "Nítida", "suave": "Suave", "precisa": "Precisa", "forte": "Forte", "nenhuma": "Nenhuma"}
 _DIZ_NITIDEZ = {"casada": "desfocou o texto até parecer o do documento", "nitida": "deixou o texto nítido como digitou",
-                "manual": "passou um desfoque na área editada"}
+                "manual": "passou um desfoque na área editada", "igual": "desfocou o texto até ficar igual ao do documento"}
+_DIZ_COR = {"conta_gotas": "pegou a cor com o conta-gotas", "segura": "escreveu num preto qualquer",
+            "calibrada": "acertou a cor até a tinta nova ficar igual à antiga"}
 _DIZ_RETOQUE = {"nitidez": "aguçou", "ruido": "pôs ruído", "superficie": "suavizou (desfoque de superfície)"}
 _DIZ_PROGRAMA = {"photoshop": "Photoshop", "photoshop_web": "Photoshop (Salvar para Web)", "gimp": "GIMP", "paint": "Paint",
                  "app_celular": "um app de celular", "photopea": "Photopea"}
@@ -146,7 +148,7 @@ def descrever(h: dict | None) -> str:
         return "acabamento perfeito: só a tinta muda, com cor, grão e desfoque iguais aos do documento"
     partes = [_DIZ_SELECAO.get(h["selecao"], h["selecao"]), _DIZ_APAGAR.get(h["apagar"], h["apagar"]),
               f"escreveu com a suavização “{_DIZ_ANTIALIAS.get(h['antialias'], h['antialias'])}”",
-              "pegou a cor com o conta-gotas" if h["cor"] == "conta_gotas" else "escreveu num preto qualquer",
+              _DIZ_COR.get(h["cor"], "escreveu num preto qualquer"),
               _DIZ_NITIDEZ.get(h["nitidez"], h["nitidez"])]
     if h.get("retoques"):
         partes.append(" e ".join(_DIZ_RETOQUE.get(r, r) for r in h["retoques"]))
@@ -273,7 +275,9 @@ def texto(h: dict, rng: random.Random, desfoque_scan: float, altura: float) -> d
     dy, ny = gesto.setas(rng.gauss(0.0, 2.0 * k) * tela, rng, tela, k)
     dx, dy = int(np.clip(dx, -2, 2)), int(np.clip(dy, -2, 2))
     nit = h.get("nitidez")
-    if nit == "casada":  # desfocou até parecer o do scan: chega perto, não no mesmo valor
+    if nit == "igual":  # comparou com o texto antigo ampliado até o desfoque ficar o mesmo (FSTS "como uma pessoa")
+        desf = max(0.0, desfoque_scan)
+    elif nit == "casada":  # desfocou até parecer o do scan: chega perto, não no mesmo valor
         desf = max(0.0, desfoque_scan * rng.uniform(0.75, 1.3))
     else:  # nítida como digitou; no "manual" o desfoque vem depois, na seleção inteira (retoque)
         desf = 0.0
@@ -283,8 +287,10 @@ def texto(h: dict, rng: random.Random, desfoque_scan: float, altura: float) -> d
 
 def cor_conta_gotas(img: np.ndarray, tinta: np.ndarray, h: dict, rng: random.Random) -> np.ndarray | None:
     """A cor que o conta-gotas pegou: um ponto (ou a média 3x3/5x5 em volta dele) no núcleo da tinta antiga — perto
-    da cor certa, com o ruído e o antialias daquele ponto. Na "segura", um cinza escuro (0–64) se a tinta é neutra."""
-    if not tinta.any():
+    da cor certa, com o ruído e o antialias daquele ponto. Na "segura", um cinza escuro (0–64) se a tinta é neutra.
+    Na "calibrada", None: a pessoa acerta a cor até a tinta nova ficar igual à antiga, e quem escreve usa a cor
+    calibrada (o conta-gotas no miolo do traço dá a parte mais escura, e o texto novo, uniforme, saía mais escuro)."""
+    if not tinta.any() or h.get("cor") == "calibrada":
         return None
     f = img.astype(np.float32)
     lum = f @ np.float32([0.299, 0.587, 0.114])

@@ -41,7 +41,7 @@ class TestDataEnvio(unittest.TestCase):
         self.assertTrue(3 <= (dt.date(2024, 5, 20) - d).days <= 85, texto)
 
 
-@unittest.skipUnless(TEM_OCR, "OCR (rapidocr_onnxruntime) não instalado")
+@unittest.skipUnless(TEM_OCR, "OCR (paddleocr) não instalado")
 class TestLoteComCapturaAntes(unittest.TestCase):
     def setUp(self):
         from app import RAIZ, carregar_categorias, criar_app

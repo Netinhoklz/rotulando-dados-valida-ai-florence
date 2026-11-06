@@ -1,7 +1,10 @@
-"""Motor do OCR: PP-OCRv6 (detector) + latino PP-OCRv5 (reconhecedor), baixados do ModelScope na primeira vez (nunca
-do Hugging Face), com o RapidOCR antigo de reserva. Sem rede: o download é simulado (falha ou arquivo errado)."""
+"""Motor do OCR: o paddleocr com o PP-OCRv6 (detector) e o latino PP-OCRv5 (reconhecedor), baixados do ModelScope na
+primeira vez, e nada do Hugging Face (nem modelo nem biblioteca). Sem rede: o download é simulado (falha ou arquivo
+errado)."""
+import importlib.metadata
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,7 +16,7 @@ from PIL import Image, ImageDraw, ImageFont
 from rotulador import ocr
 from tests.test_auto import TEM_OCR
 
-TEM_MODELOS = all((ocr.MODELOS / m["repo"] / "inference.onnx").is_file() for m in (ocr._DET, ocr._REC))
+TEM_MODELOS = all((ocr.MODELOS / m["repo"] / arq).is_file() for m in (ocr._DET, ocr._REC) for arq in m["sha256"])
 
 
 def linha(texto: str, tam: int = 44) -> tuple[np.ndarray, list[int]]:
@@ -38,28 +41,29 @@ class MotorIsolado(unittest.TestCase):
         self.tmp.cleanup()
 
 
-@unittest.skipUnless(TEM_OCR, "OCR (rapidocr_onnxruntime) não instalado")
-class TestReserva(MotorIsolado):
-    def test_sem_rede_cai_no_rapidocr(self):
+@unittest.skipUnless(TEM_OCR, "OCR (paddleocr) não instalado")
+class TestDownload(MotorIsolado):
+    def test_sem_rede_avisa_e_nao_deixa_nada_pela_metade(self):
         ocr._motor = ocr._nome_motor = None
         vazio = self.dir / "modelos"
         with mock.patch.object(ocr, "MODELOS", vazio), \
                 mock.patch("urllib.request.urlopen", side_effect=OSError("sem rede")), \
-                mock.patch("sys.stderr", io.StringIO()) as err:
-            self.assertEqual(ocr.motor(), ocr.MOTOR_RESERVA)
-        self.assertIn("sem o", err.getvalue())  # avisa qual motor ficou
-        self.assertEqual(list(vazio.rglob("*.onnx*")), [])  # nada pela metade
+                mock.patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(ocr.OCRIndisponivel) as erro:
+                ocr.motor()
+        self.assertIn("ModelScope", str(erro.exception))
+        self.assertEqual([p for p in vazio.rglob("*") if p.is_file()], [])
 
     def test_arquivo_que_nao_confere_e_descartado(self):
         ocr._motor = ocr._nome_motor = None
         vazio = self.dir / "modelos"
         with mock.patch.object(ocr, "MODELOS", vazio), \
                 mock.patch("urllib.request.urlopen", side_effect=lambda *a, **k: io.BytesIO(b"nao e um modelo")), \
-                mock.patch("sys.stderr", io.StringIO()) as err:
-            self.assertEqual(ocr.motor(), ocr.MOTOR_RESERVA)
-        self.assertIn("sha256", err.getvalue())
-        self.assertEqual(list(vazio.rglob("*.onnx*")), [])
-        self.assertEqual(list(vazio.rglob("*.yml*")), [])  # o .yml também é conferido
+                mock.patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(ocr.OCRIndisponivel) as erro:
+                ocr.motor()
+        self.assertIn("sha256", str(erro.exception))
+        self.assertEqual([p for p in vazio.rglob("*") if p.is_file()], [])  # nem o .yml fica
 
     def test_baixa_do_modelscope_e_nunca_do_hugging_face(self):
         """A empresa proíbe o Hugging Face: os modelos vêm da conta oficial da PaddlePaddle no ModelScope."""
@@ -70,23 +74,31 @@ class TestReserva(MotorIsolado):
             pedidos.append(url)
             raise OSError("sem rede")
         with mock.patch.object(ocr, "MODELOS", self.dir / "modelos"), mock.patch("urllib.request.urlopen", side_effect=abrir), \
-                mock.patch("sys.stderr", io.StringIO()):
+                mock.patch("sys.stderr", io.StringIO()), self.assertRaises(ocr.OCRIndisponivel):
             ocr.motor()
         self.assertTrue(pedidos)
         for url in pedidos:
             self.assertTrue(url.startswith("https://www.modelscope.cn/models/PaddlePaddle/"), url)
             self.assertNotIn("huggingface", url.lower())
 
-    def test_reserva_le_e_grava_o_nome_no_cache(self):
-        ocr._motor = ocr._nome_motor = None
-        img, _caixa = linha("CURITIBA 2026")
-        cache = self.dir / "c.json"
-        with mock.patch.object(ocr, "MODELOS", self.dir / "modelos"), \
-                mock.patch("urllib.request.urlopen", side_effect=OSError("sem rede")), \
-                mock.patch("sys.stderr", io.StringIO()):
-            lido = ocr.ler(img, cache)
-        self.assertTrue(lido)
-        self.assertEqual(json.loads(cache.read_text(encoding="utf-8"))["motor"], ocr.MOTOR_RESERVA)
+
+@unittest.skipUnless(TEM_OCR and TEM_MODELOS, "modelos do OCR não baixados")
+class TestSemHuggingFace(unittest.TestCase):
+    def test_nenhuma_biblioteca_do_hugging_face(self):
+        """O paddleocr abre sem o huggingface_hub e sem o safetensors instalados: no lugar deles há módulos vazios,
+        que recusam qualquer uso, e o paddlex não tem o Hugging Face entre as fontes de modelo."""
+        ocr.motor()
+        for dist in ("huggingface-hub", "safetensors", "transformers", "tokenizers"):
+            with self.assertRaises(importlib.metadata.PackageNotFoundError, msg=dist):
+                importlib.metadata.version(dist)
+        for nome in ("huggingface_hub", "huggingface_hub.utils", "safetensors", "safetensors.numpy"):
+            self.assertIsNone(getattr(sys.modules[nome], "__file__", None), nome)  # o vazio, não um instalado
+        with self.assertRaises(AttributeError):
+            sys.modules["huggingface_hub"].snapshot_download  # noqa: B018
+        with self.assertRaises(RuntimeError):
+            sys.modules["safetensors.numpy"].safe_open("x.safetensors", "np")
+        from paddlex.inference.utils import official_models
+        self.assertNotIn("huggingface", [h.alias for h in official_models._ModelManager.hoster_candidates])
 
 
 class TestCache(MotorIsolado):

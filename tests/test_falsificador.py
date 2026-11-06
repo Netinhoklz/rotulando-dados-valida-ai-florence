@@ -196,7 +196,7 @@ class TestPlanejar(unittest.TestCase):
             self.assertIn(t.id, pesos)
 
 
-@unittest.skipUnless(TEM_OCR, "OCR (rapidocr_onnxruntime) não instalado")
+@unittest.skipUnless(TEM_OCR, "OCR (paddleocr) não instalado")
 class TestAPIFalsificador(unittest.TestCase):
     def setUp(self):
         from app import RAIZ, carregar_categorias, criar_app

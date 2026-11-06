@@ -1,6 +1,6 @@
 """Técnica pagina.recriar (documento refeito do zero): todas as linhas de texto da página apagadas e
 re-tipografadas com o MESMO texto, logotipo e códigos mantidos. Documentos sintéticos e OCR em cache como em
-test_tecnicas; quando o RapidOCR está instalado, as linhas refeitas são relidas."""
+test_tecnicas; quando o OCR (paddleocr) está instalado, as linhas refeitas são relidas."""
 import unittest
 
 import numpy as np
@@ -92,7 +92,7 @@ class TestRecriar(Base):
             self.assertEqual((r1.meta["caixas"], r1.meta["fontes"], r1.meta["opcoes"]),
                              (r2.meta["caixas"], r2.meta["fontes"], r2.meta["opcoes"]), fe)
 
-    @unittest.skipUnless(TEM_OCR, "OCR (rapidocr_onnxruntime) não instalado")
+    @unittest.skipUnless(TEM_OCR, "OCR (paddleocr) não instalado")
     def test_linhas_continuam_legiveis(self):
         """Pelo menos 60% das linhas refeitas são relidas pelo OCR com o mesmo texto (entre as que o OCR já lê
         certo no original: controle), e a conferência interna da técnica passou."""

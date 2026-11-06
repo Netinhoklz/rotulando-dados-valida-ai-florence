@@ -144,7 +144,8 @@ function campo(c, o, aoMudar) {
     entrada.value = String(o[c.chave] || (c.tipo === "fonte" ? app.estado.fonte_padrao : c.padrao));
   } else if (c.tipo === "texto") {
     entrada = el("input", { type: "text", id, value: o[c.chave] ?? "", class: c.largo ? "largo" : "", "data-dado": "1",
-      oninput: (e) => { o[c.chave] = e.target.value; aoMudar(); } });
+      oninput: (e) => { o[c.chave] = e.target.value; aoMudar(); },
+      onfocus: () => { app.textoNovo = false; } });  // clicou no campo: o texto que está lá fica (digita junto)
   } else if (c.tipo === "faixa") {
     const num = el("input", { type: "number", min: c.min, max: c.max, step: c.passo, value: o[c.chave] });
     entrada = el("input", { type: "range", id, min: c.min, max: c.max, step: c.passo, value: o[c.chave],
@@ -165,6 +166,7 @@ const PARA_QUE = {
   ret: "Seleciona um retângulo. A seleção limita onde as outras ferramentas mexem.",
   elipse: "Seleciona uma elipse (um carimbo redondo, um logotipo).",
   laco: "Seleciona desenhando o contorno à mão livre, ponto a ponto.",
+  caneta: "Seleciona com um caminho de pontos e curvas, como a Caneta do Photoshop: clique faz canto, arrastar faz curva; feche no 1º ponto (ou Enter).",
   varinha: "Seleciona os pixels de cor parecida com a do clique (o fundo de um campo, uma faixa colorida).",
   pincelsel: "Pinta a seleção com um pincel: bom para pegar só as letras de uma palavra.",
   pincel: "Pinta com a cor de frente, com borda suave. Para retocar traços de tinta.",
@@ -178,7 +180,7 @@ const PARA_QUE = {
   remendo: "Selecione o que quer cobrir e arraste até um pedaço de papel limpo: ele vira o remendo, com a luz casada.",
   retoque: "Pincel de retoque: desfoca, aguça, clareia ou escurece só onde passa (acabamento da edição).",
   texto: "Escreve um texto novo onde você clicar, na fonte, tamanho e cor escolhidos (🔍 descobre a fonte do documento).",
-  substituir: "Arraste sobre o texto antigo, digite o novo e Enter: o antigo é apagado e o novo sai na fonte, cor e posição estimadas.",
+  substituir: "Clique no texto antigo (ou arraste sobre ele), digite o novo e Enter: o antigo é apagado e o novo sai na fonte, cor e posição estimadas.",
   transformar: "Arraste a seleção e os pixels vão junto; o buraco é preenchido com o papel em volta (Alt = duplicar). Enter aplica.",
   colar: "Cola um trecho de outro documento do MESMO split: copie lá (Ctrl+C) e cole aqui (Ctrl+V), ou escolha o trecho.",
 };
@@ -864,6 +866,11 @@ function campoPerto(campos, p) {
   }
   return melhor;
 }
+// o campo de texto (lido pelo OCR) em que o ponto ``p`` cai, ou perto dele; null se não há
+app.campoNoPonto = async (p) => {
+  if (!app.sessao) return null;
+  return campoPerto((await get(`/api/campos/${encodeURIComponent(app.sessao.id)}`)).campos, p);
+};
 app.gerarTexto = async () => {
   if (!app.sessao) return;
   const id = app.sessao.id, bb = app.selBbox(), anc = app.ferramenta?.ancora;
@@ -1298,7 +1305,7 @@ function montarMouse() {
 // ------------------------------------------------------------------ atalhos do Photoshop (Windows)
 // A letra escolhe a ferramenta visível do grupo (como no Photoshop) e Shift+letra passa para a próxima do grupo
 // (Shift+M: retangular ↔ elíptica; Shift+J: corretivo → recuperação → remendo; Shift+T: texto ↔ substituir).
-const LETRAS = { v: "transformar", m: "ret", l: "laco", w: "varinha", i: "contagotas", j: "corretivo", b: "pincel",
+const LETRAS = { v: "transformar", m: "ret", l: "laco", p: "caneta", w: "varinha", i: "contagotas", j: "corretivo", b: "pincel",
   s: "carimbo", e: "borracha", g: "balde", o: "retoque", t: "texto", u: "forma", h: "mao", z: "zoom" };
 function ferramentaDaLetra(l, shift) {
   if (l === "q") return "pincelsel";  // Q: máscara rápida, aqui o pincel que pinta a seleção
@@ -1407,10 +1414,28 @@ function montarTeclado() {
     if (menuAberto() || document.querySelector("dialog[open]:not(#modal)")) return;  // menu ou glossário abertos
     if (digitando) {
       if (ev.key === "Enter" && alvo.dataset?.dado && app.ferramenta?.tecla) { ev.preventDefault(); app.ferramenta.tecla(ev); }
-      if (ev.key === "Escape") alvo.blur();
+      if (ev.key === "Escape") {  // no campo "Texto", Esc cancela o texto (como diz a dica), não só sai do campo
+        if (alvo.dataset?.dado && app.ferramenta?.tecla) app.ferramenta.tecla(ev);
+        alvo.blur();
+      }
       return;
     }
     const k = ev.key, l = k.length === 1 ? k.toLowerCase() : k, ctrl = ev.ctrlKey || ev.metaKey, alt = ev.altKey, shift = ev.shiftKey;
+    // ferramenta de texto com a linha de base posta: letra, número, espaço e Backspace vão para o campo "Texto", mesmo
+    // com o foco fora dele (clicou num painel, na imagem). Antes, cada letra digitada virava um atalho de ferramenta
+    const campoTexto = ["texto", "substituir"].includes(app.idFerramenta) && app.ferramenta?.ancora ? $("op-texto") : null;
+    if (campoTexto && !ctrl && !alt && (k.length === 1 || k === "Backspace" || k === "Delete")) {
+      ev.preventDefault();
+      // a 1ª tecla depois de pôr a linha de base troca o texto que havia (Backspace e Delete o apagam); Delete com o
+      // cursor no fim não apaga nada (e não preenche a seleção do texto antigo)
+      const v = app.textoNovo ? "" : campoTexto.value;
+      campoTexto.focus();
+      app.textoNovo = false;
+      campoTexto.value = k === "Backspace" ? v.slice(0, -1) : k === "Delete" ? v : v + k;
+      campoTexto.setSelectionRange(campoTexto.value.length, campoTexto.value.length);
+      campoTexto.dispatchEvent(new Event("input", { bubbles: true }));
+      return;
+    }
     const dir = k === "]" || k === "}", esq = k === "[" || k === "{";
     const feito = (fn) => { ev.preventDefault(); fn(); };
     if (k === " ") { ev.preventDefault(); if (!app.espaco) { app.espaco = true; $("tela").style.cursor = ctrl ? "zoom-in" : "grab"; } return; }

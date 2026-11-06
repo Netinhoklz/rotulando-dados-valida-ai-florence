@@ -36,11 +36,11 @@ NOME_TRAVADO = "dataset (nova).xlsx"
 NOMES_SPLIT = {"treino": "Treino", "teste": "Teste", "validacao": "Validação"}
 PASTAS = [("originais/", "o documento original (sem edição), o par de cada versão"),
           ("editadas/", "as imagens editadas (fraude), uma por versão: <doc>__v01.png, <doc>__v02.png..."),
-          ("mascaras/", "máscara da edição, mesmo nome da editada: 1 = pixel editado, 0 = não editado"),
-          ("mascaras_regiao/", "área editada (a pegada das ferramentas): 1 = dentro, 0 = fora"),
+          ("mascaras/", "máscara da edição, mesmo nome da editada: 255 (branco) = pixel editado, 0 = não editado; as binárias salvas até 06/11/2026 usam 1 no lugar de 255: leia pixel > 0"),
+          ("mascaras_regiao/", "área editada (a pegada das ferramentas): 255 = dentro, 0 = fora"),
           ("mascaras_classes/", "o QUÊ foi editado: o número da classe do campo em cada pixel (aba Legenda); 0 = não editado"),
           ("mascaras_tecnicas/", "o COMO: o número da técnica em cada pixel (aba Legenda); 0 = não editado"),
-          ("mascaras_ignorar/", "1 = rótulo ambíguo (1 px em volta da edição, o que o codec espalhou): fora da perda e da métrica"),
+          ("mascaras_ignorar/", "255 = rótulo ambíguo (1 px em volta da edição, o que o codec espalhou): fora da perda e da métrica"),
           ("anotacoes/", "o JSON de cada versão: campos, textos antigo e novo, técnica, ferramentas, caixas, laudo"),
           ("manifesto.csv", "uma linha por versão (a aba Versões)"),
           ("catalogo.csv", "uma linha por edição (a aba Edições)")]
@@ -241,9 +241,9 @@ def montar(raiz_saida: Path, registro=None, ids_categoria: dict | None = None) -
     _aba(wb, "Documentos", cols, linhas, sps)
 
     # ------------------------------------------------------------ Legenda
-    linhas = [["mascaras/", 0, "pixel não editado"], ["mascaras/", 1, "pixel editado (o valor mudou)"],
-              ["mascaras_regiao/", 0, "fora da área editada"], ["mascaras_regiao/", 1, "dentro da área editada"],
-              ["mascaras_ignorar/", 1, "rótulo ambíguo: fora da perda e da métrica"],
+    linhas = [["mascaras/", 0, "pixel não editado"], ["mascaras/", 255, "pixel editado (o valor mudou)"],
+              ["mascaras_regiao/", 0, "fora da área editada"], ["mascaras_regiao/", 255, "dentro da área editada"],
+              ["mascaras_ignorar/", 255, "rótulo ambíguo: fora da perda e da métrica"],
               ["mascaras_classes/", 0, "não editado"]]
     for nome, i in sorted(_legenda_categorias(raiz_saida, ids_categoria).items(), key=lambda x: int(x[1])):
         linhas.append(["mascaras_classes/", int(i), f"classe: {nome}"])

@@ -68,25 +68,41 @@ def caixa(y0, y1, x0, x1, H, W):
 
 
 def traco(pts: np.ndarray, tamanho: float, dureza: float, H: int, W: int):
-    """Máscara (0..1) de um traço de pincel redondo. Devolve (y0, y1, x0, x1, alpha)."""
+    """Máscara (0..1) de um traço de pincel redondo, como no Photoshop: o diâmetro é o ``tamanho`` (o círculo do
+    cursor) em qualquer dureza; a tinta é cheia até dureza × raio e cai até zero na borda, como os toques do operador
+    humano (``gesto.alfa_toques``). Devolve (y0, y1, x0, x1, alpha)."""
     r = tamanho / 2.0
-    sigma = (1.0 - dureza) * tamanho / 4.0
-    m = r + 3 * sigma + 2
+    m = r + 2
     y0, y1, x0, x1 = caixa(pts[:, 1].min() - m, pts[:, 1].max() + m + 1,
                            pts[:, 0].min() - m, pts[:, 0].max() + m + 1, H, W)
-    S = 4  # desenha em 4x com subpixel e reduz: borda suave e fiel ao tamanho
-    tela = np.zeros(((y1 - y0) * S, (x1 - x0) * S), np.uint8)
+    queda = r * (1.0 - dureza)  # largura da borda macia, em pixels
+    # desenha com subpixel e reduz: borda fiel ao tamanho (a borda macia larga não precisa de tanto)
+    S = 4 if queda < 2 else 2 if queda < 8 else 1
     # coordenadas contínuas (o pixel j cobre [j, j+1)); o cv2 põe o centro do pixel em j
     q = np.round(((pts - [x0, y0]) * S - 0.5) * 16).astype(np.int64)
-    raio = max(1, int(round(r * S * 16)))
-    for i in range(len(q)):
-        cv2.circle(tela, (int(q[i, 0]), int(q[i, 1])), raio, 255, -1, cv2.LINE_8, shift=4)
-        if i:
-            cv2.line(tela, (int(q[i - 1, 0]), int(q[i - 1, 1])), (int(q[i, 0]), int(q[i, 1])), 255,
-                     max(1, int(round(2 * r * S))), cv2.LINE_8, shift=4)
-    alpha = cv2.resize(tela, (x1 - x0, y1 - y0), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
-    if sigma > 0.3:
-        alpha = cv2.GaussianBlur(alpha, (0, 0), sigma)
+    if queda < 0.5 / S:  # pincel duro: o disco cheio, com a borda pela área coberta
+        tela = np.zeros(((y1 - y0) * S, (x1 - x0) * S), np.uint8)
+        raio = max(1, int(round(r * S * 16)))
+        for i in range(len(q)):
+            cv2.circle(tela, (int(q[i, 0]), int(q[i, 1])), raio, 255, -1, cv2.LINE_8, shift=4)
+            if i:
+                cv2.line(tela, (int(q[i - 1, 0]), int(q[i - 1, 1])), (int(q[i, 0]), int(q[i, 1])), 255,
+                         max(1, int(round(2 * r * S))), cv2.LINE_8, shift=4)
+        alpha = cv2.resize(tela, (x1 - x0, y1 - y0), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
+    else:  # pincel macio: a tinta pela distância até o eixo do traço
+        # o eixo numa tela que NÃO é cortada na borda da imagem, recortada só no fim: com o centro do traço fora da
+        # imagem, o eixo não era desenhado na tela cortada e a parte do disco que entra na imagem não pintava nada
+        X0, Y0 = int(np.floor(pts[:, 0].min() - m)), int(np.floor(pts[:, 1].min() - m))
+        X1, Y1 = int(np.ceil(pts[:, 0].max() + m + 1)), int(np.ceil(pts[:, 1].max() + m + 1))
+        qq = np.round(((pts - [X0, Y0]) * S - 0.5) * 16).astype(np.int64)
+        eixo = np.full(((Y1 - Y0) * S, (X1 - X0) * S), 255, np.uint8)
+        for i in range(len(qq)):
+            a = qq[i - 1] if i else qq[i]
+            cv2.line(eixo, (int(a[0]), int(a[1])), (int(qq[i, 0]), int(qq[i, 1])), 0, 1, cv2.LINE_8, shift=4)
+        d = cv2.distanceTransform(eixo, cv2.DIST_L2, cv2.DIST_MASK_PRECISE) / S
+        a = np.clip((r - d) / queda, 0.0, 1.0)
+        a = cv2.resize(a, (X1 - X0, Y1 - Y0), interpolation=cv2.INTER_AREA) if S > 1 else a
+        alpha = np.ascontiguousarray(a[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0])
     alpha[alpha < 1.0 / 512] = 0
     return y0, y1, x0, x1, alpha
 

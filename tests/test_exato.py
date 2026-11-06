@@ -2,6 +2,7 @@
 espaços recuperados com fio de tabela, caixa justa da linha, detector (plausibilidade, bloco de endereçamento,
 blocos do boleto), fonte entre as 10 mais usadas (família e peso), técnica campo.mesma_fonte, apagamento que
 preserva fios de tabela, edição exata coerente (o mesmo nome/endereço/cidade em todo lugar), API e receita limpa."""
+import importlib.util
 import json
 import random
 import shutil
@@ -19,11 +20,7 @@ from rotulador.registro import Item
 from rotulador.selecao import de_mascara, vazia
 from rotulador.sessao import Sessao
 
-try:
-    import rapidocr_onnxruntime  # noqa: F401
-    TEM_OCR = True
-except ImportError:
-    TEM_OCR = False
+TEM_OCR = importlib.util.find_spec("paddleocr") is not None  # o OCR (paddleocr) instalado
 
 IDS = {"nome": 1, "cpf/cnpj": 2, "endereço": 3, "bairro": 4, "cep": 5, "cidade/uf": 6, "data": 7,
        "mês de referência": 8, "valor": 9, "consumo/leitura": 10, "codigo barras": 11, "linha digitável": 12,
@@ -158,7 +155,7 @@ class TestGeradores(unittest.TestCase):
                 self.assertEqual(len(geradores.parecido("cidade/uf", "CE")), 2)
 
 
-@unittest.skipUnless(TEM_OCR, "OCR (rapidocr_onnxruntime) não instalado")
+@unittest.skipUnless(TEM_OCR, "OCR (paddleocr) não instalado")
 class TestEdicaoExata(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -215,7 +212,7 @@ class TestEdicaoExata(unittest.TestCase):
         self.assertFalse(alt[y[1]:y[3], y[0]:y[2]].any())  # o rótulo não mudou nenhum pixel
 
 
-@unittest.skipUnless(TEM_OCR, "OCR (rapidocr_onnxruntime) não instalado")
+@unittest.skipUnless(TEM_OCR, "OCR (paddleocr) não instalado")
 class TestAPIeLote(unittest.TestCase):
     def setUp(self):
         from app import RAIZ, carregar_categorias, criar_app

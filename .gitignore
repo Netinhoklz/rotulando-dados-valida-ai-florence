@@ -18,3 +18,6 @@ modelos/
 
 # perfil da janela do Windows (pywebview/WebView2): o que a página guarda entre execuções
 .janela/
+
+# relatório do ferramentas/diagnostico.py: tem os textos lidos dos documentos (dados pessoais)
+diagnostico.txt

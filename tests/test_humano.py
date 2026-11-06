@@ -94,7 +94,7 @@ class TestTecnicas(unittest.TestCase):
         rec = aplicado(self.img, liq)[CAIXA[1]:CAIXA[3], CAIXA[0]:CAIXA[2]].astype(float)
         self.assertGreater(rec.std(), 1.0)  # textura, não liso
 
-    @unittest.skipUnless(TEM_OCR, "OCR (rapidocr_onnxruntime) não instalado")
+    @unittest.skipUnless(TEM_OCR, "OCR (paddleocr) não instalado")
     def test_texto_fica_ilegivel(self):
         import re
         from rotulador import ocr

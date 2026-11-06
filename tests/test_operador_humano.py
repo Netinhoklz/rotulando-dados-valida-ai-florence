@@ -94,6 +94,9 @@ class TestPecas(unittest.TestCase):
         meio = {r: int(((a > 0.05) & (a < 0.95)).sum()) for r, a in alfas.items()}
         self.assertGreater(meio["ps_suave"], meio["ps_nitida"])  # suave espalha a borda
         self.assertEqual(meio["aliasado"], 0)
+        # desfocado até ficar como o do scan: o desfoque vai depois do serrilhado (antes, o serrilhado o jogava fora)
+        a = texto.renderizar({**base, "rasterizador": "aliasado", "desfoque": 0.8}, 80, 200)[4]
+        self.assertGreater(int(((a > 0.05) & (a < 0.95)).sum()), meio["ps_nitida"])
 
     def test_pincel_de_recuperacao(self):
         rng = np.random.default_rng(0)

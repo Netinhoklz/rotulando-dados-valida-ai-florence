@@ -58,7 +58,7 @@ class TestDocumentoEscuro(unittest.TestCase):
         self.assertIn("texto claro sobre fundo escuro", st["erros"][0])
 
 
-@unittest.skipUnless(TEM_OCR, "OCR (rapidocr_onnxruntime) não instalado")
+@unittest.skipUnless(TEM_OCR, "OCR (paddleocr) não instalado")
 class TestConferenciaDoAcrescimo(unittest.TestCase):
     def test_tinta_cinza_acrescentada_entra_na_leitura(self):
         """Só a tinta nova mudou (o "acrescentar"), e ela é cinza como a do escaneado: a leitura tem de ir até ela."""

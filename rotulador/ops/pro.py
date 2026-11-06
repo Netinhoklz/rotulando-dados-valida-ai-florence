@@ -91,6 +91,10 @@ def amostrar_fonte(img: np.ndarray, bbox, p: dict):
         raise ErroOperacao("defina a origem (Alt+clique) longe do ponto onde vai pintar")
     esc = num(p, "escala", 100, 10, 400) / 100.0
     ang = math.radians(num(p, "rotacao", 0, -180, 180))
+    if esc == 1 and ang == 0:
+        # como no Photoshop: sem escala nem giro, a fonte fica a um número inteiro de pixels e a cópia é o pixel exato.
+        # O clique com zoom cai em fração de pixel, e a interpolação borrava a cópia (5 a 8 níveis, 7 a 12% menos grão)
+        ox, oy = ix + round(ox - ix), iy + round(oy - iy)
     A = esc * np.array([[math.cos(ang), -math.sin(ang)], [math.sin(ang), math.cos(ang)]])
     # destino (centro de pixel do recorte) -> fonte (centro de pixel do cv2)
     t = A @ np.array([x0 + 0.5 - ix, y0 + 0.5 - iy]) + np.array([ox - 0.5, oy - 0.5])

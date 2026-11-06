@@ -235,7 +235,10 @@ class _C:
         if self._gs is None:
             # com o acento, o til e a cedilha soltos (glifos.com_sinais): a técnica que apaga ou move a letra leva o
             # sinal junto ("ARAÚJO" → "SIMOES" deixava o agudo: "SIMÓES")
-            self._gs = glifos.com_sinais(self.img, glifos.segmentar(self.img, self.caixa, self.texto, self.aj["fonte"]))
+            x0, y0, x1, y1 = self.caixa
+            gs = _sem_fios(glifos.segmentar(self.img, self.caixa, self.texto, self.aj["fonte"]),
+                           texto._fios_da_tabela(self.img, y0, y1, x0, x1))
+            self._gs = glifos.com_sinais(self.img, gs)
         return self._gs
 
     @property
@@ -461,6 +464,27 @@ class _C:
 
 # ============================================================================ tela de trabalho
 _BORRACHA_PEQUENA = frozenset({"caractere.raspar_tracos"})  # apaga só o traço, mesmo com o operador humano
+
+
+def _sem_fios(gs: list, fios: np.ndarray) -> list:
+    """As letras sem os pixels do fio de tabela (``fios``: máscara da imagem, ``texto._fios_da_tabela``). Num campo
+    dentro de um quadro (boleto), o "0" de "480" levava o fio debaixo: a altura dobrava (o doador escolhido era um "6"
+    do cabeçalho, 1,5x maior) e apagar a letra abria um buraco no fio. A letra que encosta no fio fica marcada ``fio``.
+    Segmentar com o fio já pintado de papel (``_Letras._segmentar``) tirava a tinta toda do "j" de "Cj" na conta da NIO."""
+    if not fios.any():
+        return gs
+    out = []
+    for g in gs:
+        m = g.tinta & ~fios[g.y0:g.y1, g.x0:g.x1]
+        if not m.any() or np.array_equal(m, g.tinta):  # o traço que é só fio ("_") ou nem encosta nele
+            out.append(g)
+            continue
+        ys, xs = np.flatnonzero(m.any(1)), np.flatnonzero(m.any(0))
+        novo = glifos.Glifo(g.i, g.ch, g.x0 + int(xs[0]), g.y0 + int(ys[0]), g.x0 + int(xs[-1]) + 1,
+                            g.y0 + int(ys[-1]) + 1, np.ascontiguousarray(m[ys[0]:ys[-1] + 1, xs[0]:xs[-1] + 1]))
+        novo.fio = True
+        out.append(novo)
+    return out
 
 
 class _Tela:
@@ -750,7 +774,21 @@ def _furo_glifos(tela: _Tela, gs) -> np.ndarray:
         extra = 1 if tela.c.desfoque >= 1.0 else 0
     except ErroOperacao:
         extra = 0
-    return _dilatar(furo, 2 + extra)
+    # as outras letras do campo ficam: com 2-3 px entre elas, o halo do furo raspava a borda da vizinha (o "58" → "51"
+    # deixava o "5" sem a borda direita e dois pontos dela, um ":" depois do "1" estreito)
+    apagadas = {g.i for g in gs}
+    outras = np.zeros(furo.shape, bool)
+    try:
+        for o in tela.c.glifos:
+            if o.i not in apagadas:
+                outras |= tela.mascara(o.caixa, o.tinta)
+    except ErroOperacao:
+        pass
+    # o fio do quadro encostado no pé da letra fica: o halo do furo o apagava junto (buraco no fio)
+    X0, Y0, X1, Y1 = tela.caixa
+    cx0, cy0, cx1, cy1 = tela.c.caixa
+    return (_dilatar(furo, 2 + extra) & ~_dilatar(outras, 1)
+            & ~texto._fios_da_tabela(tela.c.img, cy0, cy1, cx0, cx1)[Y0:Y1, X0:X1])
 
 
 def _cor_nova(c: _C, ref: glifos.Glifo) -> np.ndarray:
@@ -789,13 +827,14 @@ def _largura(c: _C, s: str) -> float:
     return dx1 - dx0
 
 
-def _novo_valor(c: _C, maximo: float = 1.25, largura=None) -> str:
+def _novo_valor(c: _C, maximo: float = 1.25, largura=None, faltam=None) -> str:
     """Valor falso no mesmo formato e com largura parecida com a do antigo: um nome muito mais comprido passaria
     por cima do rótulo ou sairia da página, e um muito mais curto deixava espaço em branco (bairros com 0,78 da
     largura). Entre até 60 candidatos fica o de largura mais perto da antiga (distância log: em [0,85; 1,15]
     quando houver), nunca acima de ``maximo`` (quem frauda escolhe o que cabe). Original curto ('QD 12 LT 5')
     não é mais descartado por não ter candidato em [0,7; máximo]: fica o mais perto que houver. ``largura``: a régua
-    (texto -> px); sem ela, o texto desenhado na fonte do campo."""
+    (texto -> px); sem ela, o texto desenhado na fonte do campo. ``faltam`` (texto -> quantas letras o documento não
+    tem): o valor com menos letras faltando vence, e só depois a largura."""
     if c.dado:
         return c.dado
     medir = largura or (lambda s: _largura(c, s))
@@ -814,9 +853,13 @@ def _novo_valor(c: _C, maximo: float = 1.25, largura=None) -> str:
         r = medir(novo) / antiga
         if r > maximo:
             continue
-        if melhor is None or abs(math.log(r)) < melhor[0]:
-            melhor = (abs(math.log(r)), novo)
-        if melhor[0] <= 0.03:  # já é praticamente a mesma largura
+        # primeiro a largura parecida (0,82-1,22 da antiga); dentro dela, o que tem menos letras faltando; e então a
+        # largura mais perto. Sem a faixa, um valor sem letra faltando ganhava com 0,55 da largura (vão em branco)
+        d = abs(math.log(r))
+        nota = (d > 0.2, faltam(novo) if faltam else 0, d)
+        if melhor is None or nota < melhor[0]:
+            melhor = (nota, novo)
+        if melhor[0][1] == 0 and melhor[0][2] <= 0.03:  # já é praticamente a mesma largura
             break
     if melhor is None:
         raise ErroOperacao("nenhum valor falso plausível cabe no espaço deste campo" if vistos else
@@ -1076,6 +1119,10 @@ def _t_campo_mesma_fonte(c: _C) -> Resultado:
     limiar = float(getattr(identificar_fonte, "LIMIAR_MESMA_FONTE", 0.75))
     if aj.get("metodo") == "estimativa":
         ident, como = "estimada", "fonte NÃO identificada: estimada pela tinta"
+    elif sem is not None and float(sem) >= limiar and fonte not in identificar_fonte.fontes_top10():
+        # o FSTS "como uma pessoa" (_fonte_da_pessoa) fica com outra instalada quando ela casa melhor com a tinta
+        ident, como = "instalada", (f"identificada entre todas as fontes instaladas (fora das 10 mais usadas), "
+                                    f"semelhança {float(sem):.2f}")
     elif sem is not None and float(sem) >= limiar:
         ident, como = "top10", f"identificada entre as 10 mais usadas em documentos, semelhança {float(sem):.2f}"
     else:
@@ -1533,6 +1580,18 @@ class _Letras:
         out.sort(key=lambda d: d.nota)
         self._cands[ch] = out
         return out
+
+    def faltam(self, s: str) -> int:
+        """Quantas letras de ``s`` o documento não tem no estilo do campo (nem a letra base para pôr o sinal): as que
+        sairiam desenhadas na fonte do gabarito."""
+        n = 0
+        for ch in s:
+            if ch.isspace() or self.doadores(ch):
+                continue
+            base_ch, sinal = glifos.decompor(ch)
+            if sinal is None or not self.doadores(base_ch):
+                n += 1
+        return n
 
     def _sinal_de(self, g, img) -> str | None:
         k = (id(img), g.caixa)
@@ -2031,16 +2090,26 @@ def _t_campo_letras_do_documento(c: _C) -> Resultado:
         alin = (_alinhamento_no_documento(c)
                 or ("direita" if c.categoria in ("valor", "consumo/leitura") else "esquerda"))
     c.escolhas["alinhamento"] = alin
-    novo = _novo_valor(c, largura=L.largura)
+    # a fonte do gabarito não foi identificada (a da conta não está instalada): a letra que faltar sairia desenhada
+    # noutro desenho. Fica o valor que o documento consegue escrever com as próprias letras
+    sem_fonte = float(L.aj.get("semelhanca") or 0.0) < float(identificar_fonte.LIMIAR_MESMA_FONTE)
+    faltam = L.faltam if sem_fonte else None
+    novo = _novo_valor(c, largura=L.largura, faltam=faltam)
     try:
         pecas, cantos, _total = L.plano(novo, alin)
     except _NaoCabe:
         if c.dado:
             raise
-        novo = _novo_valor(c, maximo=1.0, largura=L.largura)
+        novo = _novo_valor(c, maximo=1.0, largura=L.largura, faltam=faltam)
         pecas, cantos, _total = L.plano(novo, alin)
     n = len(pecas)
     desenhadas = [p.ch for p in pecas if p.tipo == "desenhada"]
+    cfg = c.habitos.get("fsts")
+    if desenhadas and sem_fonte and isinstance(cfg, dict) and cfg.get("modo") == "pessoa":
+        # FSTS "como uma pessoa": não digita letra numa fonte só parecida (ver _fonte_da_pessoa)
+        raise ErroOperacao(f"o documento não tem as letras {''.join(desenhadas)} de '{novo}' e a fonte do campo não foi "
+                           f"identificada ({L.fonte}, semelhança {float(L.aj.get('semelhanca') or 0):.2f}): desenhadas, "
+                           "sairiam noutro desenho")
     if len(desenhadas) > 0.25 * n:
         raise ErroOperacao(f"o documento não tem as letras de '{novo}' no estilo do campo: faltam "
                            f"{len(desenhadas)} de {n} ({''.join(desenhadas)})")
@@ -2373,12 +2442,27 @@ def _t_copiar_glifo(c: _C, externo: bool = False) -> Resultado:
     alvo = c.alvo()
     fontes = _fontes_de_glifos(c, externo)
     fonte_nome = c.aj["fonte"]
+    pesos = {}  # espessura do traço das letras do campo (glifos.peso_traco): muda ~15-20% de uma letra para outra
+
+    def peso_de(o):
+        if id(o) not in pesos:
+            pesos[id(o)] = glifos.peso_traco(glifos.alfa_glifo(c.img, o)[1])
+        return pesos[id(o)]
+
+    def toca_fio(img_src, s) -> bool:  # só a janela em volta da letra (a máscara da página inteira custava 8,7 MB)
+        fios, fy0, fx0 = texto._fios_locais(img_src, s.y0, s.y1, s.x0, s.x1)
+        return fios is not None and bool((fios[s.y0 - fy0:s.y1 - fy0, s.x0 - fx0:s.x1 - fx0] & s.tinta).any())
+    letras = [o for o in c.glifos if o.ch.isalnum()]
+    peso_campo = float(np.median([peso_de(o) for o in letras])) if letras else 0.0
     for g in c.alvos(alvo):
         cor_alvo = glifos.cor_tinta(c.img, g)
         for ch in c.substitutos(g.ch):
             if not plausivel(c.categoria, c.texto, c.texto[:g.i] + ch + c.texto[g.i + 1:]):
                 continue
             h_esp = _altura_esperada(c, g.ch, ch, g.altura)
+            # o peso de referência: a mesma letra no próprio campo (o "4" de "480" no "58" → "54"), senão o do campo
+            mesma = next((o for o in c.glifos if o.ch == ch and o is not g), None)
+            peso_alvo, tol = (peso_de(mesma), 1.2) if mesma is not None else (peso_campo, 1.25)
             achados = []
             for origem, img_src, inv, evitar in fontes:
                 for s in inv.candidatos(ch, int(round(h_esp)), tolerancia=0.15, evitar=evitar):
@@ -2386,7 +2470,13 @@ def _t_copiar_glifo(c: _C, externo: bool = False) -> Resultado:
                         continue  # tinta de outra cor (rótulo cinza, cabeçalho branco)
                     if glifos.semelhanca(s.tinta, ch, fonte_nome) < 0.45:
                         continue  # OCR errado ou letra de outra fonte
-                    achados.append((abs(s.altura - h_esp) + c.rng.random(), origem, img_src, s))
+                    if toca_fio(img_src, s):
+                        continue  # encosta no fio do quadro: o "2" colado trazia um pedaço da linha debaixo
+                    peso = glifos.peso_traco(glifos.alfa_glifo(img_src, s)[1])
+                    dp = abs(math.log(peso / peso_alvo)) if peso_alvo > 0 and peso > 0 else 0.0
+                    if dp > math.log(tol):
+                        continue  # traço de outro peso: o "4" de uma linha comum num número em negrito (0,80x)
+                    achados.append((abs(s.altura - h_esp) + 10 * dp + c.rng.random(), origem, img_src, s))
             if not achados:
                 continue
             _, origem, img_src, s = min(achados, key=lambda t: t[0])
@@ -2471,17 +2561,17 @@ def _t_copiar_campo(c: _C, externo: bool = False) -> Resultado:
             fx0, fy0, fx1, fy1 = f["caixa"]
             if not externo and not (fx1 <= c.caixa[0] or fx0 >= c.caixa[2] or fy1 <= c.caixa[1] or fy0 >= c.caixa[3]):
                 continue  # é o próprio campo
-            if not externo and _caixa_das_letras(f["texto"]) != _caixa_das_letras(c.texto):
+            if _caixa_das_letras(f["texto"]) != _caixa_das_letras(c.texto):
                 outro_estilo = True
-                continue  # nome em caixa mista colado numa linha em maiúsculas
+                continue  # nome em caixa mista colado numa linha em maiúsculas (de outro documento também)
             razao = alt_alvo / max(1.0, (fy1 - fy0))
             if not 0.6 <= razao <= 1.6:
                 continue
             nota = abs(len(f["texto"]) - len(c.texto)) + 8 * abs(1 - razao) + c.rng.random()
             cands.append((nota, d, f))
     if not cands:
-        raise ErroOperacao("nenhum campo do documento com o mesmo estilo (caixa das letras) para copiar" if outro_estilo
-                           else "não há outro campo da mesma categoria para copiar" + (" nos doadores" if externo else ""))
+        raise ErroOperacao(("nenhum campo do documento com o mesmo estilo (caixa das letras) para copiar" if outro_estilo
+                            else "não há outro campo da mesma categoria para copiar") + (" nos doadores" if externo else ""))
     cands.sort(key=lambda t: t[0])
     cor_alvo = glifos.cor_tinta(c.img, mascara_tinta(c.img[c.caixa[1]:c.caixa[3], c.caixa[0]:c.caixa[2]]).astype(bool),
                                 c.caixa)
@@ -2499,6 +2589,8 @@ def _t_copiar_campo(c: _C, externo: bool = False) -> Resultado:
         if not externo and not _mesmo_estilo(escala, cor_doador, cor_alvo, glifos.nitidez_tinta(d.img, f["caixa"]),
                                              nitidez_alvo):
             continue
+        if externo and not _doador_parecido(c, d.img, f, nitidez_alvo):
+            continue  # outra fonte ou outra nitidez: a pessoa procura outro comprovante parecido
         sx0, sy0, sx1, sy1 = f["caixa"]
         m = 3
         rx0, ry0 = max(0, sx0 - m), max(0, sy0 - m)
@@ -2557,6 +2649,29 @@ def _t_copiar_campo(c: _C, externo: bool = False) -> Resultado:
     raise ErroOperacao("nenhum campo doador coube no lugar (altura, traço ou espaço livre)" if externo else
                        "nenhum campo do documento com o mesmo estilo (altura da maiúscula, tinta, caixa das letras e "
                        "nitidez) coube no lugar")
+
+
+def _doador_parecido(c: _C, img: np.ndarray, f: dict, nitidez_alvo: float) -> bool:
+    """O campo de OUTRO documento está na fonte e na nitidez do campo daqui? A tinta do doador é comparada com a fonte
+    identificada aqui (``c.aj``): a semelhança dela tem de ficar a 0,05 da do próprio campo; se a fonte daqui não foi
+    identificada (abaixo de ``LIMIAR_MESMA_FONTE``), também não pode passar dela mais que isso (o doador casaria
+    com a parecida por ser ela, e não a fonte daqui). A cor não entra: a colagem leva a tinta do doador à daqui.
+    Até 06/11/2026 o doador só era escolhido pela altura: um nome em Times entrava numa conta em Verdana."""
+    nitidez_doador = glifos.nitidez_tinta(img, f["caixa"])
+    if nitidez_doador > 0 and nitidez_alvo > 0 and not 0.8 <= nitidez_doador / nitidez_alvo <= 1.25:
+        return False
+    aj = c.aj
+    if aj.get("metodo") == "estimativa" or aj.get("semelhanca") is None:
+        return True  # sem a fonte medida aqui, não há com o que comparar
+    s_alvo = float(aj["semelhanca"])
+    try:
+        r = identificar_fonte.identificar(img, f["caixa"], f["texto"], top=1, fontes=[aj["fonte"]])
+    except ErroOperacao:
+        return False
+    s = float(r["ranking"][0]["semelhanca"])
+    if s < s_alvo - 0.05:
+        return False
+    return s_alvo >= float(identificar_fonte.LIMIAR_MESMA_FONTE) or s <= s_alvo + 0.05
 
 
 def _caixa_das_letras(s: str) -> str:
@@ -4126,6 +4241,31 @@ def texto_claro_em_fundo_escuro(img: np.ndarray, caixa) -> bool:
 _SEM_TINTA = frozenset({"codigo.regenerar", "codigo.qr"})
 
 
+# técnicas de imitação que não escrevem na fonte identificada pela tinta: o amador usa outra de propósito, e a edição do
+# PDF usa a fonte da camada de texto do arquivo
+_FONTE_PROPRIA = frozenset({"campo.amador", "campo.reescrever_pdf"})
+
+
+def _fonte_da_pessoa(c: _C) -> None:
+    """FSTS "como uma pessoa", antes de DIGITAR o texto novo: a fonte do campo é a das 10 mais usadas ou, quando outra
+    instalada casa melhor com a tinta, ela (a escolha do gabarito das letras do documento, ``_Letras._gabarito``:
+    o campo sai na mesma fonte em todas as técnicas). Sem a fonte identificada (semelhança abaixo de
+    ``LIMIAR_MESMA_FONTE``) a pessoa não digita numa parecida: a técnica recusa e o gerador vai para as letras
+    recortadas do próprio documento. Na conta da NIO, de fonte que não está instalada, o endereço saía em Calibri
+    (semelhança 0,75), com outro desenho de letra."""
+    if c.p.get("fonte_params"):
+        return  # a fonte escolhida à mão vale
+    aj, _entre = _Letras._gabarito(c)
+    if aj is not c.aj:
+        c._aj, c._gs, c._base, c._desf, c._tinta = aj, None, None, None, None
+    sem = aj.get("semelhanca")
+    limiar = float(identificar_fonte.LIMIAR_MESMA_FONTE)
+    if aj.get("metodo") == "estimativa" or sem is None or float(sem) < limiar:
+        raise ErroOperacao(f"a fonte do campo não foi identificada ({aj.get('fonte')}, semelhança "
+                           f"{float(sem or 0):.2f} < {limiar:.2f}): digitar numa fonte parecida mudaria o desenho das "
+                           "letras; ficam as técnicas que recortam as letras do documento")
+
+
 def tecnica(img: np.ndarray, p: dict, sel, base: np.ndarray = None, carregar_doador=None, chave_cache=None,
             documento=None, editor=None, **_) -> Resultado:
     c = _C(img, p, base, documento, carregar_doador, chave_cache, editor)
@@ -4144,6 +4284,10 @@ def tecnica(img: np.ndarray, p: dict, sel, base: np.ndarray = None, carregar_doa
             kw["acentos"] = acentos
     # os campos do documento da versão (só se já lidos: não dispara OCR): datas, valores e números trocados ficam
     # coerentes entre si na versão inteira
+    cfg = c.habitos.get("fsts")
+    if (isinstance(cfg, dict) and cfg.get("modo") == "pessoa" and t.familia == "imitacao" and c.tipo == "texto"
+            and t.id not in _FONTE_PROPRIA):
+        _fonte_da_pessoa(c)
     with geradores.usando(c.rng, getattr(documento, "split", None), documento=getattr(documento, "_campos", None), **kw):
         res = _IMPL[t.id](c)
         if isinstance(c.habitos.get("fsts"), dict):  # o OCR confere o texto escrito; o disfarce do artigo vem depois

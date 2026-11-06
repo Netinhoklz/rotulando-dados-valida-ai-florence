@@ -239,7 +239,8 @@ pos_log = [LOG.stat().st_size if LOG.exists() else 0]
 def caso(nome):
     def deco(fn):
         avisos_antes = set()
-        js("document.querySelectorAll('.aviso').forEach(a => a.remove())")
+        js("document.querySelectorAll('.aviso').forEach(a => a.remove());"
+           "document.querySelectorAll('dialog[open]').forEach(x => x.close())")
         d.get_log("browser")
         t0 = time.time()
         erro = None
@@ -594,8 +595,9 @@ for _modo in ("desfocar", "nitidez", "borrar", "clarear", "escurecer", "saturar"
         desmarcar()
         tecla("o")
         opcao("modo", m)
-        # borrar só muda pixel onde há textura: em y=1500 o caso do balde (antes) pinta o papel de uma cor lisa
-        y = 20 if m in ("saturar", "dessaturar") else 320 if m == "borrar" else 1500
+        # borrar e nitidez só mudam pixel onde há textura: em y=1500 o caso do balde (antes) pinta o papel de uma cor
+        # lisa (o pincel macio passava do círculo do cursor e alcançava o papel com grão; agora fica dentro, como no PS)
+        y = 20 if m in ("saturar", "dessaturar") else 320 if m in ("borrar", "nitidez") else 1500
         x0 = {"desfocar": 60, "nitidez": 220, "borrar": 380, "clarear": 540, "escurecer": 700,
               "saturar": 200, "dessaturar": 700}[m]
         n = len(hist())
@@ -656,6 +658,128 @@ def _():
     campo.send_keys(Keys.ENTER)
     ocioso(600)
     assert ultimo() == "substituir_texto", f"substituir não aplicou ({ultimo()})"
+
+
+def digitar(*teclas):
+    """Digita como uma pessoa: as teclas vão para onde o foco estiver (sem clicar no campo antes)."""
+    ActionChains(d).send_keys(*teclas).perform()
+    time.sleep(0.2)
+
+
+def campo_texto():
+    return d.find_element(By.ID, "op-texto").get_attribute("value")
+
+
+@caso("texto: clicar na imagem e digitar direto (B, S, V… não viram atalho)")
+def _():
+    categoria(APAGAR)
+    ferramenta("texto")
+    clique((800, 1250))
+    time.sleep(0.3)
+    x0 = js("return window.rotulador.F.texto.ancora.x")
+    digitar(Keys.ARROW_RIGHT)  # antes de digitar, as setas ajustam a linha de base (a dica da barra de status)
+    assert abs(js("return window.rotulador.F.texto.ancora.x") - x0 - 1) < 1e-6, "a seta não ajustou a linha de base"
+    digitar("BSVE lmq 1234")  # todas são atalhos de ferramenta (B pincel, S carimbo, V mover, E borracha, L laço…)
+    assert js("return window.rotulador.idFerramenta") == "texto", \
+        f"a digitação trocou a ferramenta para {js('return window.rotulador.idFerramenta')}"
+    assert campo_texto() == "BSVE lmq 1234", f"campo Texto com {campo_texto()!r}"
+    assert esperar_previa(30), "texto sem prévia"
+    # o foco sai do campo (clique num painel) e a pessoa continua digitando: as letras seguem para o texto
+    js("document.activeElement && document.activeElement.blur()")
+    digitar("X")
+    assert campo_texto() == "BSVE lmq 1234X", f"sem foco, a letra não foi para o texto ({campo_texto()!r})"
+    digitar(Keys.BACKSPACE)
+    assert campo_texto() == "BSVE lmq 1234", f"Backspace não apagou ({campo_texto()!r})"
+    assert js("return window.rotulador.idFerramenta") == "texto"
+    n = len(hist())
+    digitar(Keys.ENTER)
+    ocioso()
+    assert len(hist()) == n + 1 and ultimo() == "texto", f"Enter não aplicou ({ultimo()})"
+
+
+@caso("texto: Esc cancela o texto digitado")
+def _():
+    ferramenta("texto")
+    clique((800, 1320))
+    time.sleep(0.3)
+    digitar("ABC")
+    assert campo_texto() == "ABC", f"campo Texto com {campo_texto()!r}"
+    n = len(hist())
+    digitar(Keys.ESCAPE)
+    time.sleep(0.3)
+    assert js("return window.rotulador.F.texto.ancora") is None, "Esc não cancelou a linha de base"
+    assert len(hist()) == n, "Esc aplicou o texto"
+    digitar("b")  # sem linha de base, a letra volta a ser atalho
+    assert js("return window.rotulador.idFerramenta") == "pincel", "sem texto em edição, B não foi ao pincel"
+
+
+@caso("substituir visível no T: clicar no texto antigo e digitar direto")
+def _():
+    # o caso relatado: com o "Substituir texto" como a ferramenta visível do grupo T, um clique sem arrastar não fazia
+    # nada e as letras digitadas viravam atalhos (Shift+V abria o diálogo do "Colar de outro documento")
+    categoria(APAGAR)
+    ferramenta("substituir")
+    desmarcar()
+    tecla("t")
+    assert js("return window.rotulador.idFerramenta") == "substituir", "T não ficou no substituir"
+    clique((420, 482))  # em cima de "BELO HORIZONTE/MG", na linha CIDADE/UF, sem arrastar
+    ocioso()
+    espera("window.rotulador.F.substituir.ancora !== null", 30)
+    time.sleep(0.3)
+    digitar("SAIDA 2026")
+    assert js("return window.rotulador.idFerramenta") == "substituir", "a digitação trocou a ferramenta"
+    assert campo_texto() == "SAIDA 2026", f"o texto digitado não substituiu o do campo ({campo_texto()!r})"
+    assert esperar_previa(120), "substituir sem prévia"
+    digitar(Keys.ENTER)
+    ocioso(600)
+    assert ultimo() == "substituir_texto", f"substituir não aplicou ({ultimo()})"
+
+
+@caso("caneta (P): cantos, curva, fechar no 1º ponto vira seleção")
+def _():
+    desmarcar()
+    tecla("p")
+    assert js("return window.rotulador.idFerramenta") == "caneta", "P não foi à caneta"
+    clique((150, 950))
+    clique((330, 950))
+    arrastar((330, 1050), (390, 1050))  # ponto com curva: as alças saem do arraste
+    clique((150, 1050))
+    assert js("return window.rotulador.F.caneta.estado") == "caminho"
+    pts = js("return window.rotulador.F.caneta.d.pts.map(q => [!!q.ent, !!q.sai])")
+    assert len(pts) == 4 and pts[2] == [True, True] and pts[0] == [False, False], f"pontos {pts}"
+    clique((150, 950))  # o 1º ponto fecha
+    ocioso()
+    assert js("return window.rotulador.F.caneta.d.pts") is None, "o caminho não fechou"
+    s = sel()
+    assert s, "o caminho fechado não virou seleção"
+    x0, y0, x1, y1 = s["bbox"]
+    # a curva do 3º ponto passa à direita dele (a alça de saída puxa para x maior)
+    assert abs(x0 - 150 * E) <= 3 and abs(y0 - 950 * E) <= 3 and abs(y1 - 1050 * E) <= 6 and x1 > 330 * E + 10, s["bbox"]
+
+
+@caso("caneta: Backspace tira ponto, Esc cancela, Enter fecha")
+def _():
+    desmarcar()
+    tecla("p")
+    for p in ((150, 1150), (250, 1150), (250, 1220), (200, 1260)):
+        clique(p)
+    digitar(Keys.BACKSPACE)
+    assert js("return window.rotulador.F.caneta.d.pts.length") == 3, "Backspace não tirou o último ponto"
+    digitar(Keys.ESCAPE)
+    assert js("return window.rotulador.F.caneta.d.pts") is None and not sel(), "Esc não cancelou"
+    # em volta do rótulo "TOTAL A PAGAR" (tinta para apagar; nenhum outro caso mexe nele: o "apagar com preenchimento"
+    # usa o valor do CONSUMO e precisa da tinta dele)
+    for p in ((85, 775), (340, 775), (340, 820), (85, 820)):
+        clique(p)
+    digitar(Keys.ENTER)
+    ocioso()
+    assert sel(), "Enter não fechou o caminho em seleção"
+    categoria(APAGAR)
+    n = len(hist())
+    digitar(Keys.DELETE)  # e a seleção da caneta serve às ferramentas: apagar com preenchimento
+    ocioso(300)
+    assert len(hist()) == n + 1, "Delete não apagou a seleção da caneta"
+    desmarcar()
 
 
 @caso("mover (V) com seleção: duplicar")
@@ -1069,8 +1193,33 @@ def _():
     tecla("k")
 
 
-for _fmt in ("jpeg", "webp", "tiff", "pdf", "png"):
-    @caso(f"salvar em {_fmt}")
+def conferir_mascaras(a):
+    """As máscaras gravadas batem com o par gravado: em PNG (sem perda), a máscara é EXATAMENTE onde a original e a
+    editada diferem; em todo formato, ela fica dentro da região, toda a região tem categoria e a cópia da pasta do
+    treino (saida/_treinamento) é a mesma máscara."""
+    import numpy as np
+    from PIL import Image
+
+    raiz = PASTA / "saida" / a["split"]
+    ler = lambda k: np.asarray(Image.open(raiz / a["arquivos"][k]))  # noqa: E731
+    for k in ("mascara", "mascara_regiao", "mascara_ignorar"):  # binárias visíveis: branco onde editou
+        assert set(np.unique(ler(k)).tolist()) <= {0, 255}, f"{k} não está em 0/255 ({np.unique(ler(k))[:5]})"
+    m, reg, cls = ler("mascara") > 0, ler("mascara_regiao") > 0, ler("mascara_classes")
+    assert m.any(), "máscara vazia"
+    assert not (m & ~reg).any(), f"{int((m & ~reg).sum())} px da máscara fora da região"
+    assert (cls[reg] > 0).all(), f"{int((reg & (cls == 0)).sum())} px da região sem categoria"
+    if a["formato"] == "png":
+        o, e = ler("original").astype(int), ler("editada").astype(int)
+        dif = np.abs(o[..., :3] - e[..., :3]).max(-1) > 0
+        assert (m == dif).all(), (f"máscara ≠ diferença do par: {int((m & ~dif).sum())} px marcados sem mudar, "
+                                  f"{int((dif & ~m).sum())} px mudados sem marca")
+    nome = Path(a["arquivos"]["anotacao"]).stem
+    t = np.asarray(Image.open(PASTA / "saida" / "_treinamento" / a["split"] / "mascaras" / f"{nome}.png")) > 0
+    assert (t == m).all(), "a máscara da pasta do treino não é a salva"
+
+
+for _fmt in ("png", "jpeg", "webp", "tiff", "pdf"):  # PNG primeiro: leva todas as edições dos casos acima
+    @caso(f"salvar em {_fmt} (máscaras = o que mudou)")
     def _(f=_fmt):
         if not sessao()["pode_salvar"]:
             categoria(APAGAR)
@@ -1087,6 +1236,7 @@ for _fmt in ("jpeg", "webp", "tiff", "pdf", "png"):
         anot = max((PASTA / "saida" / "treino" / "anotacoes").glob("*.json"), key=lambda p: p.stat().st_mtime)
         a = json.loads(anot.read_text(encoding="utf-8"))
         assert a["formato"] == f, f"formato salvo {a['formato']}"
+        conferir_mascaras(a)
 
 
 @caso("documentos: PageDown, foto EXIF, PDF, outro split")

@@ -3,6 +3,7 @@ granularidade (campo inteiro, trecho, caractere, acréscimo) nos pesos de ``PERF
 vezes (``GRUPOS_EXTRAS``, na taxa de ``EXTRAS_PROB``); o mesmo dado repetido com o MESMO valor novo em todo lugar,
 mesmo quando a primeira edição foi parcial ou falhou; a receita ``{"perfil": "profissional"}`` expandida; tudo
 determinístico pela semente da versão. Documentos sintéticos (nenhum dado real)."""
+import importlib.util
 import json
 import random
 import shutil
@@ -22,11 +23,7 @@ from rotulador import catalogo, gerador
 from rotulador.ops import geradores
 from rotulador.sessao import ErroOperacao
 
-try:
-    import rapidocr_onnxruntime  # noqa: F401
-    TEM_OCR = True
-except ImportError:
-    TEM_OCR = False
+TEM_OCR = importlib.util.find_spec("paddleocr") is not None  # o OCR (paddleocr) instalado
 
 IDS = {"nome": 1, "cpf/cnpj": 2, "endereço": 3, "bairro": 4, "cep": 5, "cidade/uf": 6, "data": 7,
        "mês de referência": 8, "valor": 9, "consumo/leitura": 10, "codigo barras": 11, "linha digitável": 12,
@@ -537,7 +534,7 @@ class TestApp(unittest.TestCase):
         self.assertEqual((visto["r"].perfil, visto["r"].extras), ("profissional", True))
 
 
-@unittest.skipUnless(TEM_OCR, "OCR (rapidocr_onnxruntime) não instalado")
+@unittest.skipUnless(TEM_OCR, "OCR (paddleocr) não instalado")
 class TestLote(unittest.TestCase):
     def setUp(self):
         from app import carregar_categorias, criar_app

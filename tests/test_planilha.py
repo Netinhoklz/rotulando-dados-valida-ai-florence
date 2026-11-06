@@ -95,9 +95,9 @@ class TestPlanilha(BaseApp):
         teste = next(r_ for r_ in resumo if r_[0] == "Teste")
         self.assertEqual(teste[2:6], [1, 1, 1, 1])
         legenda = [[c.value for c in row] for row in wb["Legenda"].iter_rows(min_row=2)]
-        self.assertIn(["mascaras/", 1, "pixel editado (o valor mudou)"], legenda)
+        self.assertIn(["mascaras/", 255, "pixel editado (o valor mudou)"], legenda)
         wb.close()
-        np.testing.assert_array_equal(np.unique(self.mascara(r)), [0, 1])  # máscara binária em 0/1
+        np.testing.assert_array_equal(np.unique(self.mascara(r)), [0, 255])  # máscara binária em 0/255 (visível)
 
     def test_planilha_aberta_no_excel_vai_para_outro_nome(self):
         self.saida.mkdir(parents=True, exist_ok=True)

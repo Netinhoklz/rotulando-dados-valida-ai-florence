@@ -576,6 +576,139 @@ export function criarFerramentas(app) {
     },
   });
 
+  // caneta: a seleção por caminho, como a Caneta do Photoshop e do Graphite. Clique = ponto de canto; clicar e arrastar =
+  // ponto suave (as duas alças saem simétricas e a curva passa macia por ele); Alt ao arrastar = só a alça de saída (a
+  // curva muda de direção no ponto). Clique no 1º ponto, duplo clique ou Enter fecham o caminho, que vira a seleção:
+  // cada curva é dividida em segmentos de ~1 px e vai ao servidor como polígono. Backspace tira o último ponto; Esc
+  // cancela. Ponto: {x, y, ent, sai}, as alças de entrada e de saída (coordenadas da imagem) ou null
+  const bezier = (a, c1, c2, b, u) => {
+    const v = 1 - u;
+    return { x: v * v * v * a.x + 3 * v * v * u * c1.x + 3 * v * u * u * c2.x + u * u * u * b.x,
+             y: v * v * v * a.y + 3 * v * v * u * c1.y + 3 * v * u * u * c2.y + u * u * u * b.y };
+  };
+  function caminhoEmPontos(pts, fechar) {
+    const out = [{ x: pts[0].x, y: pts[0].y }];
+    const n = fechar ? pts.length : pts.length - 1;
+    for (let i = 0; i < n; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      if (!a.sai && !b.ent) { out.push({ x: b.x, y: b.y }); continue; }  // trecho reto
+      const c1 = a.sai || a, c2 = b.ent || b;
+      const k = Math.max(2, Math.min(400, Math.ceil(dist(a, c1) + dist(c1, c2) + dist(c2, b))));
+      for (let j = 1; j <= k; j++) out.push(bezier(a, c1, c2, b, j / k));
+    }
+    return out;
+  }
+  function fecharCaneta(t) {
+    const pts = t.d.pts;
+    t.d.pts = null;
+    if (pts && pts.length >= 2) {
+      const poli = caminhoEmPontos(pts, true);
+      let area = 0;
+      for (let i = 0; i < poli.length; i++) {
+        const a = poli[i], b = poli[(i + 1) % poli.length];
+        area += a.x * b.y - b.x * a.y;
+      }
+      if (Math.abs(area) / 2 >= 1) {
+        app.adicionarForma({ tipo: "poligono", pontos: poli.map((q) => [q.x, q.y]), zoom: zoomAtual() }, t.d.modo);
+      } else {
+        app.aviso("o caminho não fecha uma área: ponha ao menos três pontos (ou arraste para fazer curvas)", "erro");
+      }
+    }
+    app.visor.redesenhar();
+    return "pronta";
+  }
+  function teclaCaneta(t, ev) {
+    if (!t.d.pts) return false;
+    if (ev.key === "Enter") return fecharCaneta(t);
+    if (ev.key === "Escape") { t.d.pts = null; app.visor.redesenhar(); return "pronta"; }
+    if (ev.key === "Backspace" || ev.key === "Delete") {
+      t.d.pts.pop();
+      app.visor.redesenhar();
+      if (!t.d.pts.length) { t.d.pts = null; return "pronta"; }
+      return "caminho";
+    }
+    return false;
+  }
+  const pertoDoInicio = (t) => t.d.pts && t.d.pts.length >= 2 && t.d.mouse && !andou(t.d.mouse, t.d.pts[0], 8);
+  F.caneta = nova({
+    nome: "Caneta (P): clique ponto a ponto, arraste para fazer curvas; feche no 1º ponto (ou Enter) e o caminho vira a seleção",
+    icone: "✒", atalho: "p", cursor: "crosshair",
+    opcoes: [...camposSelecao, "|", ...botoesSelecao],
+    dados: () => ({ pts: null, modo: "novo", mouse: null }),
+    sempre: {
+      mover: (t, p) => { t.d.mouse = p; if (t.d.pts) app.visor.redesenhar(); },
+      sair: (t) => { t.d.mouse = null; app.visor.redesenhar(); },
+      desativar: (t) => { t.d.pts = null; return "pronta"; },
+    },
+    estados: {
+      pronta: {
+        pressionar: (t, p, ev) => {
+          t.d.modo = modoSelecao(ev, op("caneta").modo);
+          t.d.pts = [{ x: p.x, y: p.y, ent: null, sai: null }];
+          return "puxando";
+        },
+      },
+      // o botão ainda apertado depois de pôr o ponto: arrastar puxa as alças dele
+      puxando: {
+        mover: (t, p, ev) => {
+          t.d.mouse = p;
+          const q = t.d.pts[t.d.pts.length - 1];
+          if (andou(p, q, 3)) {
+            q.sai = { x: p.x, y: p.y };
+            if (!ev.altKey) q.ent = { x: 2 * q.x - p.x, y: 2 * q.y - p.y };
+          }
+          app.visor.redesenhar();
+        },
+        soltar: () => "caminho",
+        tecla: teclaCaneta,
+      },
+      caminho: {
+        pressionar: (t, p) => {
+          if (pertoDoInicio({ d: { ...t.d, mouse: p } })) return fecharCaneta(t);
+          t.d.pts.push({ x: p.x, y: p.y, ent: null, sai: null });
+          return "puxando";
+        },
+        duplo: fecharCaneta,
+        tecla: teclaCaneta,
+      },
+    },
+    dicas: {
+      pronta: [h("", "clique", "primeiro ponto"), h("", "clicar e arrastar", "ponto com curva"), h("Shift", "", "somar"),
+        h("Alt", "", "subtrair")],
+      puxando: [h("", "arrastar", "as alças da curva"), h("Alt", "arrastar", "só a alça de saída (quebra a curva)"),
+        h("", "soltar", "fixar o ponto")],
+      caminho: (t) => [
+        ...(pertoDoInicio(t) ? [h("", "clique", "fechar o caminho")] : [h("", "clique", "ponto de canto"),
+          h("", "clicar e arrastar", "ponto com curva")]),
+        h("", "clique no 1º ponto · duplo clique", "fechar"), h("Enter", "", "fechar e selecionar"),
+        h("Backspace", "", "tirar o último ponto"), h("Esc", "", "cancelar")],
+    },
+    desenhar(ctx, v, t) {
+      const pts = t.d.pts;
+      if (!pts) return;
+      // o caminho e, esperando o próximo clique, o trecho até o mouse (já com a curva da alça de saída)
+      const ate = t.estado === "caminho" && t.d.mouse ? [...pts, { x: t.d.mouse.x, y: t.d.mouse.y, ent: null, sai: null }] : pts;
+      if (ate.length >= 2) contorno(ctx, () => tracarTela(ctx, v, caminhoEmPontos(ate, false), false));
+      ctx.save();
+      ctx.lineWidth = 1; ctx.strokeStyle = ACENTO;
+      for (const q of pts) {  // as alças: uma linha fina até um círculo
+        const s = v.imgParaTela(q.x, q.y);
+        for (const a of [q.ent, q.sai]) {
+          if (!a) continue;
+          const sa = v.imgParaTela(a.x, a.y);
+          ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(sa.x, sa.y); ctx.stroke();
+          ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(sa.x, sa.y, 3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        }
+      }
+      pts.forEach((q, i) => {  // os pontos: quadradinhos; o 1º fica cheio quando um clique ali fecha o caminho
+        const s = v.imgParaTela(q.x, q.y);
+        ctx.fillStyle = i === 0 && pertoDoInicio(t) ? ACENTO : "#fff";
+        ctx.fillRect(s.x - 3.5, s.y - 3.5, 7, 7); ctx.strokeRect(s.x - 3.5, s.y - 3.5, 7, 7);
+      });
+      ctx.restore();
+    },
+  });
+
   F.varinha = nova({
     nome: "Varinha mágica (W)", icone: "✨", atalho: "w", cursor: "crosshair",
     opcoes: [...camposSelecao,
@@ -814,6 +947,10 @@ export function criarFerramentas(app) {
     { chave: "opacidade", tipo: "faixa", rotulo: "Opac.", min: 0.05, max: 1, passo: 0.05, padrao: 1 },
     { chave: "antialias", tipo: "bool", rotulo: "Suavizar bordas", padrao: true },
   ];
+  // posta a linha de base, o que se digita vai para o campo "Texto" (o teclado do editor manda, ver montarTeclado) e
+  // a 1ª tecla troca o que havia nele, como um texto selecionado (Enter mantém). O foco fica na imagem até lá: as
+  // setas continuam ajustando a linha de base. Antes do 06/11/2026 cada letra virava um atalho (B pincel, S carimbo…)
+  const armarTexto = () => { app.textoNovo = true; };
   // texto: "pronta" (sem linha de base) → (clique) "posicionando" (arrastando a linha de base) → (soltar) "digitando"
   // (linha de base no lugar: digita nas opções, setas ajustam, Enter aplica, Esc cancela). O substituir tem também
   // "selecionando" (arraste sobre o texto antigo; ao soltar, o servidor estima posição, tamanho e cor).
@@ -853,7 +990,7 @@ export function criarFerramentas(app) {
       estados: {
         posicionando: {
           mover: (t, p) => { t.d.ancora = p; app.visor.redesenhar(); },
-          soltar: () => { previa(); return "digitando"; },
+          soltar: () => { previa(); armarTexto(); return "digitando"; },
         },
         ...extra.estados,
       },
@@ -907,6 +1044,7 @@ export function criarFerramentas(app) {
     app.salvarOpcoes(); app.renderOpcoes();
     if (!est.achou_texto) app.aviso("não achei texto na seleção; ajuste posição e tamanho à mão");
     F.substituir.previa();
+    armarTexto();
   }
   F.substituir = ferramentaTexto("substituir", "substituir_texto",
     "Substituir texto (T; Shift+T alterna): arraste sobre o texto antigo, digite o novo e Enter (apaga com preenchimento inteligente)", "T↔", "t",
@@ -927,14 +1065,26 @@ export function criarFerramentas(app) {
             const { a } = t.d.arr;
             t.d.arr = null;
             const volta = t.d.ancora ? "digitando" : "pronta";
-            if (Math.abs(a.x - p.x) * app.visor.escala < 3 || Math.abs(a.y - p.y) * app.visor.escala < 3) { app.visor.redesenhar(); return volta; }
+            if (Math.abs(a.x - p.x) * app.visor.escala < 3 || Math.abs(a.y - p.y) * app.visor.escala < 3) {
+              // um clique (sem arrastar): a linha de texto em que ele caiu vira o texto antigo, como o clique da
+              // ferramenta de texto do Photoshop entra na edição. Antes nada acontecia, e o que a pessoa digitava em
+              // seguida virava atalho (Shift+V abria o "Colar de outro documento")
+              app.visor.redesenhar();
+              app.campoNoPonto(p).then((c) => {
+                if (!c) { app.aviso("clique em cima de um texto (ou arraste sobre ele) para substituí-lo", "erro"); return; }
+                const [x0, y0, x1, y1] = c.caixa;
+                app.adicionarForma({ tipo: "ret", x0, y0, x1, y1 }, "novo").then(estimar);
+              }).catch((e) => app.aviso(e.message, "erro"));
+              return volta;
+            }
             app.adicionarForma({ tipo: "ret", x0: a.x, y0: a.y, x1: p.x, y1: p.y }, "novo").then(estimar);
             return volta;
           },
         },
       },
       dicas: {
-        pronta: [h("", "arrastar", "sobre o texto antigo"), h("Enter", "", "aplicar"), h("Esc", "", "cancelar")],
+        pronta: [h("", "clique", "no texto antigo"), h("", "arrastar", "sobre o texto antigo"), h("Enter", "", "aplicar"),
+          h("Esc", "", "cancelar")],
         selecionando: [h("", "soltar", "estimar fonte, tamanho e cor do texto antigo")],
         digitando: [h("Enter", "", "aplicar"), h("Esc", "", "cancelar"), h("setas", "", "ajuste fino (Shift 10 px · Alt ¼ px)"),
           h("", "arrastar dentro", "mover a linha de base"), h("Shift", "arrastar", "outro texto antigo")],
@@ -1391,19 +1541,19 @@ export function criarFerramentas(app) {
 // a caixa de ferramentas em grupos, como no Photoshop: o botão mostra a última usada do grupo; clique com o botão
 // direito (ou segure) para ver as outras
 export const GRUPOS = [
-  ["transformar", "colar"], ["ret", "elipse"], ["laco"], ["varinha", "pincelsel"], ["contagotas"], "|",
+  ["transformar", "colar"], ["ret", "elipse"], ["laco"], ["caneta"], ["varinha", "pincelsel"], ["contagotas"], "|",
   ["corretivo", "recuperacao", "remendo"], ["pincel"], ["carimbo"], ["borracha"], ["balde"], ["retoque"], "|",
   ["texto", "substituir"], ["forma"], "|", ["mao"], ["zoom"],
 ];
 export const ICONES = {
-  transformar: "mover", colar: "colar_doc", ret: "ret", elipse: "elipse", laco: "laco", varinha: "varinha",
+  transformar: "mover", colar: "colar_doc", ret: "ret", elipse: "elipse", laco: "laco", caneta: "caneta", varinha: "varinha",
   pincelsel: "pincelsel", contagotas: "contagotas", corretivo: "corretivo", recuperacao: "recuperacao", remendo: "remendo",
   pincel: "pincel", carimbo: "carimbo", borracha: "borracha", balde: "balde", retoque: "retoque", texto: "texto",
   substituir: "substituir", forma: "forma", mao: "mao", zoom: "zoom",
 };
 export const NOMES = {
   transformar: "Mover / puxar", colar: "Colar de outro documento", ret: "Seleção retangular", elipse: "Seleção elíptica",
-  laco: "Laço", varinha: "Varinha mágica", pincelsel: "Pincel de seleção", contagotas: "Conta-gotas",
+  laco: "Laço", caneta: "Caneta (seleção por caminho)", varinha: "Varinha mágica", pincelsel: "Pincel de seleção", contagotas: "Conta-gotas",
   corretivo: "Pincel corretivo", recuperacao: "Pincel de recuperação", remendo: "Remendo", pincel: "Pincel",
   carimbo: "Carimbo de clonagem", borracha: "Borracha", balde: "Balde de tinta", retoque: "Retoque", texto: "Texto",
   substituir: "Substituir texto", forma: "Formas", mao: "Mão", zoom: "Zoom",

@@ -90,6 +90,22 @@ class TestSessao(Base):
             self.aplicar("pincel", {"pontos": [[-500, -500]], "tamanho": 5})
 
 
+class TestTracoNaBorda(unittest.TestCase):
+    def test_pincel_macio_com_o_centro_fora_da_imagem_pinta_a_parte_de_dentro(self):
+        """O eixo do traço macio era desenhado na tela já cortada na borda da imagem: com o centro fora, nada pintava."""
+        from rotulador.ops.base import traco
+
+        for dureza in (0.0, 0.5, 1.0):
+            y0, y1, x0, x1, a = traco(np.array([[-3.0, 50.0]]), 20, dureza, 100, 100)
+            self.assertEqual((x0, y0), (0, 38), dureza)
+            self.assertGreater(float(a[50 - y0, 0]), 0.2, dureza)  # a 3 px do centro: dentro do disco de raio 10
+            self.assertEqual(float(a[50 - y0, 8 - x0]), 0.0, dureza)  # a 11 px: fora
+        # um traço que atravessa a borda: perto dela, a tinta é a do eixo de verdade (fora da imagem), não a de um eixo
+        # cortado na borda
+        _, _, _, _, a = traco(np.array([[-6.0, 20.0], [-6.0, 80.0]]), 20, 0.0, 100, 100)
+        self.assertAlmostEqual(float(a[30, 0]), 0.4, delta=0.08)  # 6 px do eixo, raio 10, sem parte dura: 1 − 6/10
+
+
 class TestOperacoes(Base):
     def test_balde(self):
         self.aplicar("balde", {"x": 5, "y": 5, "tolerancia": 10, "cor": "#ff8800"})

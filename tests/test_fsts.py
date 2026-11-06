@@ -17,7 +17,12 @@ from rotulador.ops import geradores
 from rotulador.contexto import Contexto
 from rotulador.gerador import FSTS_PESSOA, TECNICAS_FSTS, Receita, _sobrepoe
 from rotulador.sessao import ErroOperacao
+from app import criar_app
+from rotulador import ocr
+from rotulador.contexto import cache_ocr
+from rotulador.registro import Registro
 from tests.test_planilha import BaseApp
+from tests.test_tecnicas import documento
 
 IDS = {c["chave"]: c["id"] for c in carregar_categorias(RAIZ / "config" / "categorias.json")}
 
@@ -122,6 +127,114 @@ class TestHabito(unittest.TestCase):
         self.assertEqual(fsts.extracao({"principal": {"canais": {}}}), "canais")
 
 
+def _linha(texto_: str, arquivo: str, tam: int = 34, inclinar: float = 0.0, semente: int = 1):
+    """(imagem, caixa) de uma linha escaneada: papel com grão, a tinta levemente desfocada; ``inclinar`` deita as letras
+    (uma fonte que não está instalada: nenhuma das instaladas desenha assim)."""
+    import cv2
+    from PIL import ImageDraw, ImageFont
+
+    im = Image.new("RGB", (900, 110), (250, 249, 246))
+    d = ImageDraw.Draw(im)
+    f = ImageFont.truetype(f"C:/Windows/Fonts/{arquivo}", tam)
+    d.text((60, 30), texto_, font=f, fill=(35, 35, 40))
+    x0, y0, x1, y1 = d.textbbox((60, 30), texto_, font=f)
+    a = np.asarray(im, np.float32)
+    if inclinar:
+        cy = (y0 + y1) / 2
+        a = cv2.warpAffine(a, np.float32([[1, inclinar, -inclinar * cy], [0, 1, 0]]), (900, 110),
+                           borderValue=(250, 249, 246))
+        x0, x1 = x0 - inclinar * (y1 - y0) / 2, x1 + inclinar * (y1 - y0) / 2
+    a = cv2.GaussianBlur(a, (0, 0), 0.7) + np.random.default_rng(semente).normal(0, 2.0, a.shape[:2] + (1,))
+    return np.clip(a + 0.5, 0, 255).astype(np.uint8), [int(x0) - 3, y0 - 4, int(x1) + 4, y1 + 4]
+
+
+def _pessoa(img, caixa, texto_, tecnica="campo.mesma_fonte", semente=3):
+    """A técnica como o FSTS "como uma pessoa" manda (gerador._fsts_pessoa.parametros)."""
+    from rotulador.ops import executar
+    from rotulador.selecao import vazia
+
+    rng = random.Random(semente)
+    conf = fsts.configurar("replacement", rng)
+    conf["principal"].pop("rotacao", None)
+    hab = fsts.habito_humano(conf, caixa, rng)
+    hab.update(nitidez="igual", cor="calibrada")
+    p = {"tecnica": tecnica, "campo": {"id": "n", "caixa": caixa, "texto": texto_, "categoria": "nome", "tipo": "texto"},
+         "semente": semente, "opcoes": {}, "acabamento": {}, "conferir_ocr": False, "fontes": "top10",
+         "texto": "JOSE ALVES MOURA",
+         "habitos": {"humano": hab, "fsts": {**conf, "granularidade": "campo", "categoria_editor": "apagar e substituir",
+                                             "modo": "pessoa"}}}
+    return executar("tecnica", img, p, vazia(*img.shape[:2]), base=img)
+
+
+class TestFonteComoUmaPessoa(unittest.TestCase):
+    """O FSTS "como uma pessoa" (06/11/2026): o texto digitado sai com o desfoque e o tom do antigo, só numa fonte
+    identificada (a das 10 ou outra instalada que case melhor), e a colagem de outro documento só de um na mesma fonte."""
+
+    def test_texto_digitado_com_o_desfoque_e_o_tom_do_antigo(self):
+        from rotulador import humano
+
+        h = {"nitidez": "igual", "cor": "calibrada", "capricho": 0.5, "zoom": 2.0, "antialias": "nitida"}
+        self.assertEqual(humano.texto(h, random.Random(1), 0.83, 30)["desfoque"], 0.83)
+        tinta = np.zeros((20, 20), bool)
+        tinta[5:15, 8:11] = True
+        self.assertIsNone(humano.cor_conta_gotas(np.full((20, 20, 3), 30, np.uint8), tinta, h, random.Random(1)))
+        d = humano.descrever({**h, "selecao": "retangulo", "apagar": "patchmatch", "salvar": "png"})
+        self.assertIn("igual ao do documento", d)
+        self.assertIn("tinta nova ficar igual", d)
+
+    def test_nao_digita_numa_fonte_nao_identificada(self):
+        """Letra que nenhuma fonte instalada desenha (a conta da NIO): digitar na "mais parecida" mudaria o desenho
+        das letras; a técnica recusa (o gerador vai para as letras recortadas do documento)."""
+        img, caixa = _linha("MARIA DOS SANTOS", "arial.ttf", inclinar=0.35)
+        with self.assertRaisesRegex(ErroOperacao, "não foi identificada"):
+            _pessoa(img, caixa, "MARIA DOS SANTOS")
+        img, caixa = _linha("MARIA DOS SANTOS", "arial.ttf")
+        res = _pessoa(img, caixa, "MARIA DOS SANTOS")
+        self.assertEqual(res.meta["fornecedores"]["fonte"], "Arial")
+
+    def test_fonte_instalada_fora_das_10(self):
+        """Trebuchet MS não está entre as 10 mais usadas: a pessoa escreve nela, e não na parecida das 10."""
+        img, caixa = _linha("MARIA DOS SANTOS", "trebuc.ttf")
+        res = _pessoa(img, caixa, "MARIA DOS SANTOS")
+        self.assertEqual((res.meta["fornecedores"]["fonte"], res.meta["fornecedores"]["fonte_identificada"]),
+                         ("Trebuchet MS", "instalada"))
+
+    def test_doador_de_outro_documento_na_mesma_fonte(self):
+        from rotulador import glifos
+        from rotulador.ops import tecnicas
+
+        img, caixa = _linha("JOSE CARLOS RIBEIRO", "verdana.ttf")
+        c = tecnicas._C(img, {"tecnica": "campo.colagem_externa", "fontes": "top10",
+                              "campo": {"id": "n", "caixa": caixa, "texto": "JOSE CARLOS RIBEIRO", "categoria": "nome",
+                                        "tipo": "texto"}}, img, None, None, None, None)
+        nit = glifos.nitidez_tinta(img, caixa)
+        for arquivo, serve in (("verdana.ttf", True), ("times.ttf", False), ("calibri.ttf", False)):
+            d, cd = _linha("LUCIANA MARTINS ALVES", arquivo, semente=5)
+            self.assertEqual(tecnicas._doador_parecido(c, d, {"caixa": cd, "texto": "LUCIANA MARTINS ALVES"}, nit),
+                             serve, arquivo)
+
+
+class TestSemNomeNemEndereco(unittest.TestCase):
+    def test_mensagem_diz_a_pagina_o_que_foi_lido_e_o_que_foi_achado(self):
+        """Num documento sem o nome e o endereço, a recusa diz a página, quantas linhas o OCR leu e os campos achados
+        (em outro computador, só "não achou" não dizia se era o OCR, a página ou o leiaute), e o motivo agrupado do
+        lote continua o mesmo."""
+        from types import SimpleNamespace
+
+        from rotulador import gerador
+
+        ctx = SimpleNamespace(item=SimpleNamespace(pagina=1, paginas=3), linhas=[{}] * 7)
+        msg = gerador._sem_nome_nem_endereco(ctx, [{"categoria": "valor"}, {"categoria": "data"}, {"categoria": None}])
+        self.assertIn("pág. 2/3", msg)
+        self.assertIn("7 linhas lidas", msg)
+        self.assertIn("campos achados: data, valor", msg)
+        self.assertIn("ferramentas/diagnostico.py", msg)
+        self.assertEqual(gerador.motivo_da_recusa(msg), "o detector não achou o nome nem o endereço do cliente neste documento")
+        vazio = gerador._sem_nome_nem_endereco(SimpleNamespace(item=None, linhas=[]), [])
+        self.assertIn("nenhuma linha lida", vazio)
+        self.assertIn("campos achados: nenhum", vazio)
+
+
 class TestReceita(unittest.TestCase):
     def test_perfil_fsts(self):
         r = Receita({"perfil": "fsts"}, IDS)
@@ -166,7 +279,7 @@ class TestVersao(BaseApp):
             arq = {k: self.saida / "teste" / v for k, v in anot["arquivos"].items()}
             orig = np.asarray(Image.open(arq["original"]).convert("RGB"))
             ed = np.asarray(Image.open(arq["editada"]).convert("RGB"))
-            np.testing.assert_array_equal(np.asarray(Image.open(arq["mascara"])) == 1, (ed != orig).any(2))
+            np.testing.assert_array_equal(np.asarray(Image.open(arq["mascara"])) > 0, (ed != orig).any(2))
             regs = anot["gerador"]["fsts"]["regioes"]
             self.assertEqual(len(regs), len(anot["edicoes"]))
             self.assertEqual(len({x["campo"] for x in regs}), len(regs))  # um campo, uma edição
@@ -234,6 +347,37 @@ class TestComoUmaPessoa(BaseApp):
                 self.assertEqual(reg["categoria_editor"], "apagar e substituir", reg)
             for e in anot["edicoes"]:
                 self.assertNotIn(e["familia"], ("copia_interna", "colagem_externa"), e["tecnica"])
+
+
+class TestComoUmaPessoaComDoador(BaseApp):
+    """Dois documentos no mesmo split: colar de outro documento é possível."""
+
+    def setUp(self):
+        super().setUp()
+        img, linhas = documento(nome="JOSEFA PEREIRA LIMA", semente=9, endereco="RUA DOS TUPIS, 58", cep=self.CEP)
+        Image.fromarray(img).save(self.dados / "teste" / "conta_doadora.png")
+        self.reg = Registro(self.dados, self.saida, log=lambda *_: None)
+        doadora = next(it for it in self.reg.por_split["teste"] if it.rel.endswith("conta_doadora.png"))
+        ocr.gravar_cache(cache_ocr(self.saida, doadora.sha_pixels), linhas)
+        self.app = criar_app(self.reg, self.saida, self.cats)
+        self.c = self.app.test_client()
+
+    def doc(self, sp="teste"):
+        return next(it for it in self.reg.por_split[sp] if not it.rel.endswith("conta_doadora.png"))
+
+    lote = TestComoUmaPessoa.lote
+
+    def test_rua_nova_nao_vem_de_outro_documento(self):
+        """Com a rua inteira trocada, o bairro, o CEP e a cidade vêm da mesma linha da base: nada do endereço é colado
+        de outro documento. O bloco do endereço colado no bairro cobria a linha da rua e apagava a edição dela (o
+        rótulo da rua dizia um texto que não estava na imagem)."""
+        anots = self.lote({"categorias": {"pegar de outro documento": 1}}, variacoes=6)
+        for anot in anots:
+            if not {"bairro", "cep", "cidade/uf"} & set(anot["gerador"]["classes"]):
+                continue  # só o número da rua mudou (ou só o nome): a colagem de uma letra pode
+            for e in anot["edicoes"]:
+                if e["categoria"] in ("endereço", "bairro", "cep", "cidade/uf"):
+                    self.assertNotEqual(e["familia"], "colagem_externa", (e["categoria"], e["tecnica"]))
 
 
 class TestComoUmaPessoaNoCeara(TestComoUmaPessoa):

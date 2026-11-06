@@ -1,0 +1,1184 @@
+# Manual de referência
+
+Tudo o que o rotulador faz, tela por tela, com os parâmetros, os formatos e os números medidos. Para a visão
+geral (o que é e como funciona por dentro), comece pelo [README](../README.md).
+
+## Instalação
+
+Precisa do Python 3.10 a 3.13 (o paddlepaddle ainda não tem pacote para o 3.14).
+
+```powershell
+py -3.13 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install --no-deps -r requirements-ocr.txt   # o OCR, sem as bibliotecas do Hugging Face
+```
+
+### OCR
+
+O texto do documento é lido pelo **paddleocr** (PyPI), com o **detector PP-OCRv6 small** e o **reconhecedor latino
+PP-OCRv5 mobile** da PaddlePaddle, em CPU (com o oneDNN). Os modelos, no formato do Paddle, são baixados pelo próprio
+Python da conta oficial da PaddlePaddle no **ModelScope**, numa revisão fixa e conferidos pelo sha256, e vão ao
+paddleocr como pasta local: ele não baixa nada. Sem o classificador 0/180°, que virava a linha digitável de cabeça
+para baixo. Lê acentos, cedilha e espaços ("JOSÉ CARLOS RIBEIRO", "MÊS REFERÊNCIA: AGO/2026") e a caixa de cada linha
+cobre a tinta toda.
+
+- **Nada do Hugging Face:** o paddlex importa o `huggingface_hub` (só para baixar modelos de lá) e o paddlepaddle
+  importa o `safetensors` (só em checkpoints de treino). Nenhum dos dois é instalado: o `requirements-ocr.txt` entra
+  com `--no-deps` e `rotulador/ocr.py` põe módulos vazios no lugar deles, que recusam qualquer uso. O paddlex fica
+  apontado para o ModelScope, sem o teste de conexão com os sites de modelos e sem o Hugging Face na lista de fontes.
+- **Versões:** paddlepaddle 3.2.2 (no 3.3 o oneDNN falha nestes modelos, e sem ele a página leva 15 s), paddlex 3.7.2
+  e paddleocr 3.7.0, que confere o `opencv-contrib-python` pelo nome (por isso não é o `-headless`).
+- **Memória:** o oneDNN guarda o que montou para cada tamanho de imagem; com o padrão (10 tamanhos) o processo
+  ficava com 5 a 11 GB reservados depois de ler, e o paddle falhava ("Unknown exception") com outros processos
+  pesados ao lado. Com `mkldnn_cache_capacity=1`, volta a ~1,9 GB entre as páginas, com a mesma leitura e o mesmo
+  tempo. Enquanto o detector lê uma página A4 a 300 dpi, o pico passa de ~8 GB; reduzir a imagem baixaria o pico,
+  mas mexe as caixas em até 8 px (na resolução original elas ficam iguais às do motor anterior).
+- **Modelos:** na primeira leitura, ~18 MB são baixados para `modelos/ocr/` (fora do git), de um commit fixo e
+  conferidos pelo sha256. Para baixar antes (máquina que vai ficar sem rede):
+  `.venv\Scripts\python.exe -c "from rotulador import ocr; print(ocr.motor())"`.
+- **Sem o paddleocr ou sem os modelos** (sem rede na primeira vez, arquivo que não confere): a leitura avisa com
+  `OCRIndisponivel` e a tela mostra o motivo.
+- **Cache:** `saida/_cache/ocr/<hash>.json` guarda o nome do motor; a leitura de outro motor (inclusive a do OCR
+  antigo, de antes do paddleocr) é refeita sozinha. O voto de fonte do documento (`_cache/fontes`) também é refeito.
+
+**Troca para o paddleocr (06/11/2026).** Nas 25 páginas de teste do projeto (as realistas, as de fontes variadas e as
+de 150 dpi), o paddleocr e o motor anterior (os mesmos modelos em ONNX, pelo `rapidocr_onnxruntime`) leram 633 de 634
+linhas iguais. A única diferença é do novo, e certa: "TOTAL A PAGAR" onde o anterior lia "TOTALA PAGAR". O reconhecedor
+sozinho deu 634 de 634 iguais. O tempo por página foi de 1,9 s para 2,6 s e o do reconhecedor sozinho, de 23 ms para
+55 ms por linha (o tempo é do próprio Paddle; o número de threads não muda nada).
+
+Benchmark (04/10/2026, com o motor anterior; o paddleocr lê igual, acima) nos documentos do projeto: 19 páginas sintéticas com o texto e a caixa de cada linha
+conhecidos (`tests_ui/gerar_variados.py` e `gerar_amostras.py --realista`: 8 fontes, 150–300 dpi, foto inclinada,
+JPEG; 490 linhas) e 94 linhas transcritas à mão da conta real (scan). CPU de 24 threads, tempo por página A4 a 300 dpi.
+
+| motor | CER sint. | linhas exatas | acentos | espaços | caixa cobre a tinta | CER conta real | s/página | RAM pico |
+|---|---|---|---|---|---|---|---|---|
+| antes: PP-OCRv3 ch (+ espaços pela tinta) | 9,8% | 70% | 0% | 82% | 65% | 7,3% | 2,2 | 1,8 GB |
+| **agora: PP-OCRv6 small det + latin PP-OCRv5 rec** | **0,19%** | **97,6%** | **100%** | **99,8%** | **99,4%** | **0,36%** | **2,4** | **1,9 GB** |
+| PP-OCRv6 small (det + rec) | 0,42% | 94,5% | 100% | 96,1% | 99,4% | 0,61% | ~2,4 | 2,3 GB |
+| PP-OCRv6 medium (det + rec) | 0,17% | 97,8% | 100% | 99,8% | 99,0% | 0,67% | 7,6 | 3,8 GB |
+| PP-OCRv6 tiny det + latin PP-OCRv5 rec | 0,19% | 97,6% | 100% | 99,8% | 97,8% | 0,36% | 1,5 | 1,6 GB |
+
+Quase todas as linhas "não exatas" do motor novo são "Nº" lido como "N°" (na Arial os dois são iguais). O
+reconhecedor sozinho (`ocr.reconhecer`, usado na conferência das edições) erra 0,19% dos caracteres (antes, 3,4%).
+O PaddleOCR-VL-1.6 (0,9B, transformers) foi testado como segunda opinião e ficou de fora: ~0,8 s por linha na RTX
+4060 (o reconhecedor acima: ~0,06 s em CPU), "corrige" o que está impresso ("Local de pagemento" → "pagamento",
+número sublinhado vira LaTeX) e o *spotting* de uma página inteira passou de 13 GB de RAM.
+
+## O editor (a página principal)
+
+Usa-se como o Photoshop (os atalhos são os dele); o visual segue o do [Graphite](https://github.com/GraphiteEditor/Graphite)
+(código Apache-2.0): os mesmos cinzas (#111 abas e campos, #222 vãos e visor, #333 painéis, #444 botões), a
+fonte Source Sans Pro (em `static/fontes/`, licença SIL OFL 1.1), controles de 24 px com cantos de 2 px, painéis com
+aba arredondada, a ferramenta ativa e o botão principal em claro com o desenho escuro, e o azul só no que é desenhado
+sobre a imagem. Os **ícones** (`static/icones.js`) são nossos, desenhados no estilo dos do Graphite (dois tons, grade
+de 24 px): os do Graphite são proprietários ("Graphite Branding License": proibido copiar ou usar fora do programa
+oficial), então nenhum foi copiado. No alto, os **menus** (Arquivo, Editar, Selecionar, Camada,
+Imagem, Exibir, Ajuda), com os atalhos ao lado de cada item. Embaixo deles, a **barra de opções** da ferramenta ativa
+e o zoom. À esquerda, as **ferramentas em grupos**: o botão mostra a última usada do grupo, e o clique direito (ou
+segurar o botão) abre as outras. No centro, o documento. À direita, só três painéis. Na **barra de status**, o que
+cada gesto do mouse e cada tecla fazem agora (muda com a ferramenta e com a seleção).
+
+**Recortar, puxar e apagar.** Com uma seleção feita (`M` retângulo, `L` laço, `W` varinha…), aparece embaixo dela
+uma barra de tarefas (como a barra contextual do Photoshop):
+
+- **Recortar** (`Ctrl+X`): o trecho fica solto; arraste-o para onde quer, e o lugar de onde saiu é preenchido com
+  o papel em volta. Sem arrastar, `Enter` só apaga o trecho.
+- **Puxar** (`Ctrl+arrastar` dentro da seleção, com qualquer ferramenta, ou `V`/`Ctrl+T`): os pixels seguem o mouse
+  na hora e, ao soltar, aparece a prévia de verdade, com o buraco já preenchido. `Alt+arrastar` duplica em vez de
+  puxar. Os cantos escalam (`Shift` mantém a proporção, `Ctrl` faz perspectiva); fora da caixa, gira. `Enter` (ou
+  ✓ Aplicar) aplica e `Esc` devolve o trecho ao lugar. Trocar de ferramenta, desmarcar (`Ctrl+D`), salvar ou trocar
+  de imagem também aplicam o que está solto.
+- **Copiar** / **Colar** (`Ctrl+C` / `Ctrl+V`): na mesma imagem, o trecho é duplicado um pouco ao lado, para
+  arrastar. Em **outra imagem do mesmo split**, ele vem do original daquela imagem, só no formato da seleção
+  (laço, elipse, varinha), nas mesmas coordenadas. Colar numa imagem de outro split é recusado: misturaria os
+  splits. `Ctrl+Shift+V` escolhe o trecho de outro documento numa lista.
+- **Lado a lado** (com o tipo *pegar de outro documento*): outra imagem do mesmo split aparece à esquerda da que
+  você edita, de preferência uma que **ainda não serviu de doadora** em nenhuma versão salva do split (o selo diz
+  "ainda não usada", "usada nesta imagem" ou em quantas versões já foi usada; ‹ › trocam de doadora). Selecione o
+  trecho nela (retângulo ou laço) e **arraste-o até a imagem da direita**: ele é colado onde você soltar, solto para
+  ajustar, e `Enter` aplica. Duplo clique na seleção, **Mesmo lugar** ou `Ctrl+V` colam nas mesmas coordenadas.
+  Fechar (✕) esconde a doadora; **Exibir › Outra imagem do split ao lado** a traz de volta.
+- **Apagar** (`Delete`): o selecionado some, refeito com o papel em volta (preenchimento por similaridade), sem
+  diálogo. O botão do dado refaz o mesmo Apagar com outra variação. `Shift+F5` abre o preenchimento com opções.
+- **Substituir texto** (`R`) e **Ajustes** também estão na barra; **Inverter** e **Desmarcar** no fim dela.
+
+O tipo da edição segue a ação quando não há dúvida: colar de outra imagem é sempre *pegar de outro documento*, e
+copiar ou puxar dentro da mesma imagem nunca é. Se o tipo marcado for o errado, ele é trocado, com um aviso. Sem
+tipo marcado, a regra continua: nada é aplicado antes de escolher.
+
+- **Tipo da edição:** *copiar e colar* (um pedaço do próprio documento colado em outro lugar dele), *pegar de outro
+  documento* (um pedaço de outro documento do MESMO split) ou *apagar e substituir* (o texto apagado e, no lugar,
+  outro escrito ou nada). Escolha um antes de editar (clique, ou `Alt+1`, `Alt+2`, `Alt+3`): sem ele, nada é
+  aplicado e o painel avisa. O escolhido fica lembrado e já vem marcado na próxima imagem. Ele vai para a máscara de
+  classes da edição (`catalogo.CATEGORIAS_EDITOR`: ids 201, 202 e 203, fora dos das classes de campo, que o gerador
+  continua usando) e para o `categorias.csv` do split.
+- **Camadas:** ver "Camadas".
+- **Histórico:** os passos (Puxar, Apagar com preenchimento, Colar de outro documento…), com desfazer e refazer.
+
+**Salvar** (`Ctrl+S`) grava a imagem editada, as máscaras e a anotação em `saida/<split>/`, no MESMO split da imagem
+de origem, e abre a próxima imagem ainda sem versão. O dado para o treino do modelo vai também para uma pasta à parte,
+`saida/_treinamento/<split>/`: só a imagem editada (`imagens/`) e a máscara de onde foi editado (`mascaras/`), com o
+mesmo nome (ver "Saída"). Nada passa de um split para outro: a colagem de outro
+documento só aceita doador do mesmo split (o servidor recusa os outros), e a auditoria da partida recusa o mesmo
+documento em dois splits. ◀ ▶ (`PageUp`/`PageDown`) passam de imagem, e o topo diz em qual está ("3 de 40 · 1
+salva(s)"). **Gerador** (no alto, ou Arquivo › Gerador automático) abre a geração em lote (próxima seção). Na primeira vez, um tutorial curto explica o fluxo.
+
+## Gerador automático (técnicas × classes, em lote)
+
+A página `/gerador` (botão **🏭 Gerador automático**) abre na tela **Gerar fraudes**, de um clique. A receita
+completa (modos exato, fácil e avançado, abaixo) fica em **▸ Opções avançadas**.
+
+### ▶ Gerar fraudes (um clique, padrão)
+
+- **Método**: "Edições profissionais" (padrão, abaixo) ou "FSTS (artigo do NeurIPS 2025)" (no fim desta seção).
+- **Documentos**: um chip por split (vêm marcados os que têm documento sem versão); "escolher documentos…" abre
+  a lista. **Versões por documento**: − / +. **O que mudar**: "Nome e endereço — às vezes também CPF, CEP, datas
+  ou valores" (padrão), "Só nome e endereço" ou "Escolher campos…".
+- **Estilo das fraudes** (estilos prontos, `gerador.ESTILOS`; cada cartão diz o que faz, para que serve e o que muda
+  na imagem):
+  - ⭐ **Como gente de verdade** (padrão): 85% das versões editadas por um operador humano (`rotulador/humano.py`:
+    seleção em volta do texto, ferramenta de apagar, suavização do Photoshop, conta-gotas, posição no olho, retoques
+    e o "Salvar como" do programa, aplicado também à original); 15% com acabamento perfeito;
+
+  Em todos os estilos o texto novo sai **igual ao antigo em fonte, tamanho e traço**: a fonte é a identificada no
+  campo, a escala é 1 (o operador humano não erra o tamanho, a letra colada não é esticada) e o negrito é corrigido
+  até o traço casar. A **conferência da fonte** (`tecnicas._conferir_fonte`, `rotulador/fidelidade.py`) mede o texto
+  novo contra o antigo na imagem que sai e descarta a edição com a altura das letras fora de ±4% (ou ±1 px) ou o traço
+  fora de ±10% (o gerador tenta outra técnica); a medida vai para a anotação (`fidelidade` de cada edição) e para a
+  aba Revisar;
+  - 🎯 **Perfeccionista**: só acabamento perfeito (só a tinta muda; cor, grão e desfoque do documento) — o caso mais
+    difícil;
+  - 🧑 **Só como pessoas**: 100% operador humano — um conjunto de teste parecido com fraude real;
+  - 📤 **Como chega no atendimento**: o padrão e, em 70% das versões, o envio do arquivo (WhatsApp, e-mail, rede
+    social: canal `envio`, sem foto nem recorte), igual na original e na falsa.
+  "Como funciona, passo a passo" (no topo) explica o caminho: ler, escolher, inventar valores, editar, conferir, salvar.
+- **👁 Ver um exemplo** edita um documento sorteado sem salvar e mostra ANTES | DEPOIS com o que mudou numerado
+  (antigo → novo, ampliável), **quem editou e como** (em português) e se o texto ficou coerente (as regras de um
+  verificador: CEP e cidade, datas, código de barras, CPF); a vista grande de cada versão do lote também diz quem editou. **▶ Gerar N fraudes** mostra o progresso e uma galeria ao vivo; no fim, o resumo
+  (e por que algo falhou) e os atalhos Revisar e Catálogo.
+- **Só edições profissionais** (perfil `receita_profissional`, `gerador.PERFIL_PROFISSIONAL`): em cada campo a
+  técnica e a granularidade são sorteadas como um falsificador caprichoso faria:
+  - o campo inteiro (≈55%): na mesma fonte identificada, ou montado com as **letras recortadas do próprio
+    documento** (`campo.letras_do_documento`: fonte, peso, cor, desfoque e grão idênticos ao resto da linha);
+  - só um pedaço (≈25%): o número da casa, o sobrenome, o dia, os centavos;
+  - uma letra ou dígito (≈15%): copiada de outro ponto do documento, redesenhada, inserida ou trocada de lugar;
+  - acrescentar um complemento (APTO, FUNDOS) ou tirar a parte final (≈5%).
+  Nada de retângulo, fonte padrão, corretivo, rabisco ou borrão. Guardas desfazem o que sairia mal (acento antigo
+  que sobra, fonte mal identificada numa troca parcial) e refazem o campo inteiro.
+- **Campos**: sempre nome e/ou endereço; em ~45% das versões também 1 ou 2 grupos extras, coerentes entre si: o CPF
+  do cliente, o CEP com o bairro (e às vezes a cidade), a data com o mês de referência, o valor com o consumo. O
+  mesmo dado repetido sai igual em todo lugar.
+- Datas e mês de referência são trocados só pelo campo inteiro, que segue o ciclo de datas da versão (vencimento,
+  emissão e leitura andando juntos); a troca de um dígito escolhia a data sozinha.
+- Na API: `{"receita": {"perfil": "profissional", "estilo": "recomendado", "extras": true, "variacoes": 3,
+  "documentos": {...}}}` em `/api/gerador/iniciar` e `/api/gerador/previa`; `GET /api/gerador/estilos` lista os
+  estilos; `GET /api/gerador/receita_profissional?estilo=...` mostra a mistura.
+  A anotação traz `gerador.estilo` (classes, extras, técnica e granularidade de cada campo).
+- **Método "FSTS (artigo do NeurIPS 2025)"**: as operações do artigo *Toward Real-world Text Image Forgery
+  Localization* (`rotulador/fsts.py`): em cada região, o processamento principal (ferramenta de apagar, recorte com ou
+  sem o fundo, suavização do texto, conta-gotas, escala, rotação) sorteado da população das tabelas 8–12; o
+  pós-processamento das tabelas não é aplicado (o rótulo diz "Pós-processamento: nenhum"). Com ele, "O que mudar" e o
+  estilo somem da tela e aparece o bloco **FSTS**, com dois jeitos:
+  - **Como uma pessoa** (padrão): o que uma pessoa de verdade edita num comprovante. O detector de campos diz qual é
+    qual, e cada versão troca o **nome**, o **endereço** ou os dois, do cliente (o CPF da empresa e o endereço do
+    emissor ficam), em todos os lugares onde aparecem e com o mesmo valor novo. A **rua nova** vem com o bairro e o
+    CEP dela (a mesma linha da base de lugares); quando só o **número** da casa muda, o CEP e o bairro ficam. O CPF
+    do cliente muda junto com o nome em 15% das versões.
+    - **Categorias** (cada campo sai numa das marcadas, com a técnica dela): *copiar e colar* (o valor novo montado
+      com as letras do próprio documento, ou uma letra trocada por outra dele), *pegar de outro documento* (o campo,
+      o bloco do endereço ou uma letra colados de outro documento do mesmo split) e *apagar e substituir* (apagado e
+      reescrito na mesma fonte, inteiro ou só um trecho, como o sobrenome). O nome sai inteiro em 70% das vezes; o
+      endereço, inteiro em 50%, só um pedaço em 30% e um caractere em 20%. Quando a rua muda inteira, nada do
+      endereço (rua, bairro, CEP, cidade) é colado de outro documento: a colagem traria a rua do doador sem o CEP
+      dela, e o bloco do endereço cobria a linha da rua já editada (até 06/11/2026, o rótulo da rua dizia um texto que
+      não estava na imagem em 2 de 11 versões). Uma letra ou um dígito de outro documento continua valendo.
+    - **Nomes e endereços novos do Ceará** (padrão): os nomes pesam como no Ceará (FRANCISCO, FRANCISCA, ANTÔNIA,
+      RAIMUNDO; SOUSA, LIMA, ARAÚJO, pelo Censo do IBGE e pelas candidaturas do TSE, em
+      `config/vocabulario/nomes_por_uf.tsv.gz`) e as ruas, bairros e CEPs são reais dos 184 municípios de lá (CNEFE
+      2022: 14.367 ruas, 14.741 bairros). O endereço só vai para o Ceará quando o documento já é de lá (pela cidade
+      ou pelo CEP) ou quando a linha da cidade foi achada e muda junto; senão fica na cidade do documento (rua do
+      Ceará com o CEP e a cidade de outro estado seria a incoerência que a pessoa evita). "do Brasil inteiro" usa a
+      base do país.
+    - **A fonte e a aparência do original** (06/11/2026): o campo tem uma fonte só em todas as técnicas (a das 10 mais
+      usadas ou outra instalada que case melhor com a tinta), e o texto só é digitado quando ela foi identificada
+      (semelhança ≥ 0,90); senão o valor novo é montado com as letras recortadas do próprio documento. O texto
+      digitado sai com o desfoque do scan e o tom da tinta antiga. "Pegar de outro documento" só usa um doador na
+      mesma fonte, na mesma caixa de letras e com nitidez parecida.
+  - **Como o artigo**: a eq. 8 à risca, de 1 a 12 campos de texto quaisquer, com o tipo (cópia interna, colagem de
+    outro documento, remoção, inserção ou substituição) sorteado em cada um.
+
+  Detalhes em [docs/falsificadores.md](falsificadores.md#4d-o-método-de-geração-do-fsts-inteiro-29102026).
+  Na API é outro perfil: `{"receita": {"perfil": "fsts", "variacoes": 3, "documentos": {...}}}`, com
+  `"fsts": {"modo": "pessoa", "categorias": {"copiar e colar": 1, "apagar e substituir": 1}, "regiao": "CE"}` (a
+  categoria que não vem fica de fora; `"regiao": ""` = o país) ou `"fsts": {"modo": "artigo", "tipos":
+  {"replacement": 2, "removal": 1}}` (o peso dos tipos; o que não vem fica de fora; `"categorias": ["nome", ...]`
+  restringe os campos). A anotação traz `gerador.fsts` (modo, classes da versão, região e, de cada região, o campo,
+  a técnica, o tipo do artigo e a categoria do editor); cada edição traz `fsts` (tipo, operações e parâmetros), e o
+  `categorias.csv` do split, a categoria de cada versão. Os pesos regionais refazem-se com
+  `ferramentas\construir_nomes_regiao.py --uf CE` (outra UF entra no mesmo arquivo).
+
+### 🎯 Modo exato: marque o que editar
+
+- **O que editar:** caixas de marcar por classe (Pessoa, Endereço, Valores e datas, Códigos, Emissor), com
+  atalhos "Nome e endereço" (o padrão), "Endereço completo" e "Nome, endereço completo e CPF".
+- Em cada documento, **todos** os campos dessas classes que o leitor achar são trocados, um por um, na
+  **mesma fonte** do documento. O mesmo nome e endereço novos em todo lugar onde se repetem (inclusive dentro
+  de outra linha, como "NOME CPF ..."); cidade, UF e CEP coerentes entre si. Lugar que ficou com o valor antigo
+  vai para `ocorrencias_antigas` na anotação.
+- **Só a tinta muda:** o texto antigo é apagado letra a letra (a tinta dilatada), com o fundo reconstruído pela
+  luz do papel em volta; o papel entre as letras fica intacto. O texto novo sai sem hinting, na inclinação da
+  linha, na escuridão da tinta antiga, com o grão (luma e cor) do papel; num documento JPEG a região editada é
+  recomprimida com as tabelas de quantização do próprio arquivo, na grade dele (`acabamento.requantizar`).
+- **A imagem salva é a original com essas edições, e nada mais:** sem canal de envio (foto, scanner, tela,
+  WhatsApp), sem marcas benignas, sem falsificador e sem disfarce. A original gravada é o próprio documento.
+- **Versões por documento:** cada versão troca outros valores e, com "Variar quais classes entram em cada
+  versão" (ligado por padrão), sorteia quais das classes marcadas entram (às vezes só o nome, às vezes só o
+  endereço), sem repetir o sorteio no mesmo documento enquanto houver outro.
+- **Fonte:** `fonte_identificada` no rótulo é `top10` quando a semelhança com a tinta passa de
+  `identificar_fonte.LIMIAR_MESMA_FONTE`, `aproximada` quando a fonte do documento não está entre as 10, e
+  `estimada` quando não deu para medir.
+- **Letras do próprio documento** (`campo.letras_do_documento`, nº 13, cópia interna): o valor novo é montado com
+  as letras recortadas do próprio campo e das linhas no mesmo estilo (altura, cor da tinta, espessura do traço e
+  nitidez), transferidas sobre o papel reconstruído, com a fonte identificada só como gabarito de posição; a letra
+  que o documento não tem sai desenhada e o rótulo diz `fornecedores.texto` = `glifos_do_documento` ou `misto`
+  (faltando mais de 25% das letras, a técnica desiste e a edição cai na mesma fonte).
+- Na API, é a receita `{"exato": true, ...}`; `gerador.receita_limpa(ids, categorias)` monta a padrão.
+
+Os modos fácil e avançado abaixo continuam para quem quer variar técnicas, canal de envio e falsificadores;
+o padrão deles agora também é a imagem como está (canal "nenhum", sem marcas e sem falsificador).
+
+### ✨ Modo fácil: tipos de edição (padrão)
+
+A receita é uma lista de **tipos de edição**. Cada tipo aparece como uma frase, por exemplo:
+*"Mexe em Valor ou Consumo · mexer em uma letra ou dígito ou mudar só um pedaço · capricho
+profissional"*, com **pouco / normal / muito** ao lado.
+
+- **Ideias prontas** acrescentam um tipo com um clique: valor da conta, trocar o titular, outro
+  endereço, mexer nas datas, códigos de pagamento, apagar informações, retoque sem mudar o texto
+  e tudo um pouco. Uma receita nova já começa com as quatro primeiras.
+- **＋ Criar tipo de edição** abre um diálogo de 4 passos, com cartões grandes:
+  1. **o que** adulterar: os campos, cada um com um exemplo;
+  2. **como**: 7 jeitos em linguagem simples, cada um com um exemplo antes → depois:
+     - trocar o texto todo;
+     - mudar só um pedaço;
+     - mexer em uma letra ou dígito;
+     - copiar e colar;
+     - apagar;
+     - gerar código novo;
+     - retoque sem mudar o texto.
+
+     Depois do primeiro lote, cada jeito mostra também um **recorte real** já gerado. Um jeito que
+     não serve para as classes escolhidas fica apagado (código novo não vale para CEP, por exemplo);
+  3. o **capricho** do falsificador: amador, profissional ou IA. Dá para misturar;
+  4. **quanto** o tipo aparece no lote.
+
+  O rodapé do diálogo mostra a frase do tipo e quantas técnicas e combinações ele usa.
+- Cada tipo pode ser ligado e desligado, editado, duplicado e **👁 testado sozinho**: a prévia sai
+  só com ele.
+- **Quanto gerar** define as versões por documento e as edições por imagem.
+- **Como o documento chega** a quem confere é escolhido em cartões: nenhum, misturado, scanner,
+  celular, tela, impressão ou WhatsApp. Ali também se ligam os carimbos e as anotações.
+- Grão do papel, disfarce e formato ficam no automático.
+- **Quem falsifica**: por padrão, 80% das versões são feitas **como uma pessoa faria** (abaixo).
+  Cartões ligam e desligam cada falsificador e cada motivo; um controle diz a fração de versões.
+- À direita, o **Plano do lote** mostra a fatia de cada tipo, a mistura de falsificadores e motivos,
+  e exemplos reais antes → depois das técnicas dele, de preferência nas classes do tipo.
+
+### 👤 Como uma pessoa faria (falsificadores e motivos)
+
+Um sorteio uniforme de técnicas e campos não é o que um fraudador faz, e o detector aprende o
+sorteio em vez da fraude (no RTM, o manual é localizado com IoU 29,9% contra 57,6% do automático).
+Por isso, em cada versão, o gerador sorteia:
+
+- um **falsificador**, com a ferramenta e os hábitos dele, fixos na versão inteira:
+  - 📱 **celular, app de edição** (27%): retângulo ou pincelada, fonte do sistema, letra copiada com o
+    fundo, rabisco, borrão, dedo ou adesivo na foto; manda a foto da tela ou pelo WhatsApp;
+  - 🖌️ **Paint ou editor simples** (13%): copia e cola dígitos do próprio documento, como 78% das
+    edições dos voluntários do *Find it again!*;
+  - 📄 **no papel** (8%): corretivo líquido, caneta esferográfica, recorte colado, post-it ou dedo por
+    cima — e depois fotografa ou escaneia de novo (o canal é obrigatório);
+  - 📝 **editor de PDF ou de texto** (27%): troca o texto mantendo a fonte; o texto novo sai **nítido**,
+    sem o grão do papel escaneado (a "mancha lisa demais" que os detectores procuram);
+  - 🎯 **Photoshop/GIMP com cuidado** (22%): preenchimento inteligente, grão igualado, letra colada
+    com alfa; desfoca e aguça depois, sempre com os mesmos parâmetros (o FSTS mediu que cada pessoa
+    repete os seus);
+  - 🤖 **IA generativa** (3%, só com o servidor ligado);
+- um **motivo**, que escolhe campos que combinam e valores combinados:
+  - 📅 **deixar a conta recente** (35%): vencimento de 3 a 85 dias atrás e o mês de referência anterior
+    a ele (é o campo mais alterado em comprovantes de residência: a regra dos 90 dias);
+  - 👤 **pôr outro titular** (25%): o mesmo nome em todo lugar; o CPF entra em 60% das vezes;
+  - 🏠 **provar outro endereço** (20%): rua sempre; CEP, bairro e cidade às vezes;
+  - 💰 **mudar o valor** (12%): às vezes um valor redondo; o código de barras fica velho;
+  - 🧽 **sumir com uma informação** (5%); 🎲 sem motivo (3%).
+
+Cada pessoa usa só as técnicas da ferramenta dela, nos pesos medidos, e sempre dentro do que a
+receita (tipos de edição ou técnicas × classes) permite. O resto das versões sai do sorteio clássico,
+que mantém a cobertura uniforme. Na receita: `falsificadores: {prob, pesos, motivos}`; `pesos` e
+`motivos` listados valem só para quem está na lista. Quem fez e por quê fica na anotação
+(`falsificador`), nas colunas `falsificador`/`motivo` dos índices, nos filtros do catálogo e no
+datasheet; dá para treinar sem um falsificador e testar nele. As proporções entre falsificadores são
+**estimativas** (ninguém as mediu): ajuste-as se tiver fraudes reais classificadas. Evidências,
+números e limites: [docs/falsificadores.md](falsificadores.md).
+
+No servidor (`tipos` na receita, em `rotulador/gerador.py`), só entram as combinações técnica ×
+classe de algum tipo. O peso de cada tipo se divide entre as combinações dele, tanto na
+distribuição equilibrada quanto na por pesos. Os jeitos ficam em `rotulador/catalogo.py`
+(`JEITOS`), e cada técnica automática está em exatamente um.
+
+### 🔧 Modo avançado
+
+Mostra todas as técnicas, classes, pesos e acabamentos. Enquanto houver tipos do modo fácil
+valendo, as listas de técnicas e classes ficam só para ver; as opções ⚙ de cada técnica continuam
+valendo. **Usar estas técnicas e classes no lugar dos tipos** volta à lista completa.
+
+1. **Documentos:** splits, todos ou alguns, só os pendentes.
+2. **Técnicas, o *como*:** 29 técnicas automáticas em 8 famílias de fraude, com peso e opções por
+   técnica. Há atalhos: só caractere, trecho e campo, profissional, amador, cópia e colagem,
+   remoção, traços e IA. Três opções aparecem em várias técnicas, porque cada ferramenta real as faz
+   de um jeito: **como apagar** (PatchMatch, inpainting Telea ou Navier-Stokes de app, cor chapada do
+   Paint, borrão, carimbo de papel vizinho), **vestígio** (apagado malfeito, com um fantasma fraco do
+   texto antigo) e, no estilo amador, o **rasterizador** do texto (FreeType, GDI com hinting e poucos
+   tons, ClearType com franjas coloridas, sem antialias).
+3. **Classes, o *quê*:** nome, valor, data, CPF… com peso e atalhos (identidade, endereço,
+   financeiro, códigos).
+4. **Quantidade e acabamento:**
+   - variações por documento e edições por imagem;
+   - distribuição **equilibrada**, que cobre cada combinação técnica × classe por igual, ou pelos
+     pesos;
+   - grão do papel e recompressão JPEG local;
+   - **disfarce**: retoques que falsificadores reais fazem depois da edição (desfoque, aguçar,
+     curvas, cor), nas frequências medidas no FSTS;
+   - **canal de envio**: o caminho até quem verifica (impressão, scanner, foto de celular, tela
+     fotografada, WhatsApp, rede social, e-mail), aplicado **igual na original e na editada** de
+     cada par, numa fração das versões. Metade dos JPEG das capturas usa as tabelas de quantização
+     dos próprios documentos de entrada do split (aparelhos de verdade); os saltos de WhatsApp/rede
+     social usam as do libjpeg. As máscaras passam pela mesma geometria;
+   - **marcas benignas**: autenticação mecânica do banco, carimbo, anotação à mão, marca-texto,
+     rubrica, dobra e furos. Vão iguais nas duas imagens e só com captura física. Ficam fora da
+     edição, exceto a dobra, que é sombra do papel inteiro. Ensinam que marca não é fraude;
+   - **captura antes ou depois da edição** (`canal.captura`: `auto`, `antes`, `depois`). Quem edita
+     no celular ou no Paint parte de uma **foto ou de um scan**: a captura entra ANTES da edição, vira
+     a base da versão (a original gravada é a própria captura), os campos lidos pelo OCR são levados
+     pela geometria sem OCR de novo, e o retângulo ou o texto novo fica **liso sobre o papel
+     fotografado**, que é a pista que os detectores comerciais descrevem. Impressão, tela e
+     transmissão (WhatsApp, rede social) ficam para depois, iguais no par. `auto` segue o hábito do
+     falsificador (celular, Paint, Photoshop e IA antes; papel e editor de PDF depois); um arquivo de
+     entrada que já é foto (JPEG/HEIC) dispensa a captura antes metade das vezes. O canal ganhou
+     também o **app de scanner** (CamScanner, Adobe Scan: foto, retificação, realce em cor, cinza ou
+     preto e branco), **curvatura da página**, **distorção de lente** com aberração cromática,
+     **retícula de meio-tom** na impressão e o envio pelo WhatsApp **como documento** (sem recompressão);
+   - **grão** (`acabamento.grao`: `auto`, `espectral`, `branco`): o que entra na região editada das
+     técnicas profissionais. `espectral` sintetiza ruído com o **mesmo espectro** do papel em volta
+     (`rotulador/pericia.py`); `branco` é o Add Noise do Photoshop (só a variância). `auto` = 70%
+     espectral, ou o hábito do falsificador. Antes, todo grão era branco, e esse era o tell nº 1 das
+     edições profissionais;
+   - **dificuldade** (`dificuldade: {variantes, prob, detector}`): cada edição é gerada `variantes`
+     vezes com sementes diferentes e fica a que o **perito** menos acusa (ou um detector externo em
+     `detector.url`, que recebe original, editada e região em PNG e devolve `{"nota": ...}`). É a
+     mineração de exemplos difíceis: o dataset vai para a ponta que o detector atual não pega;
+   - formato e operador.
+
+   O padrão da página segue o estado da arte em dados para generalizar: canal misturado em 70% das
+   versões e marcas em 30% das que têm captura física (≈ 18% de todas). Uma receita enviada pela API
+   sem `canal` não usa canal. Evidências e números: [docs/tecnicas.md](tecnicas.md#qualidade-e-generalização).
+
+**👁 Prévia** roda a receita num documento **sem salvar**:
+- mostra a imagem com cada edição marcada e a máscara de técnicas;
+- lista as edições, cada uma com recorte antes/depois e a descrição;
+- mostra as tentativas que não couberam.
+
+**▶ Gerar** roda em segundo plano, com progresso por técnica, as últimas versões e botão Parar.
+Cada versão é salva no **próprio split**, e letras e campos colados vêm só de documentos do mesmo
+split.
+
+| Família (Find it again!) | Técnicas |
+|---|---|
+| Imitação (IMI) | reescrever o campo com a fonte imitada; **reescrever na camada de texto do PDF** (edição vetorial: redação + fonte embutida ou a de reserva do editor, página rasterizada de novo, sem rastro de pixel; só em PDF com texto); estilo amador (retângulo + fonte padrão, com o rasterizador do programa); acrescentar texto no fim; trocar só um trecho (dia, centavos, nº da casa, sobrenome, DV); trocar um caractere redesenhado; inserir um dígito |
+| Cópia interna (CPI) | trocar um caractere pela mesma letra recortada de outro ponto do documento (no Paint, esticada na horizontal); inverter dois dígitos vizinhos; copiar outro campo do documento por cima. Colagem: só a tinta, retângulo com o fundo, Poisson ou **recorte de papel colado** (borda e sombra, depois fotografado) |
+| Colagem de outro documento (CPO) | letra de outro documento; o mesmo campo de outro documento (splicing por similaridade); **o bloco de endereço inteiro** (rua, bairro, CEP, cidade em linhas vizinhas) de outro documento, como um recorte de tela colado |
+| Remoção (CUT) | apagar um caractere (fechando ou deixando o vão); apagar o campo ou a última palavra com preenchimento inteligente; corretivo (retângulo, pinceladas do app ou **corretivo líquido no papel**); **esconder com um objeto na foto** (dedo, adesivo, post-it, fita); **rabiscar** (caneta, marcador, pincel do app); **borrar ou pixelizar** (app de celular) |
+| Traços e retoque (PIX) | acrescentar traços (3→8, 1→4), digitais ou **de caneta esferográfica no papel**; raspar traços (4→1); **retoque sem mudar o texto** (Texture Jitter: desfoca, reamostra, aguça, recomprime ou muda 1–5% do tamanho de um trecho) |
+| Recriação (FAB) | **documento refeito do zero** (`pagina.recriar`): todas as linhas de texto apagadas e re-tipografadas, linha a linha na fonte mais parecida ou numa fonte de escritório para a página toda (Word/Canva), logotipo e códigos mantidos; é sempre a primeira edição da versão e as trocas de campo vêm por cima, no mesmo rasterizador — a fraude "fabricada", classe `outro` na máscara |
+| Códigos | código de barras novo + linha digitável coerente; QR PIX novo |
+| IA generativa | reescrever o campo; trocar um caractere; apagar o campo. A saída volta de três jeitos: só a região, com borda suave, ou um retângulo em volta do campo regenerado inteiro (nos dois últimos, a região é a área colada; a máscara de pixels, o que mudou) |
+
+Cada técnica tem nível (**amador**, **profissional** ou **IA**), alcance (**caractere**,
+**trecho** ou **campo**) e opções. Uma opção pode ser fixada na receita ou ficar como "varia",
+sorteada a cada edição.
+
+**Controles de qualidade:**
+- só dígitos mudam em campos numéricos;
+- a data continua possível, e as datas falsas são relativas à **data de envio** da versão (de 5 a 400
+  dias depois da data mais recente impressa no documento), não a hoje: um lote gerado em 2026 sobre
+  contas de 2024 não ganha "2026" como rótulo;
+- formatos fixos (data, CEP, CPF) não ganham nem perdem dígito;
+- o **CEP falso cai na faixa da cidade/UF** impressa (ou da cidade nova, quando o motivo troca a
+  cidade), o consumo acompanha a proporção do valor novo, e o **código de barras novo leva o total
+  impresso** (ou o total novo, se o falsificador for do tipo que refaz o código) e a mesma
+  empresa/segmento da linha original;
+- os valores falsos saem de bases oficiais (`config/vocabulario/`, abaixo): 100 mil prenomes, 20 mil
+  sobrenomes, 342 mil trechos de rua reais com bairro e CEP, os 5.570 municípios; repartidos por split;
+- a letra copiada precisa ter a mesma forma, cor e altura;
+- traço acrescentado ou raspado só vale se o resultado "lê" como o dígito novo;
+- nos testes, o OCR relê cada edição e confere o valor novo.
+
+Detalhes, algoritmos e limitações: [docs/tecnicas.md](tecnicas.md).
+
+**Aba Catálogo:** o que já foi gerado (e o que foi feito à mão):
+- totais por split, nível e origem;
+- **matriz técnica × classe**: clicar numa célula filtra a galeria;
+- filtros por split, técnica, classe, nível, família e origem, e busca no texto;
+- galeria com a máscara de técnicas sobreposta;
+- detalhe de cada versão: editada, original, máscara de técnicas e pixels alterados, com a lista
+  de edições, zoom em cada uma, **✔ aprovar / ✖ reprovar** e **🗑 excluir** a versão (os índices
+  são refeitos);
+- **curadoria em lote**: cada versão tem um selo ✔/✖ da revisão e uma caixinha de marcar. As
+  versões marcadas (ou a página inteira) podem ser aprovadas, reprovadas com motivo, voltadas a
+  pendente ou excluídas de uma vez;
+- filtros também por revisão, canal (com, sem ou um perfil), operador e **sem a técnica** (para o
+  teste deixa-uma-de-fora);
+- **⤓ exportar filtrados** grava `saida/_exportacoes/<nome>/manifesto.csv` e `manifesto.json` só com
+  as versões do filtro (só as aprovadas, por exemplo), com caminhos relativos a `saida/`. Os dois
+  arquivos ficam para baixar ali mesmo;
+- sem nada gerado, a aba mostra um atalho para **⚙ Gerar** em vez de uma página vazia.
+
+## Realismo e generalização: o que o detector não deve decorar
+
+Um detector treinado em dado sintético aprende a **assinatura do gerador** (o OSTF mediu: treinar
+num editor e testar em outro derruba o F de 85 para 0). O gerador combate isso em cinco frentes:
+
+- **Fornecedores.** Cada peça da edição tem mais de um fornecedor e o escolhido fica no rótulo
+  (`edicoes[].fornecedores`: `apagar`, `texto`, `fonte`, `grao`, `colagem`, `vestigio`): seis
+  apagadores (`rotulador/ops/apagar.py`), quatro rasterizadores de texto, fontes do sistema mais as da
+  pasta `fontes/` (ponha ali Roboto, Open Sans, Liberation, DejaVu: fontes de celular e de Mac que o
+  Windows não tem), grão espectral ou branco, quatro colagens. Com o `catalogo.csv` dá para treinar
+  sem um fornecedor e medir se o detector o decorou.
+- **Canal em duas fases** (acima): a edição acontece sobre a foto ou o scan quando é assim que a
+  pessoa faz, e a impressão, a tela e a transmissão vêm depois.
+- **Edição vetorial** (`rotulador/vetorial.py`, técnica `campo.reescrever_pdf`): a fraude sem rastro de
+  pixel. Sai com `fornecedores.texto = "pdf-vetorial"`, para pesar menos (ou nada) no treino do
+  detector de pixel e servir de **piso de falso negativo** na avaliação e de treino para a cabeça que
+  lê o texto.
+- **Perícia e perito.** A perícia (`rotulador/pericia.py`) esconde a edição como um profissional
+  (iluminação, grão com o espectro do papel, nitidez, costura), em níveis rotulados; o perito
+  (`rotulador/perito.py`) mede o contrário, as pistas que sobraram, por edição (grão, espectro,
+  nitidez, tom, grade do JPEG, nota de 0 a 1). O datasheet traz a mediana das pistas por técnica e
+  nível, `GET /api/perito/<split>/<nome>` as de uma versão, `POST /api/perito/sessao` as da edição
+  manual aberta e a receita `dificuldade` usa a nota para ficar com a variante
+  mais difícil. Um detector seu entra no lugar do perito por `dificuldade.detector.url`.
+- **Coerência do texto.** CEP na faixa da cidade, código de barras com o total e a empresa do
+  documento, consumo na proporção do valor, datas relativas à data de envio e coerentes por rótulo
+  (leitura antes da emissão, antes do vencimento), vocabulário grande. Um modelo que lê o texto não
+  acha a fraude pela incoerência que só o gerador deixaria. E o que sobra é **rotulado**: as regras de
+  verificador (`rotulador/coerencia.py`: CPF/CNPJ, CEP × cidade, datas, mês de referência, DVs da linha,
+  código × total, tarifa) rodam antes e depois da edição; a anotação diz quais violações a edição criou
+  e se a versão ficou **sem pista semântica** (só o pixel pega), e o datasheet conta.
+- **Laudo.** Cada versão grava um relatório pericial em texto (`laudo`: técnica, campo, antes → depois,
+  fornecedores, perícia, canal, pistas de pixel medidas pelo perito por edição e pistas semânticas),
+  como os benchmarks de 2025–2026 que treinam detectores que explicam.
+- **Desgaste físico.** O canal reproduz o que impressora, scanner e fotocópia deixam (tinta fraca,
+  riscos dos rolos, sangria, fotocópia com poeira, verso aparecendo, sujeira no vidro), o reflexo na
+  foto e a tela PenTile com a faixa do refresh. Tudo igual no par.
+- **Enquadramento e modo de captura.** Um quinto das versões manda só um **pedaço da página** (o
+  cabeçalho, a metade de cima: passo `recorte` do canal, na fase da captura; depois da edição a janela
+  sempre contém a edição; antes dela, os campos cortados saem do documento). O scanner sai **colorido,
+  em tons de cinza ou "texto"/P&B** (binarizado pelo driver), e a foto de celular tem a mesa em volta:
+  lisa, madeira, tecido, outra folha por baixo ou granito.
+- **Negativos difíceis digitais.** Além das marcas no papel (carimbo, autenticação, anotação, dobra,
+  dedo), entram marcas **digitais**, em qualquer canal: **tarja**, borrão ou pixelado sobre um campo
+  sensível (CPF, código do cliente, linha digitável, código de barras, QR: quem esconde o próprio dado
+  antes de enviar) e a marca d'água "CÓPIA"/"2ª VIA" dos apps. Iguais no par, nunca sobre a edição
+  (`marcas_benignas[].tipo`). Sem elas o detector aprenderia que retângulo preto = fraude.
+- **Cobertura ativa.** A distribuição `cobertura` do gerador parte do que o split **já tem salvo**
+  (`catalogo.csv`) e escolhe primeiro as combinações técnica × classe que faltam; o datasheet lista as
+  lacunas e a **diversidade** (entropia normalizada) de cada eixo: técnicas, classes, canais, passos,
+  falsificadores, motivos, perícia, marcas, fornecedores.
+
+Ferramentas de apoio: `auditar_vazamento.py` agora agrupa os documentos por **emissor** (CNPJ) e avisa
+quando o mesmo emissor está em dois splits, e dá ERRO quando o mesmo **modelo de conta** (layout quase igual)
+ou o mesmo cliente (CPF, inclusive mascarado, nome, nº de instalação, linha digitável) está em dois splits
+(`--sugerir-split` propõe uma divisão que mantém cada emissor e cada modelo num split só, em
+`saida/sugestao_split.json`, sem mover nada); o datasheet ganhou "Alertas do dataset" (teste ou validação
+vazios, menos de 20 documentos de origem, menos de 3 modelos/emissores, modelo em dois splits); `tests_ui/benchmark_campos.py PASTA SAIDA` mede o que o
+detector de campos acha em contas de verdade (CSV, resumo e folhas com as caixas), porque o gerador só
+edita o que o detector encontra; **`auditar_qualidade.py SAIDA [--ocr] [--gravar]`** confere, versão por
+versão, se os rótulos batem com as imagens e se a edição vale (máscaras coerentes com a região e com o
+par; edição invisível; texto novo igual ao antigo; área demais; versão duplicada; revisão reprovada;
+perícia forense que não escondeu nada; com `--ocr`, o campo editado relido pelo reconhecedor). Com
+`--gravar` os alertas vão para a anotação (`auditoria_qualidade.alertas`; `qualidade` continua sendo a
+qualidade do JPEG de saída) e o datasheet os conta.
+
+## Trabalho em equipe
+
+Várias pessoas podem usar o mesmo rotulador ao mesmo tempo. O servidor usa **waitress** (12
+threads) quando ele está instalado (`requirements.txt`).
+
+- **Nome obrigatório** na primeira visita, sem senha. Ele vai nas versões salvas, nas revisões e
+  nas atribuições. Para trocar, use o campo Operador (editor) ou o 👤 (gerador).
+- **Trava por documento.** Quem abre primeiro edita. Quem abre depois vê *"🔒 Ana está editando
+  este documento desde 14:02. Você está só olhando."*:
+  - as edições ficam bloqueadas, e **Assumir edição** toma o documento;
+  - quem perdeu a trava fica sabendo na próxima ação;
+  - a trava vence após 10 min sem sinal e é solta ao trocar de documento ou fechar a aba;
+  - quem só olhava é avisado quando o documento fica livre;
+  - um pedido pela API sem o cabeçalho `X-Operador` (um script) não pega trava nem é barrado por uma.
+- **Lista de documentos.** Mostra 🔒 (com outra pessoa), ★ (atribuído a você) e → (atribuído a
+  outra pessoa). Tem busca e "só os meus", e desenha aos poucos (150 por vez) quando há milhares.
+- **Aba ✔ Revisar** (no gerador): a fila das versões pendentes, das mais antigas para as mais novas (ou
+  **suspeitas primeiro**; **só com ⚠** deixa só elas).
+  - cada edição mostra o trecho **antes** e **depois**, um sobre o outro na mesma escala, e a **fidelidade** do texto
+    novo medida no gerador: altura das letras, traço e a fonte usada (com a semelhança). Verde = igual ao original; ⚠
+    vermelho = diferente (altura fora de ±4% ou ±1 px, traço fora de ±10%, fonte abaixo de 0,90). O topo da versão
+    diz quantas edições ficaram diferentes;
+  - `A` aprova; `R` reprova (precisa de motivo, `1`–`6`, ou comentário); `→` e `←` pulam e voltam;
+  - `Z` / `Shift+Z` ampliam a edição seguinte / anterior (`Esc` volta à página inteira); segurar `O` mostra a
+    original na imagem grande;
+  - **Em grade**: várias versões de uma vez, cada uma com o antes e o depois. Clique nas ruins para marcar;
+    **✔ Aprovar** aprova as outras e reprova as marcadas (pede o motivo uma vez). Duplo clique abre a versão.
+
+  A decisão fica na anotação (`revisao`: estado, motivos, comentário, quem, quando) e nas colunas
+  `revisao` e `revisor` dos índices.
+- **Aba 🎯 Metas**: quantas edições de cada classe em cada split, com barras de progresso. Dá para
+  contar só as versões aprovadas. **⚙ gerar o que falta** monta a receita do split (modo
+  avançado) com as classes que faltam, pesadas pelo quanto falta.
+- **Aba 👥 Equipe**:
+  - quanto cada pessoa salvou e a taxa de aprovação das versões dela;
+  - as revisões que cada uma fez;
+  - quem está editando o quê agora;
+  - marcar documentos e **atribuir** a alguém.
+
+## Uso
+
+1. Coloque os documentos em `dados/treino`, `dados/teste` e `dados/validacao` (subpastas
+   valem; `validação`, com acento, também), ou use outra pasta com essas subpastas (`--dados`).
+   Formatos aceitos: JPG, PNG, TIFF (inclusive multipágina), BMP, WEBP, HEIC e PDF.
+   Cada página vira um item; PDF é rasterizado a 200 DPI (`--dpi`).
+2. `.venv\Scripts\python.exe app.py` abre o editor numa **janela própria do Windows** (pywebview + WebView2, o
+   motor do Edge que já vem no Windows). Na janela, todos os atalhos do Photoshop chegam ao editor; no navegador,
+   alguns são do próprio navegador (`Ctrl+Tab`, `Ctrl+W`, `Ctrl+R`, `F5`). O servidor roda junto e fecha com a
+   janela. Opções: `--dados`, `--saida`, `--porta`, `--dpi`, `--navegador` (abre no navegador, como antes),
+   `--sem-navegador` (só o servidor). Sem o `pywebview` instalado, abre no navegador. O que a página guarda (nome,
+   último tipo, opções) fica em `.janela/` (ou em `ROTULADOR_JANELA_PERFIL`). Sem `--dados` nem `--saida`, vale a
+   última pasta trocada por `POST /api/pasta/usar` (`config/pasta_escolhida.json`), se houver.
+   Com o servidor do lançador (abaixo) já rodando, `.venv\Scripts\pythonw.exe janela.py` abre só a janela.
+3. Para cada documento:
+   1. Escolha o **tipo da edição** à direita: copiar e colar, pegar de outro documento ou apagar e
+      substituir (`Alt+1..3`). Na próxima imagem, o último já vem marcado.
+   2. Edite. A edição vai direto na imagem (o **Fundo**), como no Photoshop; camada só quando você criar uma
+      (ver "Camadas"). O **Histórico** volta a qualquer passo com um clique.
+   3. Salve com **Salvar** (`Ctrl+S`): a próxima imagem abre.
+
+   O botão só libera quando há edição e toda camada visível tem tipo. Para fazer outra variação
+   (v02, v03…) da mesma imagem, volte a ela com ◀.
+4. Antes de treinar, rode `.venv\Scripts\python.exe auditar_vazamento.py`.
+
+**Rodar em segundo plano, sem janela** (rotulador na porta 5010 e IA na 5051):
+
+```powershell
+wscript //B lancador\lancar_oculto.vbs "<pasta do projeto>/lancador/iniciar.sh"
+bash lancador/parar.sh        # para os dois
+```
+
+- Logs ficam em `E:\rotulador\logs` (mude com a variável `ROTULADOR_BASE`).
+- Se `dados/` estiver vazio, o rotulador sobe com contas de demonstração.
+- Para não depender do terminal aberto, dispare pelo Agendador de Tarefas com o mesmo comando e
+  apague a tarefa logo depois.
+
+As edições ficam em rascunho no disco (`saida/<split>/_rascunhos`). Se o servidor cair, o
+trabalho volta quando você reabre o documento.
+
+## Camadas e Histórico
+
+Funciona como no Photoshop.
+
+- **Fundo:** é a imagem. Sem uma camada sua ativa, as edições vão **direto nela**; nenhuma camada aparece sozinha.
+  Por baixo, o rotulador guarda cada tipo da edição numa camada interna, que não aparece no painel, só para a
+  máscara de classes; a última edição sempre aparece por cima, como numa imagem sem camadas. O original fica
+  guardado à parte, para a comparação e as máscaras. A miniatura do Fundo mostra a imagem como está.
+  - A **borracha** no Fundo devolve o original onde passa.
+  - O Fundo não se move nem some, como o Plano de fundo travado do Photoshop.
+- **Camadas suas:** `Ctrl+Shift+N` cria uma, acima do Fundo, no tipo marcado; a partir daí as edições vão para ela
+  até você clicar no Fundo (ou `Alt+[`). No painel: a opacidade no alto; em cada camada, o olho, a miniatura, o nome
+  (duplo clique renomeia) e a caixa do tipo, que vai para a máscara; arrastar reordena. No pé do painel: nova,
+  duplicar, mesclar com a de baixo e excluir (também no menu Camada). Mesclar a última camada sua desce a edição
+  para o Fundo.
+- **Camada via cópia (`Ctrl+J`) e via recorte (`Ctrl+Shift+J`)**, como no Photoshop: o trecho selecionado da camada
+  ativa (ou do Fundo) vira uma camada nova no mesmo lugar, logo acima, e a seleção sai; com o Mover (`V`) você leva a
+  camada — é o "copiar e colar" do jeito do Photoshop. Sem seleção, o `Ctrl+J` duplica a camada ativa (no Fundo,
+  "Fundo cópia"). O recorte do Fundo preenche o buraco embaixo (como o `Delete`), no mesmo passo do Histórico. Do
+  Fundo, a camada nova é do tipo "copiar e colar" (ou "apagar e substituir", se for o marcado). Uma cópia parada no
+  mesmo lugar não é edição: a máscara só marca onde ela muda a imagem (ou onde for editada ou movida).
+- **Atalhos:** os do Photoshop (ver "Ferramentas"): `Ctrl+Shift+N`, `Ctrl+J`, `Ctrl+Shift+J`, `Ctrl+E`, `Ctrl+]`/`Ctrl+[`,
+  `Ctrl+Shift+]`/`Ctrl+Shift+[`, `Alt+]`/`Alt+[`, `Ctrl+,`, e os números (`5` = 50% de opacidade da camada).
+- **Ferramentas e camadas:** elas enxergam a imagem composta e gravam na camada ativa (ou no Fundo). A **borracha**
+  numa camada sua apaga dela e revela o que está embaixo. **Mover (V) sem seleção** arrasta a camada sua inteira;
+  as setas empurram 1 px (com `Shift`, 10 px).
+- **Rótulos:** a categoria por pixel é a da camada visível **mais alta**; camadas **ocultas não entram** no
+  salvamento (o painel avisa); o JSON salvo lista as camadas (as internas com `auto: true`).
+- **Histórico:** como o do Photoshop. A primeira linha é a imagem como foi aberta; cada edição é um passo. **Clicar
+  num passo** volta a imagem até ele, e os passos de depois ficam apagados, ainda dá para clicar neles e avançar,
+  até a próxima edição, que os descarta. `Ctrl+Z` e `Ctrl+Shift+Z` andam um passo. Criar a camada e pintar nela é
+  **um** passo só.
+
+## Ferramentas e atalhos (os do Photoshop)
+
+As ferramentas ficam nos grupos do Photoshop. A letra escolhe a ferramenta visível do grupo e `Shift`+letra
+alterna dentro dele.
+
+| Atalho | Ferramenta |
+|---|---|
+| `V` · `Shift+V` | **mover / puxar** e colar de outro documento. Com seleção, arrastar puxa os pixels (o buraco é preenchido); `Alt+arrastar` duplica; o canto escala (`Shift` mantém a proporção, `Ctrl` faz perspectiva); fora do contorno gira; `Enter` aplica, `Esc` cancela. Sem seleção, move a **camada** sua ativa (o Fundo não se move) |
+| `M` · `Shift+M` | seleção retangular · elíptica |
+| `L` | laço (marque "Poligonal" para clicar ponto a ponto) |
+| `P` | **caneta** (seleção por caminho, como a Caneta do Photoshop): clique faz um ponto de canto; clicar e arrastar faz um ponto com curva (as alças saem simétricas; com `Alt`, só a de saída, e a curva muda de direção no ponto). Clique no 1º ponto, duplo clique ou `Enter` fecham o caminho, que vira a seleção; `Backspace` tira o último ponto, `Esc` cancela |
+| `W` · `Shift+W` | varinha mágica (tolerância, contígua ou por cor) · pincel de seleção |
+| `Q` | pincel de seleção (pinte a seleção, `Alt` tira), no papel da máscara rápida |
+| | Seleção: `Shift` soma, `Alt` subtrai, `Shift+Alt` intersecta. "Só a tinta" reduz a seleção aos traços do texto |
+| `I` | conta-gotas (lê o pixel no servidor) |
+| `J` · `Shift+J` | pincel corretivo pontual · pincel de recuperação (cor e luz do destino) · remendo (arraste a seleção até uma área boa; modo "destino" leva a seleção para lá) |
+| `B` | pincel (`Alt+clique` pega a cor). Como no Photoshop, o traço fica dentro do círculo do cursor em qualquer dureza: a tinta é cheia até dureza × raio e cai até zero na borda (o mesmo vale para a borracha, o carimbo, a recuperação, o corretivo e o retoque) |
+| `S` | carimbo de clonagem: `Alt+clique` na origem, depois pinte (prévia sob o cursor; da imagem atual ou do **original**; escala, rotação, alinhado, modo de mescla). Sem escala nem giro, a cópia é o pixel exato da origem, como no Photoshop, mesmo com o clique numa fração de pixel |
+| `E` | borracha: na camada sua, revela o que está embaixo; no Fundo, devolve o original |
+| `G` | balde de tinta |
+| `O` | retoque: desfocar, nitidez, borrar (dedo), clarear, escurecer, saturar, dessaturar |
+| `T` · `Shift+T` | texto (clique na linha de base, digite, `Enter`) · **substituir texto** (arraste sobre o antigo: posição, tamanho e cor estimados, o antigo apagado com preenchimento inteligente). 🎲 sugere um valor novo **parecido com o texto antigo**. Posta a linha de base, o que se digita vai para o campo "Texto" (o que havia nele fica selecionado: digitar troca), e as letras não viram atalho de ferramenta mesmo com o foco fora do campo; `Esc` cancela o texto |
+| `U` | formas: retângulo, elipse, linha (`Shift`: quadrado, círculo, reta) |
+| `H` · `Z` | mão · zoom (`Alt+clique` afasta) |
+
+| Atalho | O que faz |
+|---|---|
+| `Ctrl+S` | salvar e ir para a próxima imagem |
+| `Ctrl+Tab` · `Ctrl+Shift+Tab` (ou `PageDown` · `PageUp`) | próxima · anterior imagem |
+| `Ctrl+Q` | sair (na janela do Windows) |
+| `Ctrl+Z` · `Ctrl+Shift+Z` (`Ctrl+Y`) | desfazer · refazer (e o clique no Histórico) |
+| `Ctrl+X` · `Ctrl+C` · `Ctrl+V` · `Ctrl+Shift+V` | recortar (o trecho fica solto para arrastar) · copiar · colar (no meio da vista) · colar no mesmo lugar, nesta imagem ou em outra do mesmo split |
+| `Ctrl+T` | transformação livre (puxar a seleção) |
+| `Ctrl+arrastar` | puxar a seleção com qualquer ferramenta |
+| `Delete` | **apagar com preenchimento**: o selecionado some, refeito com o papel em volta |
+| `Shift+F5` | **preencher…** (similaridade/PatchMatch, com prévia; amostra automática, documento inteiro ou faixa; patch; 🎲 outra variação) |
+| `Alt+Backspace` · `Ctrl+Backspace` | preencher a seleção com a cor de frente · de fundo |
+| `Ctrl+A` · `Ctrl+D` · `Ctrl+Shift+D` · `Ctrl+Shift+I` | tudo · desmarcar · reselecionar · inverter |
+| `Shift+F6` | difusão (suavizar a borda), expandir, contrair |
+| `Ctrl+L` · `Ctrl+U` · `Ctrl+Shift+U` | níveis · matiz/saturação · dessaturar (na seleção; os outros ajustes, em Imagem › Outros ajustes: brilho/contraste, desfoque, nitidez, ruído, JPEG local, cinza e **igualar ruído ao papel**, que deixa a área editada com o grão do entorno: razão de ruído dentro/fora 1 ± 0,12) |
+| Imagem › Código de barras · QR code · Editar com IA | ITF-25 com 🎲 de código válido e linha digitável · QR/PIX com CRC conferido · IA na seleção (ver abaixo) |
+| `[` · `]` · `Shift+[` · `Shift+]` | pincel menor · maior · mais mole · mais duro |
+| `1` … `9` · `0` | opacidade 10 … 90% · 100% (dois números seguidos: `4` `5` = 45%); com uma ferramenta sem opacidade, a da camada |
+| `X` · `D` | trocar as cores · preto e branco |
+| `Ctrl++` · `Ctrl+−` · `Ctrl+0` · `Ctrl+1` | aproximar · afastar · caber na tela · 100% |
+| roda · `Espaço`+arrastar · `Ctrl+Espaço`+clique | zoom · mão · aproximar (com `Alt`, afastar) |
+| `Ctrl+H` · `Tab` · `Shift+Tab` · `F` | esconder a borda da seleção · os painéis e as ferramentas · só os painéis da direita · tela cheia |
+| `\` (segurar) · `K` | ver o original · a máscara do que mudou (estes dois são do rotulador) |
+| `Alt+1` · `Alt+2` · `Alt+3` | tipo da edição (do rotulador) |
+| `F1` · `Ctrl+Alt+Shift+K` | como editar · a lista de atalhos |
+
+`?` também mostra a lista de atalhos.
+
+**🔍 Qual é a fonte?** (nas ferramentas de texto, `T` e `Shift+T`) descobre a fonte de um texto selecionado.
+
+- **Como compara:** o rotulador desenha o mesmo texto em **todas as fontes instaladas**, mais as da
+  pasta `fontes/`. Ficam de fora as fontes sem alguma letra do texto e as que precisariam ser
+  esticadas. As outras são comparadas pela intensidade da tinta, com o desfoque do scan medido nas
+  bordas.
+- **O que mostra:** as 6 mais parecidas, cada uma com o texto desenhado ao lado do original.
+  **Usar esta** põe fonte, tamanho, largura e negrito nas opções e a linha de base no lugar da
+  antiga.
+- **Fontes iguais:** as que desenham o texto do mesmo jeito (Arial, Helvetica, Swis721) aparecem
+  juntas.
+- **Campos curtos:** o resto do documento vota, e um "12" fica com a fonte que a conta usa.
+- **Onde mais é usado:** na troca automática de campo e nas técnicas do gerador. Antes eram 24
+  fontes fixas.
+- **Resultado medido:** num teste com 30 fontes em linhas degradadas como scan (desfoque, ruído,
+  JPEG), a fonte certa saiu em 1º lugar em 92% dos casos e entre as 3 primeiras em 96% (antes:
+  57%), a ~0,17 s por campo.
+
+Os pixels **nunca** são calculados no navegador. Ele só descreve a operação (pontos,
+retângulo, texto); o servidor aplica na resolução original. Por isso a máscara é exata.
+
+## Categorias
+
+Ficam em `config/categorias.json`: nome, CPF/CNPJ, endereço, bairro, CEP, cidade/UF, data,
+mês de referência, valor, consumo/leitura, código de barras, linha digitável, identificador do
+documento, emissor/logotipo, QR code/PIX e outro (exige descrição).
+
+O `id` de cada categoria é o valor do pixel em `mascaras_classes`. **Nunca troque o id de uma
+categoria já usada.** Para criar uma nova, use um id novo.
+
+## Saída
+
+```
+saida/<split>/
+  originais/<doc>.png              uma vez por documento (com perda: <doc>__q90.jpg); com canal de
+                                   envio ou marcas: uma por versão, <doc>__v01.png (passou pelo
+                                   mesmo canal que a editada)
+  editadas/<doc>__v01.png          cada variação salva
+  mascaras/<doc>__v01.png          0/255: 255 (branco) = pixel cujo valor mudou (exato, antes da compressão;
+                                   com canal de envio, reamostrada pela mesma geometria: ≥ 15% de cobertura).
+                                   De 28/10 a 06/11/2026 as máscaras binárias saíram em 0/1 (num visualizador
+                                   pareciam pretas): os leitores aceitam as duas (pixel > 0)
+  mascaras_regiao/<doc>__v01.png   0/255: área editada (pegada das ferramentas)
+  mascaras_classes/<doc>__v01.png  id da categoria por pixel (0 = não editado): o QUÊ
+  mascaras_tecnicas/<doc>__v01.png nº da técnica por pixel (0 = não editado): o COMO
+  mascaras_ignorar/<doc>__v01.png  0/255: rótulo ambíguo, para tirar da perda e da métrica: 1 px em
+                                   volta do que mudou (só por fora), a região que não mudou e, com canal
+                                   ou saída com perda (JPEG, WEBP, PDF), tudo o que o codec espalhou em volta
+  anotacoes/<doc>__v01.json        origem + hashes, categorias, operações e "edicoes" (técnica,
+                                   classe, texto antes/depois, caracteres alterados, descrição,
+                                   caixa, pixels, fornecedores e perícia de cada edição); "canal"
+                                   (passos com a fase: antes/depois da edição), "captura_antes",
+                                   "gerador.data_envio", "falsificador" (com a captura e os hábitos),
+                                   "dificuldade" (1 − maior nota do perito entre as edições medidas: a
+                                   mais visível decide; None sem medida), "origem" (gerador, automatico,
+                                   assistido, manual), "ocorrencias_antigas", "auditoria_qualidade"
+  manifesto.csv                    uma linha por variação (com fracao_alterada e dificuldade)
+  catalogo.csv                     uma linha por EDIÇÃO (técnica, família, nível, classe, textos,
+                                   fornecedores)
+  categorias.csv                   uma linha por IMAGEM salva: versão, documento, categoria (copiar e
+                                   colar, pegar de outro documento ou apagar e substituir; as do gerador
+                                   pela família da técnica), editada, original, máscara, anotação e
+                                   origem (manual ou gerador). Caminhos relativos à pasta do split
+saida/_treinamento/<split>/        o dado para o treino do modelo, à parte: a cada versão salva (no editor
+  imagens/<doc>__v01.png           ou pelo gerador), a imagem editada, no formato da saída
+  mascaras/<doc>__v01.png          e a máscara de onde foi editado (a mesma "mascara", 0/255), com o mesmo
+                                   nome. São links físicos dos arquivos de saida/<split>/ (não ocupam
+                                   disco a mais; noutro disco, cópias). Excluir a versão no catálogo tira
+                                   as duas; a partida do app e o "reindexar" põem as salvas antes
+saida/catalogo.json                legenda dos números das máscaras de técnica e de classe (as classes de
+                                   campo e as 3 categorias do editor, ids 201–203)
+saida/dataset.xlsx                 a planilha do dataset (Resumo, Versões, Edições, Documentos, Legenda),
+                                   refeita a cada versão salva; aberta no Excel: "dataset (nova).xlsx"
+saida/relatorio_vazamento.txt/.json  resultado da última auditoria (auditar_vazamento.py)
+saida/DATASHEET.md, datasheet.json composição, técnicas, canais, marcas, auditoria, usos e limitações
+                                   (refeitos a cada lote; ou: python -m rotulador.datasheet saida)
+```
+
+- `manifesto.csv` e `catalogo.csv` são refeitos a partir dos JSON quando preciso (exclusão de
+  versão, índice de versão antiga). Os JSON são a fonte da verdade.
+
+- `<doc>` é um hash do conteúdo. O nome original do arquivo, que pode ter o nome do cliente,
+  fica só no JSON.
+- O formato de saída é escolhido no topo: PNG, JPEG, WEBP, TIFF ou PDF.
+- **Original e editada do mesmo par saem sempre no mesmo formato e qualidade**, sem EXIF nem
+  perfil de cor. Assim o modelo não separa as classes pela compressão ou por metadados.
+
+Pesquisa sobre geração de dados de fraude e o que falta no rotulador: [docs/pesquisa_geracao_dados.md](pesquisa_geracao_dados.md).
+
+## Treino e avaliação (`rotulador/treino`)
+
+O que a literatura de 2025–2026 pede de quem treina (SEED, DocForge-Bench, DTD/CLTD, ADCD-Net, MVSS-Net,
+CAT-Net/DocQT; ver a quinta rodada em docs/pesquisa_geracao_dados.md) vem pronto, sem depender de framework:
+
+```python
+from rotulador.treino import dados
+treino = dados.listar("saida", "treino")      # uma entrada por versão: caminhos, famílias, técnicas, canal, perícia,
+                                              # falsificador, fração alterada, dificuldade, pista semântica, revisão
+arr = dados.carregar(treino[0])               # original, editada, mascara, regiao, ignorar, classes, tecnicas
+arr, theta = dados.aumentar(arr, rng, {"perfil": "misturado", "prob": 0.5})  # canal no treino: igual no par e nas máscaras
+rec = dados.recortar(arr, 512, rng)           # recorte centrado na edição (60%), em texto (30%) ou ao acaso
+alvo_borda = dados.borda(rec["regiao"])       # borda suave da região (supervisão de borda)
+faceis = dados.curriculo(treino, 0.3)         # as 30% mais fáceis pela nota do perito: currículo
+dados.pesos(treino)                           # taxa-base (sobre original + editada), peso do positivo, famílias
+cj = dados.conjunto_torch(treino, 512, aumento={"perfil": "misturado", "prob": 0.5})  # Dataset do PyTorch, pareado;
+                                              # cada item traz "peso": autênticas e adulteradas equilibradas
+limpas = dados.listar("saida", "treino", revisao=("aprovada",), sem_alertas=True, sem_ocorrencias_antigas=True)
+sem_arial = dados.listar("saida", "teste", excluir_fornecedor={"fonte": "Arial"})  # deixar uma ferramenta de fora
+```
+
+- **Par no mesmo lote.** Cada item de `conjunto_torch` traz o MESMO recorte da original (rótulo zero) e da
+  editada: o lote pareado do SEED, que generaliza melhor entre domínios do que embaralhar.
+- **Recorte com edição.** Com 0,3–4% da página alterada, um recorte 512×512 ao acaso quase nunca tem positivo.
+- **Dificuldade.** `dificuldade` na anotação e no manifesto = 1 − maior nota do perito entre as edições medidas
+  (0 = pista forte, 1 = invisível para as medidas de grão, nitidez e tom): currículo (CLTD) e mineração de casos
+  difíceis.
+- **Equilíbrio.** Uma original serve N editadas; `conjunto_torch(equilibrar=True)` dá o mesmo peso total às
+  autênticas e às adulteradas (multiplique a perda pela chave `peso`).
+- **Aumento de canal.** `aumentar` sorteia um canal (JPEG com tabela de aparelho, WhatsApp, redução, scanner,
+  tela...) e aplica na página inteira, antes do recorte.
+
+**Avaliar** (protocolo do DocForge-Bench mais o do datasheet): grave um mapa de probabilidade por versão em
+`PRED/<nome>.png` (0..255) e o de cada original em `PRED/originais/<original>.png`, e rode
+
+```
+python -m rotulador.treino.avaliar saida validacao PRED --calibrar 10 --md relatorio.md
+```
+
+AUC, F1 e IoU por pixel no limiar fixo, F1 oráculo (o teto) e F1 com UM limiar calibrado em 10 versões (com
+menos de 1% de pixel adulterado o 0,5 falha, e a calibração recupera boa parte do teto); AUC e TPR com FPR de
+1% e 5% por imagem; IC 95% por bootstrap sobre documentos; recortes por família, técnica, nível, perícia, canal,
+captura, falsificador, pista semântica e área alterada. A faixa de `mascaras_ignorar` fica fora de tudo.
+
+**Robustez** (DTD/CLTD, ADCD-Net, DocQT): cópias do split perturbadas DEPOIS da edição, com as máscaras levadas
+pela mesma geometria, para avaliar perfil a perfil:
+
+```
+python -m rotulador.treino.robustez saida validacao E:/robustez --perfis jpeg75,jpeg_dupla,whatsapp,reduzida,desfoque,ruido,tela,impressao
+python -m rotulador.treino.avaliar E:/robustez/jpeg75 validacao PRED_jpeg75
+```
+
+**Linha de base sem treino:** `python -m rotulador.treino.base saida validacao PRED_base` grava o mapa do perito
+como predição: o formato de referência, o piso a superar e um teste de atalho (AUC alta aqui diria que o par
+entrega a edição de graça).
+
+Medido em 03/10/2026 (4 documentos sintéticos × 3 variações, falsificadores, canal misturado e marcas; linha de
+base sem treino): com acabamento `cru`, AUC por pixel 0,85 (IC 0,84–0,87) e F1 no limiar fixo 0,06; com
+acabamento `forense`, AUC 0,72 (IC 0,61–0,81) e F1 0,04; AUC por imagem 0,49 nos dois (sem atalho entre
+original e editada). Nas cópias de robustez do lote `cru`, a AUC da base cai para 0,80 (JPEG 75), 0,81 (JPEG
+duplo), 0,77 (WhatsApp), 0,77 (reduzida 0,7×) e 0,82 (impressão e nova captura). Um modelo treinado tem de
+passar disso.
+
+## Defesas contra vazamento
+
+1. **O split vem só da pasta.** O navegador manda apenas o id do documento. O servidor resolve
+   o split e só grava dentro de `saida/<split>`.
+2. **Na partida**, cada página recebe dois hashes: um dos bytes do arquivo e outro dos pixels
+   decodificados. O segundo pega o mesmo documento salvo em outro formato. Se um hash aparece em
+   dois splits, **o servidor não sobe**. Também não sobe se um documento já rotulado (ou com
+   rascunho) num split aparecer em outro, por exemplo se alguém mover o arquivo depois.
+3. **Colar de outro documento** só aceita doador do mesmo split. A UI só lista esses doadores
+   e o servidor recusa os outros.
+4. **Valores falsos**: o 🎲 (nas ferramentas de texto, imitando o texto selecionado ou o campo onde se clicou) e o
+   gerador sorteiam nomes, CPF/CNPJ válidos, endereços, datas, valores, códigos de barras etc. Assim o operador não repete o mesmo "JOÃO DA SILVA" no treino e no
+   teste, que o modelo decoraria.
+   - O vocabulário aberto (prenomes, sobrenomes, ruas, bairros, cidades) é **repartido entre os
+     splits**: um núcleo dos mais comuns (MARIA, JOSÉ, SILVA, as capitais) vale em todos; a cauda é
+     repartida por hash de cada entrada; e um nome completo falso é de um split só (hash da combinação).
+     Sem isso, todo falso do teste já teria aparecido no treino, e um modelo que lê o texto (OCR +
+     layout, VLM) acertaria o teste decorando a lista; e sem o núcleo, "MARIA" só apareceria em
+     originais no treino ("MARIA ⇒ genuíno").
+   - Vale para o 🎲, as técnicas e o gerador. Meses, UF e "RUA/AV" ficam inteiros.
+   - **Bases de valores** (`config/vocabulario/`, refeitas por `ferramentas/construir_vocabulario_nomes.py` e
+     `ferramentas/construir_vocabulario_lugares.py`; fontes, licenças e colunas nos `LEIA-ME_*.md`):
+     - **nomes**: 100.787 prenomes do Censo 2010 (IBGE, via brasil.io) com a frequência por sexo e a grafia
+       acentuada; 20.533 sobrenomes, a partícula de cada um ("DOS SANTOS", "DA SILVA") e a estrutura dos nomes
+       (compostos, devoções como MARIA DE FÁTIMA, nº de sobrenomes, FILHO/JÚNIOR/NETO) tiradas das candidaturas
+       do TSE 2004–2024 só como contagem agregada (nenhum nome completo é gravado);
+     - **lugares**: os 5.570 municípios (população do Censo 2022, DDD, faixas reais de CEP) e uma amostra de
+       342 mil trechos de rua reais do CNEFE 2022 (IBGE), cada um com o bairro e o CEP dele, 278 mil bairros e as
+       estatísticas reais de número e complemento (APTO 101, BLOCO + APTO, QUADRA + LOTE) por porte da cidade.
+     - O nome sai com o peso real (51% mulheres, compostos, partículas e sufixos na taxa do TSE, acento como no
+       registro civil quando o documento acentua); o endereço é uma rua de verdade da cidade, no molde do
+       original (R./AV., título abreviado, Nº, complemento), de preferência com o MESMO CEP do documento; bairro,
+       CEP e cidade trocados na mesma versão saem da mesma linha da base. Datas formam um ciclo de conta real
+       (vencimento em dia útil no dia do cliente, emissão, leitura, referência; o histórico de meses anda junto),
+       valores e consumo seguem a tarifa, telefone tem o DDD da cidade, e tudo sai no formato do original.
+     - Sem as bases (arquivos ausentes), o gerador usa o vocabulário embutido.
+     - **Gabarito do Brasil** (`rotulador/gabarito.py`, `config/vocabulario/LEIA-ME_gabarito.md`): o detector de
+       campos usa as mesmas bases para *reconhecer* a linha solta sem rótulo. Ele confere nome de pessoa (prenome
+       do Censo + sobrenomes), bairro (da cidade, do CEP ou do país), município com UF, tipo de logradouro (406
+       tipos do CNEFE + abreviações dos Correios + siglas do DF), concessionária emissora (73) e complemento.
+       Na bateria de campos: nome 56% → 99%, endereço 65% → 100%, bairro 46% → 100%, cidade 91% → 99%.
+5. **Mesma mistura em todos os splits:** no gerador, a distribuição "equilibrada" conta por split.
+   Antes, com uma cota só, o split processado por último ficava com as sobras do primeiro. Num
+   teste, o treino tinha 8 edições de valor e o teste 1.
+6. **`auditar_vazamento.py`** refaz tudo a partir dos arquivos (código de saída 1 se houver erro).
+   - **Erro:**
+     - anotação fora do split, doador de outro split;
+     - arquivo de saída repetido entre splits;
+     - par em formatos diferentes, máscara do tamanho errado;
+     - **o mesmo CPF em documentos de splits diferentes** (é o mesmo cliente).
+   - **Aviso:**
+     - textos digitados repetidos entre splits, e nomes/endereços falsos das técnicas repetidos;
+     - o mesmo nome, nº de instalação/cliente ou endereço em splits diferentes;
+     - o mesmo **emissor** (CNPJ da concessionária) em mais de um split: a generalização por emissor
+       não está sendo medida (`--sugerir-split` propõe uma divisão que mantém cada emissor num split);
+     - uma lista de pares *parecidos* entre splits, para revisão humana.
+   - O CPF, o nome e o resto vêm do OCR dos documentos de entrada. O OCR fica em cache e só roda
+     na primeira vez; `--sem-clientes` pula essa parte.
+   - Endereço e CNPJ impressos em mais de 20% dos documentos são considerados do emissor e ficam de
+     fora.
+7. **Atalhos entre original e editada:** `tests_ui/verifica_atalhos.py SAIDA` procura diferenças
+   que não são a fraude e que o modelo aprenderia no lugar dela, como o viés de formato e
+   qualidade JPEG do CASIA v2. Confere, par a par:
+   - formato, modo, tamanho e chaves de metadados;
+   - tabelas de quantização e subamostragem do JPEG, e chunks do PNG;
+   - ausência de EXIF/XMP/ICC;
+   - nenhum pixel diferente longe da região editada. Em JPEG, conta só fora dos blocos que a tocam.
+     Com canal de envio, fora de um raio que cresce com as passagens de JPEG. Com WEBP com perda, a
+     conferência é estatística: média < 2,5 níveis e p99,9 ≤ 48 longe da edição.
+8. **O que a ferramenta não resolve sozinha:**
+   - **Cliente sem CPF legível em splits diferentes:** a auditoria só pega o que o OCR lê. Separe
+     por cliente ao montar as pastas.
+   - **Pares "parecidos":** a lista ajuda só até certo ponto. Foi medido que o hash perceptual
+     **não** distingue "o mesmo papel recapturado" de "outro cliente, mesma conta".
+   - **Mesmo modelo de conta em todos os splits:** não é vazamento. Para medir generalização,
+     reserve um emissor inteiro só para o teste. Veja
+     [docs/tecnicas.md](tecnicas.md#vazamento-e-atalhos).
+
+## IA local (Qwen-Image-Edit-2511 e Qwen-Image-2.1 Uncensored)
+
+Selecione a área, clique em 🤖, escolha o modelo e descreva a troca, por exemplo
+`Troque o texto "R$ 151,37" por "R$ 987,65"…`.
+
+Enquanto a IA trabalha, a tela mostra a etapa (carregando o modelo, lendo o pedido, difusão passo N
+de M), o tempo e quanto falta. **Cancelar** para a edição no próximo passo; nada é aplicado. O
+servidor de IA expõe isso em `/progresso` e `/cancelar`.
+
+| Modelo | Passos | Tempo por campo* | Licença | Uso |
+|---|---|---|---|---|
+| Qwen-Image-Edit-2511 (GGUF Q4_K_M + LoRA Lightning) | 4 | ~2 min | Apache-2.0 | padrão, mais rápido; erra letras às vezes |
+| Qwen-Image-2.1 Uncensored (`abenzerps/Qwen-Image-2.1-Uncensored-GGUF`, Q4_K_M, 4,3 GB) | 40 | ~3,5–4 min | **qwen-research: só pesquisa, não comercial** | escreve o texto certo |
+
+\* "Trocar com IA" no nome e no endereço de uma conta de exemplo, RTX 4060 8 GB
+(`tests_ui/ia_trocar_campo.py`). O 2511 escreveu "INCECIAS" no lugar de "ACACIAS" e borrou o fim
+de "FERREIRA". O 2.1 acertou os dois, na mesma fonte e alinhamento. Nos dois modelos nenhum pixel
+fora da região do campo mudou.
+
+Só um modelo fica carregado por vez: pedir o outro descarrega o atual. O modelo usado vai para o
+JSON (`modelo_id`).
+
+- A seleção e uma margem de contexto são ampliadas para cerca de 1 MP, com lados múltiplos de 32.
+  Sem isso, o texto pequeno fica ilegível para o modelo.
+- O resultado volta para a resolução original e é colado **só dentro da seleção**. O VAE altera a
+  imagem inteira, e o que fica fora da seleção é descartado.
+- Prompt, semente e passos vão para o JSON.
+
+**Por que esse modelo:**
+
+- O Qwen-Image-Edit-2511 tem licença Apache-2.0 e é o padrão.
+- O Qwen-Image-2.1 Uncensored entrou a pedido, como segunda opção. Ele herda a licença do
+  Qwen-Image-2.1, que é só de pesquisa: dados gerados com ele não devem treinar um modelo de uso
+  comercial. O encoder dele é o Qwen3-VL-8B; aqui ele é usado em 4 bits
+  (`unsloth/Qwen3-VL-8B-Instruct-bnb-4bit`, tensores idênticos aos do original).
+
+**Configuração para GPU de 8 GB e pouca memória livre.** Medida nesta máquina: RTX 4060 8 GB, com
+2,5 GB de VRAM já ocupados por outros programas e ~6–10 GB de commit livre.
+
+- **transformer:** GGUF Q4_K_M (13,2 GB) **mapeado do disco**, sem cópia. Cada um dos 60 blocos só
+  vai para a GPU durante o seu forward. Carregar gasta ~2,5 GB de commit, contra os 13,2 GB do
+  caminho padrão do diffusers, e leva 2 s.
+- **encoder:** Qwen2.5-VL-7B em 4 bits. Os tensores foram conferidos: é o mesmo encoder do
+  Qwen-Image-Edit-2511. Ele é lido do disco a cada pedido, com um leitor somente leitura (o
+  `safetensors` padrão reserva 6,9 GB de commit no Windows e falha com "arquivo de paginação muito
+  pequeno"). Embeddings e `lm_head` ficam na CPU, o resto vai para a GPU, e tudo é liberado logo
+  depois de ler o pedido.
+- **LoRA:** Lightning de 4 passos. **VAE:** na GPU, decodificando em blocos.
+
+**Medido numa edição real** (recorte ampliado para 1280×768):
+
+| Etapa | Tempo |
+|---|---|
+| ler o encoder do disco | 9–30 s (mais rápido quando o arquivo já está em cache) |
+| codificar o pedido | 6–11 s |
+| difusão | 83–90 s |
+| **total por edição** | **~1,5–2,5 min** |
+
+- Pico de VRAM: 5,9 GB. Commit livre durante a edição: ~6 GB.
+- O teste trocou "R$ 151,37" por "R$ 987,65" na mesma fonte e cor, sem mudar nenhum pixel fora da
+  seleção.
+
+**Instalação:** a IA roda numa venv própria, criada a partir de um python que já tem torch com CUDA
+(um miniconda, por exemplo):
+
+```powershell
+<python com torch e CUDA>\python.exe -m venv --system-site-packages .venv-ia
+.venv-ia\Scripts\python.exe -m pip install -r requirements-ia.txt
+.venv-ia\Scripts\python.exe ia_servidor.py --baixar     # ~21 GB em HF_HOME (padrão: E:\hf_cache)
+.venv-ia\Scripts\python.exe ia_servidor.py              # deixe rodando; o rotulador detecta sozinho
+.venv-ia\Scripts\python.exe ia_servidor.py --teste      # opcional: troca um texto numa imagem e mede
+```
+
+O servidor confere a memória antes de carregar (precisa de ~5 GB de commit livre) e recusa com uma
+mensagem clara em vez de travar a máquina.
+
+**Problemas de bibliotecas contornados no código:**
+
+- o `peft` do miniconda quebra com o transformers 5.5, por isso a venv própria tem `peft` novo;
+- o transformers 5 casa a lista de exclusão do 4 bits com `re.match`, que ancora no início do nome.
+  Por isso "visual" não pega "model.visual.*" e a torre visual vira 4 bits apesar da lista: no
+  Qwen2.5-VL o peso fica bf16 dentro da camada errada, e no Qwen3-VL fica uint8 corrompido. O
+  servidor acrescenta os nomes completos à lista e desfaz o que ainda escapar;
+- o leitor de GGUF do diffusers copia os 13 GB para a RAM; o servidor troca por um que mapeia;
+- o diffusers trata tensores BF16 do GGUF como bytes crus, e normas e biases em BF16 chegam com o
+  dobro do tamanho. O GGUF do 2.1 tem 68 deles, e o leitor os entrega como bf16 de verdade;
+- o `QwenImage21Pipeline` só existe no main do diffusers (`requirements-ia.txt` fixa o commit).
+- A saída do encoder deixada na GPU prendia, por fragmentação, 6,2 GB do alocador do PyTorch, e o
+  `empty_cache` não devolvia nada. Ela agora passa pela CPU enquanto a VRAM é liberada. Com isso o
+  2511 fixa 13 blocos na GPU e a difusão cai de 110 s para 83 s. O 2.1 reserva 4,5 GB para as
+  ativações (pico medido em 1 MP): com menos, elas transbordam para a RAM compartilhada e ficam 7×
+  mais lentas.
+- O pipeline 2.1 não aceita embeddings prontos junto com imagem. O servidor codifica o pedido com o
+  encoder carregado só durante a codificação e entrega o resultado ao pipeline.
+
+Para testar só o 2.1: `.venv-ia\Scripts\python.exe ia_servidor.py --teste --modelo 21uc`.
+Para o servidor carregar o 2.1 ao subir: `--modelo 21uc --carregar-ja`. O rotulador pode pedir qualquer um dos
+dois a qualquer momento.
+
+## Testes
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+```
+
+São 332 testes. Eles cobrem:
+
+- **vazamento:** mesmo conteúdo em PNG e TIFF em splits diferentes, documento rotulado que mudou
+  de split, doador de outro split, auditoria, o mesmo CPF (cliente) em dois splits, vocabulário
+  dos valores falsos repartido por split, e a cota do gerador valendo dentro de cada split;
+- **operações e máscaras:** cada operação mantém intactos os pixels fora da área editada, a
+  máscara bate com a diferença real e desfazer/refazer restaura bit a bit;
+- **códigos:** 20 códigos de barras gerados são decodificados de volta, o QR é lido pelo OpenCV,
+  os DVs de CPF, CNPJ, arrecadação e boleto conferem;
+- **salvamento:** formatos de saída e rascunho que sobrevive à queda do servidor.
+- **regressões da revisão** (`test_revisao.py`): cada defeito achado nas rodadas de revisão tem
+  um teste (receita estranha dá 400, original órfã, caixas das marcas, auditoria sem OCR, TIFF
+  determinístico, datasheet com anotação antiga, CPF de modelo, vocabulário, Jitter, colagem da IA);
+- **canal de envio, marcas e disfarce:** o par só difere perto da edição em todos os perfis (e,
+  sem codecs, nada difere: todo campo de ruído/luz/sombra é do par), a máscara acompanha a
+  geometria, determinismo, lote com canal + marcas + datasheet, colagem da IA nos três modos,
+  Texture Jitter sem mudar o texto e disfarce dentro da pegada.
+- **automático:**
+  - classificação de campos: padrões, rótulos tolerantes a erro de OCR, rótulo grudado no valor;
+  - valores no mesmo formato do original e escolha de fonte (Arial × Arial Bold);
+  - troca de campo e fraude automática com desfazer;
+  - um lote completo do gerador pela API, que salva só no split pedido, e exclusão pelo catálogo.
+- **técnicas** (`test_tecnicas.py`, em documentos sintéticos com o OCR em cache):
+  - letras separadas uma a uma;
+  - cada técnica muda só a região do campo, e o **OCR relê o valor novo**;
+  - a mesma semente dá o mesmo resultado (a prévia é igual ao que é aplicado);
+  - doadores só do mesmo split; plausibilidade; IA com editor falso;
+  - distribuição equilibrada;
+  - máscara de técnicas e `catalogo.csv` batem com as edições, os índices são refeitos e a
+    exclusão funciona;
+  - a camada de cima vence também na máscara de técnicas.
+- **camadas:** a de cima vence na máscara, ocultar tira dos rótulos, opacidade, excluir/mesclar/duplicar
+  com desfazer, a borracha revela a camada de baixo, mover camada, rascunho com camadas;
+- **ferramentas profissionais:** Poisson (identidade e cor do destino), carimbo com fonte original,
+  escala e rotação, recuperação, remendo, os 7 modos de retoque, formas, amostragens do
+  preenchimento, igualar ruído calibrado, seleção por tinta e por pincel.
+- **tipos de edição** (`test_tipos.py`):
+  - cada técnica automática está em um jeito;
+  - compatibilidade técnica × classe;
+  - pesos divididos pelas combinações e erros claros;
+  - o plano só sorteia combinações dos tipos, na proporção dos pesos;
+  - prévia, lote e exemplos reais pela API.
+- **identificador de fonte** (`test_fonte.py`):
+  - acerta a fonte de linhas degradadas como scan (≥85% em 1º, ≥95% entre as 3 primeiras);
+  - tamanho e largura;
+  - fontes sem as letras do texto ficam de fora;
+  - voto do documento;
+  - a API devolve o texto desenhado em cada fonte.
+- **perícia / acabamento forense** (`test_pericia.py`): casar iluminação (o fundo da região segue o
+  gradiente de luz do papel), grão espectral (ruído com o MESMO espectro do papel, não branco) e
+  nitidez (igualada à vizinhança); o nível `auto` não muda o de hoje; `forense` casa os sinais, não
+  vaza para fora da região e fica gravado e filtrável (receita, anotação, catálogo, datasheet).
+- **técnicas do mundo real** (`test_humano.py`): esconder com objeto (4 objetos), rabiscar (3 tintas),
+  borrar (2 modos), corretivo em 3 formas, caneta nos traços e recorte de papel — cada uma mexe só perto
+  do campo, cobre o texto e o OCR não lê mais o valor antigo; o falsificador "no papel" sempre fotografa.
+- **falsificador humano** (`test_falsificador.py`):
+  - formatos de data, mês e caixa; valor redondo;
+  - receita valida pesos e motivos (lista = só esses);
+  - sorteio respeita a probabilidade, a IA desligada e as técnicas permitidas;
+  - hábitos fixos por versão (fonte, colagem, retângulo, disfarce) e o caminho do documento;
+  - motivo recência: data de 3 a 85 dias atrás, a mesma nas duas datas, mês de referência anterior;
+  - motivo identidade: o mesmo nome em todo lugar, CPF às vezes esquecido;
+  - a ferramenta restringe as técnicas; motivo que não cabe cai para outro ou para o sorteio clássico;
+  - prévia e lote gravam quem fez, o catálogo filtra por falsificador e motivo, o datasheet conta.
+- **equipe** (`test_equipe.py`):
+  - trava entre duas pessoas e assumir;
+  - atribuição;
+  - revisão, fila e exportação filtrada;
+  - metas;
+  - pré-leitura do OCR;
+  - progresso e cancelamento da IA.
+- **fornecedores** (`test_fornecedores.py`): cada apagador tira a tinta e fica no rótulo; vestígio deixa um
+  fantasma; os quatro rasterizadores escrevem legível, o ClearType tem franjas coloridas e o aliasado
+  só dois tons; o bloco de endereço vem inteiro de outro documento do mesmo split.
+- **edição vetorial** (`test_vetorial.py`): PDF com texto é reconhecido, a troca muda só o campo, o
+  rótulo diz `pdf-vetorial`, a fonte embutida é usada quando tem as letras, e o gerador só oferece a
+  técnica em PDF com texto (nunca depois de uma captura).
+- **canal em duas fases** (`test_fases.py`): data de envio por documento; captura antes vira a base da
+  versão, com original própria, máscaras do tamanho da imagem salva e par igual fora da edição;
+  captura depois continua como era.
+- **geradores** (`test_geradores.py`): data de referência aninhada, CEP na faixa da cidade, vocabulário
+  repartido, partes da linha digitável, código com o valor pedido.
+- **perito** (`test_perito.py`): retângulo chapado dá nota alta, cópia do papel dá nota baixa, mapa e
+  rota da sessão.
+- **edição exata e limpa** (`test_exato.py`): espaços recuperados numa linha com fio de tabela; caixa da
+  linha sem o rótulo de cima e sem o fio; o apagamento preserva o fio; o detector recusa rótulos como
+  endereço, acha o nome e o bairro no bloco de endereçamento sem rótulo e separa o endereço do beneficiário
+  (emissor) do do pagador; a fonte sai entre as 10 mais usadas, com o peso certo; a técnica da mesma fonte não
+  toca no rótulo nem no fio; a edição exata dá o mesmo nome e endereço novos nos dois lugares e uma cidade
+  no formato do campo; a API edita só os campos mandados; o lote limpo grava a original igual ao documento e
+  a editada diferente só na máscara.
+- **marcas digitais** (`test_marcas_digitais.py`): sem captura física só as digitais entram; tarja, borrão e
+  pixelado cobrem a caixa do campo sensível inteira, nunca a edição, e o par fica igual; a marca d'água é
+  igual no par; o lote pelo WhatsApp grava só marcas digitais.
+- **recorte e captura** (`test_recorte.py`): depois da edição a janela contém a edição (e cresce se
+  preciso); antes dela a janela é livre e os pontos acompanham; scanner em cinza (canais iguais) e P&B
+  (quase tudo 0 ou 255, a edição vira tinta preta); as cinco texturas de fundo; o sorteio grava tudo.
+- **qualidade** (`test_qualidade.py`): versão limpa sem alerta; cada defeito dá o seu alerta; duplicadas;
+  `--gravar` escreve na anotação e o datasheet conta (e lista as lacunas de cobertura).
+- **treino** (`test_treino.py`): o carregador lê um split (dificuldade, famílias, canal), o recorte com
+  `p_edicao=1` sempre contém a edição e o de texto sempre contém tinta, a borda suave é 1 na fronteira e 0
+  longe, o currículo ordena pela dificuldade, o aumento de canal mantém o par igual fora da edição; na
+  avaliação, predição perfeita dá AUC/F1/IoU 1 e predição com confiança 0,3 dá F1 0 no limiar fixo mas
+  oráculo 1 e calibrado 1; o conjunto de robustez sai coerente (máscaras, caixas, índices) e a linha de base
+  gera predições que a avaliação lê.
+
+O modo exato do gerador tem `ui_exato.py` (abre no exato com nome e endereço marcados, atalhos, prévia
+toda na mesma fonte, lote de 1 imagem conferido na anotação e nos pixels). O modo fácil tem `ui_tipos.py`, que:
+
+- acrescenta uma ideia pronta e cria um tipo pelo diálogo;
+- testa o tipo sozinho;
+- gera um lote e confere que só entraram as combinações do tipo;
+- confere o aviso do modo avançado e o celular sem rolagem lateral.
+
+O trabalho em equipe tem `ui_equipe.py`, com dois navegadores, ou seja, duas pessoas:
+
+- nome obrigatório, trava e assumir;
+- busca, atalhos e sugestão de categoria;
+- "Qual é a fonte?";
+- revisão por teclado, aprovação em lote e exportação;
+- metas e atribuição.
+
+O gerador tem o seu teste de interface, `ui_gerador.py` (51 checks). Ele usa os presets, a prévia e a geração de
+8 imagens, e no catálogo a matriz, os filtros, o detalhe e a exclusão. No editor, aplica uma técnica
+pelo "Como editar" e a fraude automática. Falha com erro de JavaScript ou traceback no servidor.
+
+Também há testes de interface com Selenium + Edge em `tests_ui/`: 27 checks no fluxo geral
+(`ui_fluxo.py`) e 25 nas camadas e ferramentas novas (`ui_camadas.py`). Eles usam documentos
+sintéticos numa pasta de trabalho separada, nunca os seus `dados/`:
+
+```powershell
+.venv\Scripts\python.exe tests_ui\gerar_amostras.py C:\tmp\rot\dados
+.venv\Scripts\python.exe app.py --dados C:\tmp\rot\dados --saida C:\tmp\rot\saida_teste --porta 5077 --sem-navegador
+python tests_ui\ui_camadas.py C:\tmp\rot        # em outro terminal (precisa de selenium e do Edge)
+```
+
+`tests_ui/ia_trocar_campo.py <pasta>` faz o "Trocar com IA" real no nome e no endereço com os dois
+modelos. Ele salva antes/depois e confere que nada fora dos campos mudou (~12 min; rotulador na
+5010 e servidor de IA rodando; não salva nada).
+
+`tests_ui/ia_ponta_a_ponta.py PASTA` faz uma edição real por IA através do rotulador. Precisa do
+rotulador na porta 5077 e do servidor de IA rodando.
+
+**Layout** (`ui_responsivo.py PASTA`): tela de computador e de celular. Confere o tutorial com
+conteúdo, o nome do documento no topo, o documento visível e sem rolagem lateral no celular, e o
+diálogo flutuante dentro da tela.
+
+**Teste de todas as ferramentas** (`ui_todas.py`, 62 casos) num documento **realista**: A4 a 300 DPI,
+com grão de papel, desfoque de scan, JPEG e uma foto de celular com orientação EXIF. Ele usa cada
+ferramenta e cada opção como um usuário, e falha se aparecer:
+- aviso de erro na tela;
+- erro de JavaScript;
+- traceback no log do servidor;
+- operação sem efeito.
+
+```powershell
+.venv\Scripts\python.exe tests_ui\gerar_amostras.py E:\rotulador\real\dados --realista
+.venv\Scripts\python.exe app.py --dados E:\rotulador\real\dados --saida E:\rotulador\real\saida --porta 5077 --sem-navegador > E:\rotulador\real\servidor.log 2>&1
+python tests_ui\ui_todas.py E:\rotulador\real --ia   # --ia inclui a edição por IA (servidor de IA rodando)
+```
+
+**Verificação das técnicas automáticas em documentos de verdade.** Cada técnica é aplicada em
+cada campo onde serve. O OCR da página inteira precisa ler o valor novo, sem exceção e sem mexer
+longe do campo. Também são geradas folhas de contato antes/depois para revisar a olho.
+Resultados e problemas encontrados: [docs/tecnicas.md](tecnicas.md#verificação-em-documentos-variados).
+
+```powershell
+.venv\Scripts\python.exe tests_ui\gerar_variados.py E:\rotulador\variado\dados    # 6 fontes/layouts + foto
+.venv\Scripts\python.exe tests_ui\verifica_tecnicas.py E:\rotulador\variado\dados E:\rotulador\verifica\variado
+.venv\Scripts\python.exe tests_ui\verifica_tecnicas.py E:\rotulador\variado\dados E:\rotulador\verifica\ia --ia --docs=calibri.jpg
+.venv\Scripts\python.exe tests_ui\verifica_saida.py E:\rotulador\variado\saida   # confere máscaras, rótulos e índices gravados
+.venv\Scripts\python.exe tests_ui\verifica_atalhos.py E:\rotulador\variado\saida # atalhos original x editada, mistura por split
+```

@@ -97,7 +97,7 @@ class TestAuditoria(unittest.TestCase):
         """O mesmo CPF (lido pelo OCR) em treino e teste é o mesmo cliente: o modelo decoraria o cliente."""
         from tests.test_auto import TEM_OCR, conta as conta_arial
         if not TEM_OCR:
-            self.skipTest("OCR (rapidocr_onnxruntime) não instalado")
+            self.skipTest("OCR (paddleocr) não instalado")
         salvar(conta_arial(1), self.dados / "treino" / "cliente_jan.png")  # contas de meses diferentes,
         salvar(conta_arial(2), self.dados / "teste" / "cliente_fev.png")   # mesmo CPF
         rel = auditar(self.dados, self.saida, limiar=0)

@@ -72,7 +72,7 @@ class TestRevisao(unittest.TestCase):
 
     def test_auditoria_sem_ocr_avisa_e_nao_quebra(self):
         from auditar_vazamento import auditar
-        with mock.patch("rotulador.automatico.campos_do_documento", side_effect=ocr.OCRIndisponivel("sem rapidocr")):
+        with mock.patch("rotulador.automatico.campos_do_documento", side_effect=ocr.OCRIndisponivel("sem paddleocr")):
             rel = auditar(self.dados, self.saida, limiar=0)
         self.assertEqual(rel["erros"], [])
         self.assertTrue(any("OCR indisponível" in w for w in rel["avisos"]), rel["avisos"])

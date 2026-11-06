@@ -48,6 +48,12 @@ class TestPincel(unittest.TestCase):
         a = gesto.alfa_toques((40, 220), tq)
         self.assertGreater(a[20, 20:180].min(), 0.9)
 
+    def test_um_toque_so(self):
+        """Traço de comprimento zero (um clique): um disco. A pressão vinha com 2 valores e o carimbo quebrava."""
+        self.assertEqual(len(gesto.pressao(1, random.Random(1))), 1)
+        tq = gesto.toques(np.array([[30.0, 20.0, 0.0]]), 6, random.Random(2))
+        self.assertEqual(tq.shape, (1, 3))
+
     def test_setas(self):
         e, n = gesto.setas(23.0, random.Random(1), 1.0, 1.0)
         self.assertLessEqual(abs(e), 2)

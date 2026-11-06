@@ -1,0 +1,7 @@
+# O OCR, instalado SEM dependências (as que ele precisa estão em requirements.txt, sem as do Hugging Face):
+#   pip install --no-deps -r requirements-ocr.txt
+# paddlepaddle 3.2.2: no 3.3 o oneDNN da CPU falha nestes modelos ("ConvertPirAttribute2RuntimeAttribute not
+# support"), e sem o oneDNN a página leva 15 s em vez de ~2,5 s.
+paddlepaddle==3.2.2
+paddlex==3.7.2
+paddleocr==3.7.0

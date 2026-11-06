@@ -10,6 +10,7 @@
 5. edição sem medida válida do perito fica sem nota (None), não com 0.
 
 Tudo com documentos sintéticos (nenhum dado real)."""
+import importlib.util
 import json
 import random
 import shutil
@@ -26,11 +27,7 @@ from rotulador import campos, gerador, marcas
 from rotulador.registro import Item
 from rotulador.sessao import ErroOperacao, Sessao
 
-try:
-    import rapidocr_onnxruntime  # noqa: F401
-    TEM_OCR = True
-except ImportError:
-    TEM_OCR = False
+TEM_OCR = importlib.util.find_spec("paddleocr") is not None  # o OCR (paddleocr) instalado
 
 IDS = {"nome": 1, "cpf/cnpj": 2, "endereço": 3, "bairro": 4, "cep": 5, "cidade/uf": 6, "data": 7,
        "mês de referência": 8, "valor": 9, "consumo/leitura": 10, "codigo barras": 11, "linha digitável": 12,
@@ -316,7 +313,7 @@ class TestOcorrencias(unittest.TestCase):
         self.assertLess(trecho["caixa"][2], 60 + f.getlength("MARIA DA SILVA PRADO C"))  # para antes do "CPF"
         self.assertGreaterEqual(trecho["caixa"][2], 60 + f.getlength("MARIA DA SILVA PRAD"))
 
-    @unittest.skipUnless(TEM_OCR, "OCR (rapidocr_onnxruntime) não instalado")
+    @unittest.skipUnless(TEM_OCR, "OCR (paddleocr) não instalado")
     def test_edita_todas_e_registra_as_que_sobraram(self):
         ctx = self._ctx()
         r = gerador.Receita(gerador.receita_limpa(IDS, ("nome",)), IDS)
@@ -367,7 +364,7 @@ class TestOcorrencias(unittest.TestCase):
 
 
 # ============================================================================ 1 e 2 no lote (anotação)
-@unittest.skipUnless(TEM_OCR, "OCR (rapidocr_onnxruntime) não instalado")
+@unittest.skipUnless(TEM_OCR, "OCR (paddleocr) não instalado")
 class TestLoteExato(unittest.TestCase):
     def setUp(self):
         from app import carregar_categorias, criar_app

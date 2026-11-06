@@ -135,12 +135,12 @@ def renderizar(p: dict, H: int, W: int):
                                            desfoque, antialias)
     if rasterizador in _SUAVIZACAO_PS:  # a suavização escolhida na camada de texto do Photoshop
         alpha = _SUAVIZACAO_PS[rasterizador](alpha)
-    if desfoque > 0:
-        alpha = cv2.GaussianBlur(alpha, (0, 0), desfoque)
     if not antialias:
         alpha = (alpha >= 0.5).astype(np.float32)
     elif rasterizador == "gdi" and desfoque == 0:  # 4 tons de cinza e traço um pouco mais escuro, como o GDI
         alpha = np.round(np.clip(alpha, 0, 1) ** 0.8 * 4) / 4
+    if desfoque > 0:  # o desfoque vai na camada já desenhada: no aliasado, depois de serrilhar (antes de 06/11/2026 o
+        alpha = cv2.GaussianBlur(alpha, (0, 0), desfoque)  # serrilhado vinha depois e jogava o desfoque fora)
     alpha[alpha < 1.0 / 512] = 0
     alpha *= num(p, "opacidade", 1.0, 0, 1)
     nz = alpha > 0
@@ -343,9 +343,10 @@ class _CacheApagado:
 _cache_apagado = _CacheApagado()
 
 
-def _fios_da_tabela(img: np.ndarray, y0: int, y1: int, x0: int, x1: int) -> np.ndarray:
-    """Máscara (H×W) dos fios de tabela perto da caixa [y0:y1, x0:x1]: traços horizontais mais compridos que
-    3 alturas da caixa (e 30 px) e verticais mais altos que 1,5 altura (e 20 px), com 1 px de antialias."""
+def _fios_locais(img: np.ndarray, y0: int, y1: int, x0: int, x1: int):
+    """(máscara, ay0, ax0) dos fios de tabela perto da caixa [y0:y1, x0:x1], só na janela em volta dela (o canto da
+    janela na imagem é (ax0, ay0)); máscara None sem fio. Traços horizontais mais compridos que 3 alturas da caixa (e
+    30 px) e verticais mais altos que 1,5 altura (e 20 px), com 1 px de antialias."""
     from ..selecao import mascara_tinta
 
     H, W = img.shape[:2]
@@ -359,9 +360,17 @@ def _fios_da_tabela(img: np.ndarray, y0: int, y1: int, x0: int, x1: int) -> np.n
         reg |= cv2.morphologyEx(t, cv2.MORPH_OPEN, np.ones((1, kh), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=0) > 0
     if t.shape[0] > kv:
         reg |= cv2.morphologyEx(t, cv2.MORPH_OPEN, np.ones((kv, 1), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=0) > 0
-    out = np.zeros((H, W), bool)
-    if reg.any():
-        out[ay0:ay1, ax0:ax1] = cv2.dilate(reg.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    if not reg.any():
+        return None, ay0, ax0
+    return cv2.dilate(reg.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0, ay0, ax0
+
+
+def _fios_da_tabela(img: np.ndarray, y0: int, y1: int, x0: int, x1: int) -> np.ndarray:
+    """Máscara (H×W) dos fios de tabela perto da caixa [y0:y1, x0:x1] (``_fios_locais`` na imagem inteira)."""
+    out = np.zeros(img.shape[:2], bool)
+    reg, ay0, ax0 = _fios_locais(img, y0, y1, x0, x1)
+    if reg is not None:
+        out[ay0:ay0 + reg.shape[0], ax0:ax0 + reg.shape[1]] = reg
     return out
 
 

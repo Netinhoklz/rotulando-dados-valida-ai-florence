@@ -50,8 +50,8 @@ class TestPastaTreinamento(unittest.TestCase):
         self.assertEqual(img.read_bytes(), (self.saida / "treino" / r["arquivos"]["editada"]).read_bytes())
         self.assertEqual(masc.read_bytes(), (self.saida / "treino" / r["arquivos"]["mascara"]).read_bytes())
         m = cv2.imread(str(masc), cv2.IMREAD_UNCHANGED)
-        self.assertEqual(set(np.unique(m).tolist()), {0, 1})
-        self.assertEqual(m[300, 150], 1)  # sob o traço do pincel
+        self.assertEqual(set(np.unique(m).tolist()), {0, 255})  # branco onde editou: visível em qualquer visualizador
+        self.assertEqual(m[300, 150], 255)  # sob o traço do pincel
         self.assertEqual(m[20, 20], 0)
         self.assertEqual(sorted(p.name for p in self.treino.rglob("*") if p.is_file()), [nome + ".png"] * 2)
 

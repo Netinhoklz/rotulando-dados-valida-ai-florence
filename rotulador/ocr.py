@@ -1,11 +1,12 @@
-"""Leitura do texto do documento (OCR): detector PP-OCRv6 small + reconhecedor latino PP-OCRv5 (ONNX, CPU).
+"""Leitura do texto do documento (OCR): o paddleocr (PyPI), com o detector PP-OCRv6 small e o reconhecedor latino
+PP-OCRv5, na CPU.
 
-Os modelos são os ONNX oficiais da PaddlePaddle, baixados do ModelScope (conta oficial PaddlePaddle; nada vem do
-Hugging Face) na primeira leitura para ``MODELOS`` (~18 MB), pelo próprio Python (urllib), e rodados pelo RapidOCR do projeto (só o detector e o reconhecedor são trocados). Lê acentos, cedilha e
-espaços ("JOSÉ CARLOS", "MÊS REFERÊNCIA") e as caixas cobrem a tinta toda (com o acento). Sem rede ou sem o
-modelo, cai no OCR antigo (``MOTOR_RESERVA``: o PP-OCRv3 chinês que vem no rapidocr_onnxruntime), que come os
-espaços ("MARIADOSSANTOS01", recuperados pelos vãos de tinta em ``recuperar_espacos``) e tira acentos.
-Benchmark nos documentos do projeto (sintéticos com verdade conhecida e a conta real): ver o README.
+Os modelos são os oficiais da PaddlePaddle no formato do Paddle (inference.yml, .json e .pdiparams), baixados do
+ModelScope (conta oficial PaddlePaddle) na primeira leitura para ``MODELOS`` (~18 MB), pelo próprio Python (urllib),
+numa revisão fixa e conferidos pelo sha256, e entregues ao paddleocr como pasta local: ele não baixa nada. Nada vem do
+Hugging Face, nem modelo nem biblioteca (``_sem_hugging_face``). Lê acentos, cedilha e espaços ("JOSÉ CARLOS",
+"MÊS REFERÊNCIA") e as caixas cobrem a tinta toda (com o acento). Sem o paddleocr ou sem os modelos: OCRIndisponivel.
+Benchmark nos documentos do projeto (sintéticos com verdade conhecida e a conta real): ver docs/manual.md.
 
 O resultado fica em cache em disco por documento (hash dos pixels), com o nome do motor que leu: cada página
 só é lida uma vez, inclusive entre execuções do servidor, e a leitura de outro motor é refeita.
@@ -20,6 +21,7 @@ import os
 import re
 import sys
 import threading
+import time
 import unicodedata
 from functools import lru_cache
 from pathlib import Path
@@ -29,42 +31,50 @@ import numpy as np
 
 from .selecao import mascara_tinta
 
-_lock = threading.Lock()  # o motor ONNX não é garantido seguro entre threads
+_lock = threading.Lock()  # o motor do Paddle não é garantido seguro entre threads
 _lock_carga = threading.Lock()
 _motor = None
 _nome_motor: str | None = None
 
-# Modelos ONNX oficiais da PaddlePaddle no ModelScope (modelscope.cn/models/PaddlePaddle/...), num commit fixo e
-# conferidos pelo sha256 (os mesmos arquivos, byte a byte, que a PaddlePaddle publica no Hugging Face, de onde o
-# projeto NÃO baixa nada). Ficam na pasta do projeto (fora do git): vão junto se o projeto mudar de disco e somem com
+# Modelos oficiais da PaddlePaddle no ModelScope (modelscope.cn/models/PaddlePaddle/...), num commit fixo e
+# conferidos pelo sha256. Ficam na pasta do projeto (fora do git): vão junto se o projeto mudar de disco e somem com
 # ele; os testes usam os mesmos.
 MODELOS = Path(__file__).resolve().parents[1] / "modelos" / "ocr"
 _FONTE = "https://www.modelscope.cn/models/PaddlePaddle/{repo}/resolve/{rev}/{arq}"
-_DET = {"repo": "PP-OCRv6_small_det_onnx", "rev": "37b02eded8dbca659f8ee5d51f822ea1ebd9bcba", "mb": 10,
-        "sha256": {"inference.onnx": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e",
-                   "inference.yml": "193f435274bf9f0b5f71a929bbfbcf148282df7e633b34e7c373e8f44741b516"}}
-_REC = {"repo": "latin_PP-OCRv5_mobile_rec_onnx", "rev": "0bbca491cfc54ef5c5253b18bc4bd552dff0625c", "mb": 8,
-        "sha256": {"inference.onnx": "7888113072263cb471b93f66dd5e2ad70548dc526fa1ace760d0d973dd121498",
-                   "inference.yml": "0bbe984570f597af3638e50bdf2e8276f3ab26a61966096538b3b0d1849f5c84"}}
+_DET = {"repo": "PP-OCRv6_small_det", "rev": "0dbd8262eddcc29a186bd90a458324626974e782", "mb": 10,
+        "sha256": {"inference.yml": "193f435274bf9f0b5f71a929bbfbcf148282df7e633b34e7c373e8f44741b516",
+                   "inference.json": "89240f689a4a77aad75ef55a8df0a15c8e1d4980a327d17e58f24bbadde5aeab",
+                   "inference.pdiparams": "5043d4ccc8d63402ccea8feefcee4db57077431a873e78d2191836a178a492da"}}
+_REC = {"repo": "latin_PP-OCRv5_mobile_rec", "rev": "dee351fd34a438201f64277a213e258be3daa7dd", "mb": 8,
+        "sha256": {"inference.yml": "0bbe984570f597af3638e50bdf2e8276f3ab26a61966096538b3b0d1849f5c84",
+                   "inference.json": "820b2ee8e5072de5156c3d55124c2b03c82ef278d59f453f857c0789bacb4da1",
+                   "inference.pdiparams": "53cdc8b481a7394bb108f96d0fb3432b0a8f392e22c7d18f06dbb2d42b8b25f9"}}
 # nome gravado no cache: muda quando o modelo ou o pré/pós-processamento muda (a leitura antiga é refeita)
-MOTOR_PADRAO = "PP-OCRv6_small_det+latin_PP-OCRv5_mobile_rec/2"
-MOTOR_RESERVA = "rapidocr PP-OCRv3 ch"  # o cache de antes (lista pura) é dele
+MOTOR_PADRAO = "paddleocr PP-OCRv6_small_det+latin_PP-OCRv5_mobile_rec/3"
+MOTOR_RESERVA = "rapidocr PP-OCRv3 ch"  # o OCR antigo: o cache de antes do nome do motor (lista pura) é dele
 
 
 class OCRIndisponivel(RuntimeError):
     pass
 
 
+def instalado() -> bool:
+    """O paddleocr está instalado? (Sem importá-lo: o import carrega o Paddle.)"""
+    import importlib.util
+    return importlib.util.find_spec("paddleocr") is not None
+
+
 def _baixar(modelo: dict) -> Path:
-    """Pasta com o inference.onnx e o inference.yml do modelo; baixa do ModelScope na primeira vez."""
+    """Pasta com o modelo no formato do Paddle (os arquivos de ``sha256``); baixa do ModelScope na primeira vez."""
     pasta = MODELOS / modelo["repo"]
-    if (pasta / "inference.onnx").is_file() and (pasta / "inference.yml").is_file():
+    arquivos = list(modelo["sha256"])  # o .pdiparams por último: ele presente = download completo
+    if all((pasta / arq).is_file() for arq in arquivos):
         return pasta
     import urllib.request
     pasta.mkdir(parents=True, exist_ok=True)
     print(f"OCR: baixando {modelo['repo']} (~{modelo['mb']} MB, só na primeira vez) do ModelScope para {pasta}",
           file=sys.stderr, flush=True)
-    for arq in ("inference.yml", "inference.onnx"):  # o .onnx por último: ele presente = download completo
+    for arq in arquivos:
         url = _FONTE.format(repo=modelo["repo"], rev=modelo["rev"], arq=arq)
         tmp = pasta / f"{arq}.part"
         try:
@@ -82,98 +92,101 @@ def _baixar(modelo: dict) -> Path:
 
 
 def _config(pasta: Path) -> dict:
-    import yaml  # dependência do rapidocr_onnxruntime
+    import yaml  # dependência do paddlex
     with open(pasta / "inference.yml", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-def _sessao(caminho: Path):
-    import onnxruntime as ort
-    so = ort.SessionOptions()
-    so.log_severity_level = 4  # o ONNX exportado do Paddle avisa de inicializadores sobrando
-    so.enable_cpu_mem_arena = False  # como o RapidOCR: a memória volta depois de cada página
-    return ort.InferenceSession(str(caminho), so, providers=["CPUExecutionProvider"])
+def _sem_hugging_face() -> None:
+    """O paddlex importa o ``huggingface_hub`` (só para baixar modelos de lá) e o Paddle importa o ``safetensors``
+    (só para checkpoints de treino). Nenhuma das duas bibliotecas é instalada: módulos vazios no lugar delas deixam
+    o import passar e recusam qualquer uso."""
+    import types
+
+    def vazio(nome: str, **atributos) -> types.ModuleType:
+        m = types.ModuleType(nome)
+        m.__path__ = []
+
+        def recusa(attr):
+            raise AttributeError(f"{nome}.{attr}: as bibliotecas do Hugging Face não são usadas neste projeto")
+        m.__getattr__ = recusa
+        m.__dict__.update(atributos)
+        return m
+
+    def proibido(*_a, **_k):
+        raise RuntimeError("as bibliotecas do Hugging Face não são usadas neste projeto")
+
+    hf_utils, st_numpy = vazio("huggingface_hub.utils"), vazio("safetensors.numpy", safe_open=proibido)
+    for nome, m in (("huggingface_hub", vazio("huggingface_hub", utils=hf_utils,
+                                               logging=types.SimpleNamespace(set_verbosity_error=lambda: None))),
+                    ("huggingface_hub.utils", hf_utils),
+                    ("safetensors", vazio("safetensors", numpy=st_numpy)), ("safetensors.numpy", st_numpy)):
+        sys.modules.setdefault(nome, m)
 
 
-def _detector(pasta: Path):
-    """Detector DB do RapidOCR com o modelo e o pós-processamento do inference.yml (sem dilatação, como na
-    PaddleOCR 3). A imagem vai na resolução original; só a menor que 64 px é ampliada (como na PaddleOCR 3: o
-    mínimo de 736 px do PP-OCRv3 ampliava um recorte de uma linha 5x e o PP-OCRv6 partia a linha em pedaços)."""
-    from rapidocr_onnxruntime.ch_ppocr_v3_det.text_detect import TextDetector
-    pp = _config(pasta)["PostProcess"]
-    return TextDetector({"model_path": str(pasta / "inference.onnx"), "use_cuda": False, "limit_side_len": 64,
-                         "limit_type": "min", "thresh": pp["thresh"], "box_thresh": pp["box_thresh"],
-                         "unclip_ratio": pp["unclip_ratio"], "max_candidates": pp.get("max_candidates", 1000),
-                         "use_dilation": False, "score_mode": "fast"})
+class _Motor:
+    """O paddleocr com os dois modelos em pasta local. ``motor(img_bgr) -> ([(polígono, texto, confiança)],
+    segundos)`` lê a página: detector, ordem de leitura, recorte, reconhecedor e só o que tem confiança >= 0.5.
+    ``motor.linha(img_bgr) -> (texto, confiança)`` só reconhece (um campo já localizado)."""
 
+    def __init__(self, det: Path, rec: Path):
+        _sem_hugging_face()
+        os.environ["PADDLE_PDX_MODEL_SOURCE"] = "modelscope"  # o padrão do paddlex é o Hugging Face
+        os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"  # sem testar a conexão com os sites de modelos
+        from paddleocr import PaddleOCR, TextRecognition
+        from paddlex.inference.utils import official_models
+        official_models._ModelManager.hoster_candidates = [
+            h for h in official_models._ModelManager.hoster_candidates if h.alias != "huggingface"]
+        pp = _config(det)["PostProcess"]
+        # o oneDNN guarda a memória de cada tamanho de imagem que já viu (10 por padrão): numa página A4 a 300 dpi o
+        # detector usa ~7 GB, e o processo ficava com 5 a 11 GB reservados depois de ler; com 1, volta a ~1,9 GB
+        comum = {"device": "cpu", "enable_mkldnn": True, "mkldnn_cache_capacity": 1}
+        # sem o classificador 0/180°, a orientação da página e o desentortar: a página já vem de pé (EXIF aplicado) e
+        # o classificador virava a linha digitável (só dígitos) de cabeça para baixo. O detector usa o pós-processamento
+        # do inference.yml e a imagem na resolução original (só a menor que 64 px é ampliada).
+        self.pagina = PaddleOCR(
+            text_detection_model_name=_DET["repo"], text_detection_model_dir=str(det),
+            text_recognition_model_name=_REC["repo"], text_recognition_model_dir=str(rec),
+            use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False,
+            text_det_limit_side_len=64, text_det_limit_type="min", text_det_thresh=pp["thresh"],
+            text_det_box_thresh=pp["box_thresh"], text_det_unclip_ratio=pp["unclip_ratio"],
+            text_rec_score_thresh=0.5, **comum)
+        self.reconhecedor = TextRecognition(model_name=_REC["repo"], model_dir=str(rec), **comum)
 
-class _Reconhecedor:
-    """Reconhecedor CTC como na PaddleOCR 3: recorte com 48 px de altura, lote da largura do mais largo (no mínimo
-    320 px), (x/255 - 0.5)/0.5; dicionário do inference.yml + espaço. Mesma interface do RapidOCR:
-    ``rec(lista_bgr) -> ([(texto, confiança)], segundos)``. O decodificador é o do RapidOCR, com a confiança dele
-    (média com um termo a mais: uma linha de 1 caractere fica abaixo de 0.5 e cai no filtro, como no motor antigo)."""
-
-    def __init__(self, pasta: Path, lote: int = 6):
-        from rapidocr_onnxruntime.ch_ppocr_v3_rec.utils import CTCLabelDecode
-        chars = [str(c) for c in _config(pasta)["PostProcess"]["character_dict"]]
-        self.sessao = _sessao(pasta / "inference.onnx")
-        self.entrada = self.sessao.get_inputs()[0].name
-        classes = self.sessao.get_outputs()[0].shape[-1]
-        if classes != len(chars) + 2:  # vazio do CTC + dicionário + espaço
-            raise ValueError(f"{pasta.name}: dicionário com {len(chars)} letras para {classes} classes")
-        self.decodificar = CTCLabelDecode(chars)
-        self.lote = lote
-
-    @staticmethod
-    def _normalizar(img: np.ndarray, proporcao: float) -> np.ndarray:
-        h, w = img.shape[:2]
-        largura = int(48 * proporcao)
-        lw = min(largura, int(math.ceil(48 * w / max(1, h))))
-        r = cv2.resize(img, (max(1, lw), 48)).astype(np.float32).transpose(2, 0, 1) / 255.0
-        saida = np.zeros((3, 48, largura), np.float32)
-        saida[:, :, :lw] = (r - 0.5) / 0.5
-        return saida
-
-    def __call__(self, imgs):
-        import time
-        if isinstance(imgs, np.ndarray):
-            imgs = [imgs]
-        proporcoes = [im.shape[1] / max(1.0, float(im.shape[0])) for im in imgs]
-        ordem = np.argsort(proporcoes)  # larguras parecidas no mesmo lote
-        res = [("", 0.0)] * len(imgs)
+    def __call__(self, img_bgr: np.ndarray):
         t = time.time()
-        for i in range(0, len(imgs), self.lote):
-            idx = ordem[i:i + self.lote]
-            prop = max([320 / 48] + [proporcoes[j] for j in idx])
-            lote = np.stack([self._normalizar(imgs[j], prop) for j in idx])
-            for j, (texto, conf) in zip(idx, self.decodificar(self.sessao.run(None, {self.entrada: lote})[0])):
-                res[j] = (texto, float(conf))
-        return res, time.time() - t
+        r = self.pagina.predict(img_bgr)[0]
+        linhas = [(np.asarray(p).tolist(), str(texto), float(conf))
+                  for p, texto, conf in zip(r["rec_polys"], r["rec_texts"], r["rec_scores"])]
+        return linhas, time.time() - t
+
+    def linha(self, img_bgr: np.ndarray) -> tuple[str, float]:
+        r = self.reconhecedor.predict(img_bgr)[0]
+        return str(r["rec_text"]), float(r["rec_score"])
 
 
 def _carregar():
-    """O motor de OCR (carregado uma vez): o padrão, ou o de reserva se o padrão não pôde ser baixado/aberto."""
+    """O motor de OCR (carregado uma vez). Sem o paddleocr, ou sem os modelos (sem rede na primeira vez, arquivo
+    que não confere): OCRIndisponivel."""
     global _motor, _nome_motor
     with _lock_carga:
         if _motor is None:
+            if not instalado():
+                raise OCRIndisponivel("instale o OCR: veja a seção Instalação do README (paddleocr sem dependências)")
             try:
-                from rapidocr_onnxruntime import RapidOCR
-            except ImportError as e:  # pragma: no cover - depende do ambiente
-                raise OCRIndisponivel("instale o OCR: pip install --no-deps rapidocr_onnxruntime==1.2.3 "
-                                      "&& pip install onnxruntime pyclipper shapely pyyaml six") from e
-            motor = RapidOCR()  # o fluxo det -> ordem -> recorte -> rec -> filtro de confiança do RapidOCR fica
+                det, rec = _baixar(_DET), _baixar(_REC)
+            except OSError as e:
+                raise OCRIndisponivel(f"OCR sem os modelos ({e}); conecte à internet uma vez para baixá-los do "
+                                      "ModelScope") from e
             try:
-                motor.text_detector = _detector(_baixar(_DET))
-                motor.text_recognizer = _Reconhecedor(_baixar(_REC))
-                # sem o classificador 0/180° (do PP-OCRv2): a página já vem de pé (EXIF aplicado) e ele virava a linha
-                # digitável (só dígitos) de cabeça para baixo: 6 de 19 contas sintéticas liam "0-00000000000 8-..."
-                motor.use_angle_cls = False
-                nome = MOTOR_PADRAO
-            except Exception as e:  # noqa: BLE001 - sem rede, disco cheio, arquivo estragado: o OCR antigo ainda lê
-                print(f"OCR: sem o {MOTOR_PADRAO} ({type(e).__name__}: {e}); lendo com o {MOTOR_RESERVA} "
-                      "(sem acentos; os espaços são deduzidos da tinta)", file=sys.stderr, flush=True)
-                motor, nome = RapidOCR(), MOTOR_RESERVA
-            _motor, _nome_motor = motor, nome
+                motor = _Motor(det, rec)
+            except ImportError as e:
+                raise OCRIndisponivel(f"OCR: o paddleocr não abriu ({e}); veja a seção Instalação do README") from e
+            except Exception as e:  # noqa: BLE001 - o Paddle/oneDNN, outra versão do paddlex, um inference.yml diferente:
+                # vira OCRIndisponivel com o motivo, que quem chama (diagnóstico, conferência, lote) sabe tratar
+                raise OCRIndisponivel(f"OCR: o paddleocr não iniciou ({type(e).__name__}: {e}); confira as versões "
+                                      "do requirements-ocr.txt (paddlepaddle 3.2.2, paddlex 3.7.2, paddleocr 3.7.0)") from e
+            _motor, _nome_motor = motor, MOTOR_PADRAO
     return _motor
 
 
@@ -184,8 +197,10 @@ def motor() -> str:
 
 
 def _le_espacos(nome: str | None) -> bool:
-    """O motor separa as palavras sozinho; o de reserva come os espaços e eles vêm da tinta."""
-    return nome == MOTOR_PADRAO
+    """O motor separa as palavras sozinho; o de reserva come os espaços e eles vêm da tinta. O "/2" (até 06/11/2026,
+    os mesmos modelos pelo onnxruntime) também lê os espaços: o cache dele, mantido quando o OCR não carrega, não é
+    re-segmentado (inseria espaços a mais em nomes e endereços)."""
+    return nome in (MOTOR_PADRAO, "PP-OCRv6_small_det+latin_PP-OCRv5_mobile_rec/2")
 
 
 def _do_cache(cache: Path) -> tuple[list[dict] | None, str | None]:
@@ -708,8 +723,8 @@ def reconhecer(rec: np.ndarray) -> str:
         m = max(4, rec.shape[0] // 2)
         rec = rec[:, max(0, int(cols[0]) - m):int(cols[-1]) + 1 + m]
     with _lock:
-        res, _ = _carregar().text_recognizer([np.ascontiguousarray(rec[..., ::-1])])
-    return str(res[0][0]) if res else ""
+        texto, _conf = _carregar().linha(np.ascontiguousarray(rec[..., ::-1]))
+    return texto
 
 
 def em_ordem_de_leitura(linhas: list[dict]) -> list[dict]:

@@ -18,6 +18,10 @@ const D = {
   laco: `<ellipse cx="13" cy="9.5" rx="8" ry="5.5" opacity=".25"/>`
     + `<path ${LINHA} stroke-width="2" d="M8.3 14.3C5.7 13.4 4 11.6 4 9.5 4 6.5 8 4 13 4s9 2.5 9 5.5-4 5.5-9 5.5c-.9 0-1.8-.1-2.6-.2"/>`
     + `<circle cx="7.6" cy="16.4" r="2.3"/><path ${LINHA} stroke-width="1.8" d="M6.7 18.5c-.3 1.4.2 2.6 1.4 3.5"/>`,
+  // a pena da caneta com a ponta para baixo e, atrás, um caminho com dois pontos (desenho nosso)
+  caneta: `<path ${LINHA} stroke-width="1.6" ${T2} d="M2.5 20.5C5 13 9 21.5 12 21.5"/>`
+    + `<path fill-rule="evenodd" d="M12 21 7 12.2 9.4 6h5.2l2.4 6.2ZM12 10.2a1.7 1.7 0 1 0 0 3.4 1.7 1.7 0 1 0 0-3.4Z"/>`
+    + `<path ${T2} d="M9 2.5h6V5H9Z"/><rect x="1" y="19" width="3" height="3" ${T2}/>`,
   varinha: `<path d="M3.3 19.3 14.6 8l2 2L5.3 21.3a1 1 0 0 1-1.4 0l-.6-.6a1 1 0 0 1 0-1.4Z"/>`
     + `<path ${T2} d="m14.6 8 2-2 2 2-2 2Z"/><path d="m18.5 1.5.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8Z"/>`
     + `<path ${T2} d="m9 2 .5 1.5L11 4l-1.5.5L9 6l-.5-1.5L7 4l1.5-.5ZM20 12l.5 1.5 1.5.5-1.5.5-.5 1.5-.5-1.5-1.5-.5 1.5-.5Z"/>`,

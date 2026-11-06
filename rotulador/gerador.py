@@ -620,6 +620,24 @@ _GRANULARIDADE_JUNTO = {"campo": 1.0}
 _TIPO_DA_FAMILIA = {"copia_interna": "copy_move", "colagem_externa": "splicing", "remocao": "removal"}
 
 
+def _sem_nome_nem_endereco(ctx, campos: list[dict]) -> str:
+    """Por que o FSTS "como uma pessoa" não tem o que editar neste documento, com o que ajuda a achar a causa: a página
+    (a 2ª de uma fatura costuma não ter o cliente), o que o OCR leu (nada lido = OCR sem os modelos ou imagem ilegível)
+    e os campos que o detector achou (o leiaute: o nome e o endereço sem rótulo que ele reconheça)."""
+    it = getattr(ctx, "item", None)
+    pagina = f"pág. {it.pagina + 1}/{it.paginas}; " if it is not None and getattr(it, "paginas", 1) > 1 else ""
+    try:
+        n = len(ctx.linhas)
+    except (ErroOperacao, AttributeError):
+        n = None
+    from . import ocr
+    motor = ocr._nome_motor or "OCR"
+    lidas = (f"{motor}: nenhuma linha lida" if n == 0 else f"{motor}: {n} linhas lidas" if n is not None else motor)
+    achados = ", ".join(sorted({str(f.get("categoria")) for f in campos if f.get("categoria")})) or "nenhum"
+    return (f"o detector não achou o nome nem o endereço do cliente neste documento ({pagina}{lidas}; campos achados: "
+            f"{achados}). Para ver o que foi lido em cada documento: python ferramentas/diagnostico.py")
+
+
 def _fsts_pessoa(sessao: Sessao, ctx, r: Receita, plano: Plano, rng: random.Random, editor=None, ao_falhar=None,
                  info: dict | None = None) -> list[dict]:
     """Uma versão como uma pessoa de verdade faria: o NOME e/ou o ENDEREÇO do cliente (o detector diz qual campo é
@@ -633,7 +651,7 @@ def _fsts_pessoa(sessao: Sessao, ctx, r: Receita, plano: Plano, rng: random.Rand
     presentes = {f["categoria"] for f in com_texto}
     base = [c for c in ("nome", "endereço") if c in presentes]
     if not base:
-        raise ErroOperacao("o detector não achou o nome nem o endereço do cliente neste documento")
+        raise ErroOperacao(_sem_nome_nem_endereco(ctx, ctx.campos))
     classes = _subconjunto(base, rng, None)  # só o nome, só o endereço ou os dois
     regiao = cfg["regiao"]
     # a cidade do documento: a da linha da cidade ou, sem ela, a do CEP impresso
@@ -665,6 +683,10 @@ def _fsts_pessoa(sessao: Sessao, ctx, r: Receita, plano: Plano, rng: random.Rand
     def tecnicas(f: dict, imposto: bool) -> list:
         g = (_GRANULARIDADE_JUNTO if f.get("categoria") in ("bairro", "cep", "cidade/uf")
              else _GRANULARIDADE_PESSOA.get(f.get("categoria"), _GRANULARIDADE_OUTROS))
+        # a rua nova vem com o bairro, o CEP e a cidade da mesma linha da base: colar de outro documento traria a rua
+        # do doador sem o CEP dela, e o bloco do endereço ainda cobre as linhas vizinhas, apagando a edição da rua
+        # (o rótulo dizia um texto que não estava na imagem)
+        sem_colagem = imposto or (gr_rua == "campo" and f.get("categoria") in ("endereço", "bairro", "cep", "cidade/uf"))
         cat = rng.choices(cats, weights=pesos)[0]
         if imposto:  # o dado repetido que já mudou noutro lugar (ou a cidade nova): só o que ESCREVE o valor inteiro
             grs = ["campo"]
@@ -680,11 +702,11 @@ def _fsts_pessoa(sessao: Sessao, ctx, r: Receita, plano: Plano, rng: random.Rand
                     t = catalogo.TECNICAS.get(tid)
                     if t is None or t in out or not aplicavel(t, f) or not catalogo.compativel(t, f.get("categoria")):
                         continue
-                    if imposto and t.familia == "colagem_externa":
-                        continue  # a colagem traz o texto do doador, não o valor que tem de se repetir aqui
+                    if sem_colagem and t.familia == "colagem_externa":
+                        continue  # a colagem traz o texto do doador, não o valor que tem de estar aqui
                     out.append(t)
                     escolhas[(f.get("id"), tid)] = (c, gr)
-        if imposto and not out:  # nenhuma categoria ligada escreve o valor: a mesma fonte, para não deixar o velho
+        if sem_colagem and not out:  # nenhuma categoria ligada escreve o valor: a mesma fonte, para não deixar o velho
             t = catalogo.TECNICAS["campo.mesma_fonte"]
             if aplicavel(t, f):
                 out.append(t)
@@ -701,7 +723,15 @@ def _fsts_pessoa(sessao: Sessao, ctx, r: Receita, plano: Plano, rng: random.Rand
         if tipo in ("copy_move", "splicing"):
             conf["principal"].setdefault("escala", {})
         hab = fsts.habito_humano(conf, f["caixa"], rng) if tipo in _FSTS_COM_TEXTO_OU_APAGADOR else None
+        if hab is not None:  # e o texto digitado fica igual ao antigo: o desfoque do scan e o tom da tinta antiga (nítido
+            # e com a cor do conta-gotas, o miolo mais escuro do traço, saía mais escuro e mais nítido que o original)
+            hab.update(nitidez="igual", cor="calibrada")
+            conf["principal"].pop("cor_segura", None)  # o rótulo diz o que foi feito: a cor é a calibrada, não a segura
         p = _params(t, f, rng, r, None, texto, hab)
+        # a fonte do campo é a mesma em todas as técnicas: a das 10 mais usadas ou, quando outra instalada casa melhor
+        # com a tinta, ela (ops.tecnicas._fonte_da_pessoa); antes, cada técnica identificava de um jeito e o mesmo nome
+        # saía em Helvetica Bold numa versão e em Arial Narrow Bold na outra
+        p["fontes"] = "top10"
         p["habitos"] = {**(p.get("habitos") or {}), "fsts": {**conf, "granularidade": gr, "categoria_editor": cat,
                                                              "modo": "pessoa"}}
         p["opcoes"] = {**p["opcoes"], **_opcoes_fsts(t, conf, gr)}

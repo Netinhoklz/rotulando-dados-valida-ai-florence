@@ -321,7 +321,38 @@ recorte é sempre ajustada, nada é girado além da linha e a conferência da fo
 `rotulador/fidelidade.py`) descarta a edição com a altura das letras fora de ±4% (ou ±1 px) ou o traço fora de ±10%.
 No modo "artigo" a conferência só mede (o rótulo leva a medida).
 
-O texto novo sai nítido, como foi digitado. A conferência por OCR vale para o texto escrito.
+No modo "artigo" o texto novo sai nítido, como foi digitado. No modo "como uma pessoa" (06/11/2026) ele sai igual ao
+antigo também na aparência e na fonte:
+
+- **desfoque e tom**: o texto digitado leva o desfoque do scan e a cor que dá à tinta nova o tom da antiga
+  (hábitos `nitidez: "igual"` e `cor: "calibrada"` em `rotulador/humano.py`). Nítido e com a cor do conta-gotas (o
+  miolo mais escuro do traço), ele saía em mediana 6 níveis mais escuro e 15% mais nítido que o original, e até 31
+  níveis mais escuro na foto de celular; agora, 1 nível e 4%. Com a suavização "Nenhuma" (serrilhado), o desfoque
+  vai depois de serrilhar, como o Desfoque Gaussiano na camada (`texto.renderizar`; antes o serrilhado o jogava fora);
+- **uma fonte por campo**: todas as técnicas usam a mesma identificação, a das 10 fontes mais usadas ou, quando outra
+  instalada casa melhor com a tinta, ela (`tecnicas._fonte_da_pessoa`, a mesma escolha do gabarito das letras do
+  documento). Antes, o mesmo nome saía em Helvetica Bold numa versão e em Arial Narrow Bold na outra;
+- **só digita numa fonte identificada**: abaixo da semelhança 0,90 (`identificar_fonte.LIMIAR_MESMA_FONTE`), reescrever,
+  trocar o trecho e redesenhar a letra recusam, e o campo sai com as letras recortadas do próprio documento. Nas letras
+  do documento, sem a fonte identificada, o valor novo é um que o documento consegue escrever com as próprias letras
+  (`_Letras.faltam`), e nenhuma letra é desenhada. Na conta da NIO, o nome em maiúsculas casa com a Helvetica Bold
+  (0,91) e continua sendo reescrito; o endereço em caixa mista e o CEP, numa fonte que não está instalada (entre todas
+  as instaladas, nenhuma chega a 0,90 nas linhas longas da conta), eram reescritos em Calibri (semelhança 0,75 e
+  0,86), com outro desenho de letra, e agora saem com as letras da própria conta;
+- **colar de outro documento só da mesma fonte**: o doador tem de estar na fonte do campo (a tinta dele comparada com
+  a fonte identificada aqui, `tecnicas._doador_parecido`), na mesma caixa de letras e com nitidez parecida. Antes,
+  só a altura contava: um nome em Times entrava numa conta em Verdana;
+- **letra copiada dentro de um quadro** (vale fora do FSTS também): com o fio do quadro encostado no pé das letras
+  (boleto da NIO), a letra medida levava o fio (`tecnicas._sem_fios`): o "0" de "480" saía com a altura dobrada, o
+  doador escolhido era um "6" do cabeçalho 1,5x maior, e apagar a letra abria um buraco no fio (`_furo_glifos` agora
+  poupa o fio). A letra doada também não pode encostar num fio (o "2" colado trazia um pedaço da linha debaixo) nem
+  ter outro peso de traço: ±20% da mesma letra no próprio campo, ou ±25% da mediana das letras do campo, e o doador de
+  peso mais perto vem primeiro (o "4" de uma linha comum entrava no "58" em negrito, com 0,80 do traço);
+- **apagar uma letra poupa as vizinhas** (todas as técnicas que apagam letra a letra, `_furo_glifos`): com 2-3 px entre
+  as letras, a folga do apagado raspava a borda da letra ao lado. No "58" → "51" da NIO, o "5" perdia a borda direita
+  e sobravam dois pontos dela, um ":" depois do "1" estreito.
+
+A conferência por OCR vale para o texto escrito.
 
 **Interpretações nossas** (o artigo não dá o número):
 

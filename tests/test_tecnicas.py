@@ -2,9 +2,10 @@
 
 Os documentos são sintéticos (Arial, como uma conta real) e o OCR deles é gravado direto no
 cache (o mesmo que o rotulador usa), então os testes não dependem do motor de OCR. Quando o
-RapidOCR está instalado, o texto editado é RELIDO pelo OCR: a edição precisa ser legível como
+OCR (paddleocr) está instalado, o texto editado é RELIDO pelo OCR: a edição precisa ser legível como
 o valor novo que o rótulo diz.
 """
+import importlib.util
 import csv
 import json
 import random
@@ -25,11 +26,7 @@ from rotulador.registro import Item
 from rotulador.selecao import mascara_tinta, vazia
 from rotulador.sessao import ErroOperacao, Sessao
 
-try:
-    import rapidocr_onnxruntime  # noqa: F401
-    TEM_OCR = True
-except ImportError:
-    TEM_OCR = False
+TEM_OCR = importlib.util.find_spec("paddleocr") is not None  # o OCR (paddleocr) instalado
 
 IDS = {"nome": 1, "cpf/cnpj": 2, "endereço": 3, "bairro": 4, "cep": 5, "cidade/uf": 6, "data": 7,
        "mês de referência": 8, "valor": 9, "consumo/leitura": 10, "codigo barras": 11, "linha digitável": 12,
@@ -405,7 +402,7 @@ class TestIA(Base):
         self.assertIn("Remove the text", TestIA.prompts[0])
 
 
-@unittest.skipUnless(TEM_OCR, "sem RapidOCR: a conferência não roda")
+@unittest.skipUnless(TEM_OCR, "sem o OCR (paddleocr): a conferência não roda")
 class TestConferenciaEmCelula(unittest.TestCase):
     """A data na célula do boleto (rótulo pequeno logo acima, borda da tabela embaixo): a edição certa passa na
     conferência por OCR. A 2ª leitura era mais alta e pegava o rótulo de cima ("3/02026" num "23/02/2026" bem escrito,

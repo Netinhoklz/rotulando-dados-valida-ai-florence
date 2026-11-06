@@ -501,7 +501,7 @@ def _apagar(caminho: Path) -> None:
     raise ErroOperacao(f"o arquivo {caminho.name} está em uso; tente de novo")
 
 
-# o dado para o treino do modelo, numa pasta à parte: só a editada e a máscara de onde foi editado (a "mascara", 0/1),
+# o dado para o treino do modelo, numa pasta à parte: só a editada e a máscara de onde foi editado (a "mascara", 0/255),
 # com o mesmo nome, por split. São links físicos dos arquivos de saida/<split>/ (não ocupam disco a mais); onde o link
 # não dá (outro disco, FAT), cópias.
 PASTA_TREINAMENTO = "_treinamento"
@@ -771,12 +771,13 @@ def salvar(sessao: Sessao, raiz_saida: Path, formato: str = "png", qualidade: in
             if o_lida.shape == e_lida.shape == img_ed.shape:
                 dif_saida = np.abs(o_lida.astype(np.int16) - e_lida.astype(np.int16)).max(2) > 0
                 espalhado = dif_saida if espalhado is None else espalhado | dif_saida
-        # máscaras binárias em 0/1: 1 onde houve edição (os leitores aceitam também as antigas, em 0/255: > 0)
-        _gravar(arq["mascara"], codificar(alterados.astype(np.uint8), "png", 0))
-        _gravar(arq["mascara_regiao"], codificar(regiao.astype(np.uint8), "png", 0))
+        # máscaras binárias em 0/255: branco onde houve edição, visível em qualquer visualizador (de 28/10 a 06/11/2026
+        # eram 0/1 e pareciam pretas; os leitores aceitam as duas: > 0)
+        _gravar(arq["mascara"], codificar(alterados.astype(np.uint8) * 255, "png", 0))
+        _gravar(arq["mascara_regiao"], codificar(regiao.astype(np.uint8) * 255, "png", 0))
         _gravar(arq["mascara_classes"], codificar(classes, "png", 0))
         _gravar(arq["mascara_tecnicas"], codificar(tecnicas, "png", 0))
-        _gravar(arq["mascara_ignorar"], codificar(mascara_ignorar(alterados, regiao, espalhado).astype(np.uint8),
+        _gravar(arq["mascara_ignorar"], codificar(mascara_ignorar(alterados, regiao, espalhado).astype(np.uint8) * 255,
                                                   "png", 0))
 
         H, W = alterados.shape
@@ -796,11 +797,11 @@ def salvar(sessao: Sessao, raiz_saida: Path, formato: str = "png", qualidade: in
             "caixas_ocorrencias_por_categoria": _caixas_ocorrencias(edicoes),
             "pixels_alterados": int(alterados.sum()), "pixels_regiao": int(regiao.sum()),
             "fracao_alterada": round(float(alterados.mean()), 6),
-            "mascaras": {"mascara": "0/1: 1 = pixel editado (o valor mudou, antes da compressão de saída)",
-                         "mascara_regiao": "0/1: 1 = área editada (pegada das operações)",
+            "mascaras": {"mascara": "0/255: 255 = pixel editado (o valor mudou, antes da compressão de saída)",
+                         "mascara_regiao": "0/255: 255 = área editada (pegada das operações)",
                          "mascara_classes": "uint8: id da categoria por pixel; 0 = não editado",
                          "mascara_tecnicas": "uint8: num da técnica por pixel (catalogo.json); 0 = não editado",
-                         "mascara_ignorar": "0/1: 1 = rótulo ambíguo, para tirar da perda e da métrica: 1 px em volta "
+                         "mascara_ignorar": "0/255: 255 = rótulo ambíguo, para tirar da perda e da métrica: 1 px em volta "
                                             "dos pixels alterados (por fora), a parte da região que não mudou e o que "
                                             "o codec (canal ou gravação com perda) espalhou: fora da região, todo "
                                             "pixel em que a original e a editada gravadas diferem"},
